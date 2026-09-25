@@ -1,0 +1,52 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+---
+<BaseLayout
+  title="System Prompt Generator for AI Agents"
+  description="Generate a structured system prompt for your AI agent. Fill in role, task, tone, constraints, and output format — copy the result in one click."
+>
+  <h1>System Prompt Generator</h1>
+  <p>Fill in your agent's role and core task, then generate a structured system prompt you can paste into any LLM or agent framework.</p>
+  <form id="gen-form">
+    <label for="role">Agent role *</label>
+    <input id="role" placeholder="a senior code reviewer" />
+    <label for="task">Core task *</label>
+    <textarea id="task" rows="3" placeholder="Review pull requests and suggest improvements"></textarea>
+    <label for="tone">Tone</label>
+    <input id="tone" placeholder="concise and direct" />
+    <label for="constraints">Constraints (one per line)</label>
+    <textarea id="constraints" rows="3" placeholder="Never approve code without tests&#10;Ask before making file changes"></textarea>
+    <label for="format">Output format</label>
+    <input id="format" placeholder="A bullet list of findings ordered by severity" />
+    <button id="gen" type="submit">Generate Prompt</button>
+  </form>
+  <button id="copy" type="button" hidden>Copy</button>
+  <pre id="out" class="result" style="white-space:pre-wrap" aria-live="polite" hidden></pre>
+</BaseLayout>
+
+<script>
+  import { generateSystemPrompt } from '../../lib/prompt';
+  const $ = (id: string) => document.getElementById(id)! as HTMLInputElement;
+  const out = $('out'), copy = $('copy');
+  const form = document.getElementById('gen-form') as HTMLFormElement;
+  function render() {
+    const role = $('role').value.trim(), task = $('task').value.trim();
+    if (!role || !task) { out.hidden = true; copy.hidden = true; return; }
+    out.textContent = generateSystemPrompt({
+      role, task,
+      tone: $('tone').value,
+      constraints: $('constraints').value,
+      outputFormat: $('format').value,
+    });
+    out.hidden = false; copy.hidden = false;
+  }
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    render();
+  });
+  copy.addEventListener('click', async () => {
+    await navigator.clipboard.writeText(out.textContent ?? '');
+    copy.textContent = 'Copied!';
+    setTimeout(() => (copy.textContent = 'Copy'), 1500);
+  });
+</script>
