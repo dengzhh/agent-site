@@ -1,0 +1,29 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+---
+<BaseLayout
+  title="Token Estimator — Count Tokens for Claude, GPT & Gemini"
+  description="Paste your prompt to estimate token counts across Claude, GPT, and Gemini tokenizers. Client-side approximation, nothing leaves your browser."
+>
+  <h1>Token Estimator</h1>
+  <p>Paste any text. Estimates update live for each model family. This is a heuristic estimate (±10–20%); use your provider's count API for exact billing numbers.</p>
+  <label for="text">Your prompt</label>
+  <textarea id="text" rows="10" placeholder="Paste your prompt here..."></textarea>
+  <div class="result" id="out" aria-live="polite" hidden></div>
+</BaseLayout>
+
+<script>
+  import { estimateTokens } from '../../lib/tokens';
+  const ta = document.getElementById('text') as HTMLTextAreaElement;
+  const out = document.getElementById('out') as HTMLElement;
+  function render() {
+    const text = ta.value;
+    if (!text.trim()) { out.hidden = true; return; }
+    out.hidden = false;
+    const rows = (['claude', 'gpt', 'gemini'] as const).map((f) =>
+      `<tr><td>${f.toUpperCase()}</td><td>${estimateTokens(text, f).toLocaleString()}</td></tr>`).join('');
+    out.innerHTML = `<table><thead><tr><th scope="col">Family</th><th scope="col">≈ Tokens</th></tr></thead><tbody>${rows}</tbody></table>
+      <p style="color:var(--muted);font-size:.85rem">Characters: ${text.length.toLocaleString()} · Words: ${text.trim().split(/\s+/).length.toLocaleString()}</p>`;
+  }
+  ta.addEventListener('input', render);
+</script>
