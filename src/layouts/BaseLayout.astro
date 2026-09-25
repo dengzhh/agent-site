@@ -1,0 +1,36 @@
+---
+interface Props { title: string; description: string; }
+const { title, description } = Astro.props;
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="canonical" href={new URL(Astro.url.pathname, Astro.site)} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content={new URL(Astro.url.pathname, Astro.site)} />
+    <style is:global>@import '../styles/global.css';</style>
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="/">AgentToolbox</a>
+      <nav>
+        <a href="/tools/llm-api-cost-calculator/">Cost Calculator</a>
+        <a href="/tools/token-estimator/">Token Estimator</a>
+        <a href="/tools/system-prompt-generator/">Prompt Generator</a>
+        <a href="/tools/mcp-config-generator/">MCP Config</a>
+        <a href="/compare/agent-frameworks/">Frameworks</a>
+      </nav>
+    </header>
+    <main class="container"><slot /></main>
+    <footer class="site-footer">
+      <p>© {new Date().getFullYear()} AgentToolbox · <a href="/about/">About</a> · <a href="/privacy/">Privacy</a> · <a href="/contact/">Contact</a></p>
+    </footer>
+  </body>
+</html>

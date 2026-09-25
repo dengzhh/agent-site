@@ -1,0 +1,19 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+const tools = [
+  { href: '/tools/llm-api-cost-calculator/', name: 'LLM API Cost Calculator', desc: 'Compare monthly API costs across Claude, GPT, and Gemini models.' },
+  { href: '/tools/token-estimator/', name: 'Token Estimator', desc: 'Estimate how many tokens your prompt uses per model family.' },
+  { href: '/tools/system-prompt-generator/', name: 'System Prompt Generator', desc: 'Build a structured system prompt for your AI agent.' },
+  { href: '/tools/mcp-config-generator/', name: 'MCP Config Generator', desc: 'Generate MCP server configs for Claude Code, Cursor, and VS Code.' },
+  { href: '/compare/agent-frameworks/', name: 'Agent Framework Comparison', desc: 'LangGraph vs CrewAI vs OpenAI Agents SDK vs Claude Agent SDK.' },
+];
+---
+<BaseLayout title="AgentToolbox — Free AI Agent Tools" description="Free online tools for AI agent developers: API cost calculators, token estimators, prompt generators, and MCP config builders.">
+  <h1>Free Tools for AI Agent Builders</h1>
+  <p>Everything you need to plan, build, and cost out your next AI agent — no signup, runs entirely in your browser.</p>
+  <div class="tool-grid">
+    {tools.map((t) => (
+      <a class="tool-card" href={t.href}><h2>{t.name}</h2><p>{t.desc}</p></a>
+    ))}
+  </div>
+</BaseLayout>

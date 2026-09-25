@@ -1,0 +1,29 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import data from '../../data/frameworks.json';
+---
+<BaseLayout
+  title="AI Agent Framework Comparison 2026 — LangGraph vs CrewAI vs OpenAI"
+  description={`Compare the major AI agent frameworks: ${data.frameworks.map((f) => f.name).join(', ')}. Strengths, languages, and when to pick each.`}
+>
+  <h1>AI Agent Framework Comparison</h1>
+  <p>Updated {data.asOf}. Quick take: pick by control vs speed-to-prototype, not by hype.</p>
+  <div style="overflow-x:auto">
+    <table>
+      <thead><tr><th scope="col">Framework</th><th scope="col">Language</th><th scope="col">Strengths</th><th scope="col">Best for</th></tr></thead>
+      <tbody>
+        {data.frameworks.map((f) => (
+          <tr>
+            <td><a href={f.site} rel="noopener">{f.name}</a><br /><small style="color:var(--muted)">{f.maintainer}</small></td>
+            <td>{f.language}</td>
+            <td>{f.strengths}</td>
+            <td>{f.bestFor}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </div>
+  <h2>How to choose</h2>
+  <p>If your agent needs precise branching, checkpoints, or human approval steps, favor control: LangGraph's graph model and Claude Agent SDK's built-in harness both reward teams willing to write more orchestration code. If you want something running by tomorrow, CrewAI and the OpenAI Agents SDK get you a working prototype fastest, at the cost of less visibility into what happens between steps.</p>
+  <p>Also weigh ecosystem lock-in: frameworks tied to one model provider are convenient until you need to swap models, so if multi-vendor flexibility matters, start with a provider-neutral option like LangGraph or AutoGen.</p>
+</BaseLayout>
