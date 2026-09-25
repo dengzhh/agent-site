@@ -18,4 +18,10 @@ describe('estimateTokens', () => {
   it('handles mixed text without crashing', () => {
     expect(estimateTokens('Hello 你好 code ```python\nprint(1)\n```', 'gpt')).toBeGreaterThan(0);
   });
+  it('differentiates model families', () => {
+    expect(estimateTokens('x'.repeat(40), 'gpt')).toBeLessThan(estimateTokens('x'.repeat(40), 'claude'));
+  });
+  it('pins the exact formula', () => {
+    expect(estimateTokens('你好a', 'gpt')).toBe(3);
+  });
 });
