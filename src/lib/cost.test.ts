@@ -27,4 +27,16 @@ describe('monthlyCost', () => {
     const r = monthlyCost(haiku, { inputTokens: 1_000_000, outputTokens: 0, requestsPerMonth: 1, cacheReadPct: 0.9 });
     expect(r).toBeCloseTo(1.0, 6);
   });
+  it('cacheReadPct above 1 clamps to full cache-read price', () => {
+    const r = monthlyCost(opus55, { inputTokens: 1_000_000, outputTokens: 0, requestsPerMonth: 1, cacheReadPct: 1.5 });
+    expect(r).toBeCloseTo(0.20, 6);
+  });
+  it('negative cacheReadPct clamps to full input price', () => {
+    const r = monthlyCost(opus55, { inputTokens: 1_000_000, outputTokens: 0, requestsPerMonth: 1, cacheReadPct: -0.2 });
+    expect(r).toBeCloseTo(4.0, 6);
+  });
+  it('negative requests clamps cost to zero', () => {
+    const r = monthlyCost(opus55, { inputTokens: 10_000, outputTokens: 2_000, requestsPerMonth: -100 });
+    expect(r).toBe(0);
+  });
 });
