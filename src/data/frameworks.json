@@ -1,0 +1,45 @@
+{
+  "asOf": "2026-09-25",
+  "frameworks": [
+    {
+      "name": "LangGraph",
+      "maintainer": "LangChain",
+      "language": "Python / JS",
+      "strengths": "Graph-based state machines, fine-grained control over agent flow, strong persistence and human-in-the-loop support",
+      "bestFor": "Complex multi-step workflows where you need explicit control over state and branching",
+      "site": "https://langchain-ai.github.io/langgraph/"
+    },
+    {
+      "name": "CrewAI",
+      "maintainer": "CrewAI",
+      "language": "Python",
+      "strengths": "Role-based multi-agent teams, fast to prototype, gentle learning curve",
+      "bestFor": "Multi-agent collaboration patterns (crew of specialists) without deep framework code",
+      "site": "https://docs.crewai.com/"
+    },
+    {
+      "name": "OpenAI Agents SDK",
+      "maintainer": "OpenAI",
+      "language": "Python / JS",
+      "strengths": "Lightweight primitives (agents, handoffs, guardrails), first-class OpenAI model integration",
+      "bestFor": "Teams standardized on OpenAI models who want a minimal, official abstraction",
+      "site": "https://openai.github.io/openai-agents-python/"
+    },
+    {
+      "name": "Claude Agent SDK",
+      "maintainer": "Anthropic",
+      "language": "Python / TS",
+      "strengths": "Full coding-agent harness (file tools, bash, subagents, hooks, MCP), batteries included",
+      "bestFor": "Agents that operate on code and filesystems; Claude-native workflows",
+      "site": "https://code.claude.com/docs/en/agent-sdk"
+    },
+    {
+      "name": "AutoGen",
+      "maintainer": "Microsoft",
+      "language": "Python / .NET",
+      "strengths": "Conversation-driven multi-agent patterns, research heritage, event-driven architecture in v0.4",
+      "bestFor": "Research and experimentation with conversational multi-agent topologies",
+      "site": "https://microsoft.github.io/autogen/"
+    }
+  ]
+}
