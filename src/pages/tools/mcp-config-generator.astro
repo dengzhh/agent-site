@@ -29,7 +29,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
 
 <script>
   import { generateMcpConfig, type McpServer, type McpTarget } from '../../lib/mcp';
-  const $ = (id: string) => document.getElementById(id)! as HTMLInputElement;
+  const $ = (id: string) => document.getElementById(id)!;
   const servers: McpServer[] = [];
 
   // Server names come from user input and are interpolated into innerHTML — escape them.
@@ -41,19 +41,25 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
       `<li>${esc(s.name)} (${s.url ? 'http' : 'stdio'}) <button data-i="${i}" class="rm" type="button" style="padding:.1rem .5rem;font-size:.8rem">remove</button></li>`).join('');
     const out = document.getElementById('out') as HTMLElement;
     // JSON goes through textContent, so it is never parsed as markup.
-    out.textContent = generateMcpConfig(($('target') as unknown as HTMLSelectElement).value as McpTarget, servers);
+    out.textContent = generateMcpConfig(($('target') as HTMLSelectElement).value as McpTarget, servers);
     list.querySelectorAll('.rm').forEach((b) =>
       b.addEventListener('click', () => { servers.splice(Number((b as HTMLElement).dataset.i), 1); render(); }));
   }
 
-  ($('add-form') as unknown as HTMLFormElement).addEventListener('submit', (e) => {
+  ($('add-form') as HTMLFormElement).addEventListener('submit', (e) => {
     e.preventDefault();
     const name = $('name').value.trim();
     if (!name) return;
     const url = $('url').value.trim();
     const cmdStr = $('cmd').value.trim();
+    // A name alone produces an invalid entry — require a command or a url.
+    if (!url && !cmdStr) return;
     const parts = cmdStr.split(/\s+/).filter(Boolean);
-    servers.push(url ? { name, url } : { name, command: parts[0], args: parts.slice(1) });
+    const entry = url ? { name, url } : { name, command: parts[0], args: parts.slice(1) };
+    // Re-adding an existing name replaces the old entry instead of silently duplicating.
+    const existing = servers.findIndex((s) => s.name === name);
+    if (existing !== -1) servers.splice(existing, 1);
+    servers.push(entry);
     $('name').value = ''; $('cmd').value = ''; $('url').value = '';
     render();
   });

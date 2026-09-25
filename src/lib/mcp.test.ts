@@ -12,11 +12,13 @@ describe('generateMcpConfig', () => {
     expect(cfg.mcpServers.github.command).toBe('npx');
     expect(cfg.mcpServers.github.args).toEqual(['-y', '@modelcontextprotocol/server-github']);
     expect(cfg.mcpServers.github.env.GITHUB_TOKEN).toBe('xxx');
+    expect(cfg.mcpServers.docs.type).toBe('http');
     expect(cfg.mcpServers.docs.url).toBe('https://docs.example.com/mcp');
   });
-  it('cursor uses mcpServers too', () => {
+  it('cursor uses mcpServers too and tolerates bare url entries', () => {
     const cfg = JSON.parse(generateMcpConfig('cursor', servers));
     expect(cfg.mcpServers.docs.url).toBeDefined();
+    expect(cfg.mcpServers.docs.type).toBeUndefined();
   });
   it('vscode uses servers with type field', () => {
     const cfg = JSON.parse(generateMcpConfig('vscode', servers));
