@@ -7,7 +7,7 @@
       "language": "Python / JS",
       "strengths": "Graph-based state machines, fine-grained control over agent flow, strong persistence and human-in-the-loop support",
       "bestFor": "Complex multi-step workflows where you need explicit control over state and branching",
-      "site": "https://langchain-ai.github.io/langgraph/"
+      "site": "https://docs.langchain.com/oss/python/langgraph/overview"
     },
     {
       "name": "CrewAI",
