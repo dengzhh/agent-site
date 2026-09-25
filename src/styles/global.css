@@ -1,0 +1,30 @@
+:root {
+  --bg: #ffffff; --fg: #1a1a2e; --muted: #6b7280;
+  --card: #f6f7f9; --accent: #4f46e5; --border: #e5e7eb;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #0f1117; --fg: #e5e7eb; --muted: #9ca3af; --card: #1a1d27; --accent: #818cf8; --border: #2a2e3a; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--fg); line-height: 1.6; }
+.container { max-width: 860px; margin: 0 auto; padding: 1.5rem; }
+.site-header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 1.5rem; border-bottom: 1px solid var(--border); flex-wrap: wrap; gap: .5rem; }
+.brand { font-weight: 700; font-size: 1.15rem; color: var(--accent); text-decoration: none; }
+.site-header nav { display: flex; gap: 1rem; flex-wrap: wrap; }
+.site-header nav a { color: var(--muted); text-decoration: none; font-size: .9rem; }
+.site-header nav a:hover { color: var(--accent); }
+.site-footer { border-top: 1px solid var(--border); padding: 1rem 1.5rem; color: var(--muted); font-size: .85rem; }
+.tool-card { display: block; background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 1.25rem; text-decoration: none; color: inherit; }
+.tool-card:hover { border-color: var(--accent); }
+.tool-card h2 { margin: 0 0 .25rem; font-size: 1.05rem; }
+.tool-card p { margin: 0; color: var(--muted); font-size: .9rem; }
+label { display: block; font-size: .85rem; margin-bottom: .25rem; color: var(--muted); }
+input, select, textarea {
+  width: 100%; padding: .5rem .65rem; margin-bottom: 1rem;
+  background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; font: inherit;
+}
+button { background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: .55rem 1.2rem; font: inherit; cursor: pointer; }
+pre { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; overflow-x: auto; font-size: .85rem; }
+table { border-collapse: collapse; width: 100%; font-size: .9rem; }
+th, td { border: 1px solid var(--border); padding: .5rem .65rem; text-align: left; }
+.result { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin-top: 1rem; }
