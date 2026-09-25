@@ -1,0 +1,72 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import data from '../../data/models.json';
+const models = data.providers.flatMap((p) => p.models.map((m) => ({ ...m, provider: p.name })));
+---
+<BaseLayout
+  title="LLM API Cost Calculator — Claude vs GPT vs Gemini Pricing"
+  description="Calculate and compare monthly API costs for Claude, GPT, and Gemini models. Includes prompt caching discounts."
+>
+  <h1>LLM API Cost Calculator</h1>
+  <p>Estimate your monthly spend per model, then compare all models side by side. Pricing as of {data.asOf}.</p>
+
+  <div class="field-row">
+    <div><label for="model">Model</label>
+      <select id="model">{models.map((m) => <option value={m.id}>{m.provider} · {m.label}</option>)}</select>
+    </div>
+    <div><label for="reqs">Requests / month</label><input id="reqs" type="number" value="1000" min="0" /></div>
+  </div>
+  <div class="field-row">
+    <div><label for="in">Input tokens / request</label><input id="in" type="number" value="10000" min="0" /></div>
+    <div><label for="out">Output tokens / request</label><input id="out" type="number" value="2000" min="0" /></div>
+  </div>
+  <div><label for="cache">Cache read % of input (0–100)</label><input id="cache" type="number" value="0" min="0" max="100" /></div>
+  <button id="calc">Calculate</button>
+
+  <div class="result" id="single" hidden></div>
+  <h2 style="margin-top:2rem">All models comparison</h2>
+  <div class="result" id="table"></div>
+</BaseLayout>
+
+<style>
+  .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+  @media (max-width: 600px) { .field-row { grid-template-columns: 1fr; } }
+</style>
+
+<script>
+  import { monthlyCost, type ModelPricing } from '../../lib/cost';
+  import data from '../../data/models.json';
+
+  const models: (ModelPricing & { provider: string })[] = data.providers.flatMap((p) =>
+    p.models.map((m) => ({ ...m, provider: p.name })),
+  );
+  const $ = (id: string) => document.getElementById(id)!;
+
+  function inputs() {
+    return {
+      inputTokens: Number(($('in') as HTMLInputElement).value) || 0,
+      outputTokens: Number(($('out') as HTMLInputElement).value) || 0,
+      requestsPerMonth: Number(($('reqs') as HTMLInputElement).value) || 0,
+      cacheReadPct: (Number(($('cache') as HTMLInputElement).value) || 0) / 100,
+    };
+  }
+
+  function render() {
+    const i = inputs();
+    const id = ($('model') as HTMLSelectElement).value;
+    const m = models.find((x) => x.id === id)!;
+    const cost = monthlyCost(m, i);
+    ($('single') as HTMLElement).hidden = false;
+    $('single').innerHTML = `<strong>${m.provider} ${m.label}</strong>: <code>$${cost.toFixed(2)}</code>/month`;
+
+    const rows = models
+      .map((x) => ({ x, c: monthlyCost(x, i) }))
+      .sort((a, b) => a.c - b.c)
+      .map(({ x, c }) => `<tr><td>${x.provider}</td><td>${x.label}</td><td>$${c.toFixed(2)}</td></tr>`)
+      .join('');
+    $('table').innerHTML = `<table><thead><tr><th>Provider</th><th>Model</th><th>Monthly cost</th></tr></thead><tbody>${rows}</tbody></table>`;
+  }
+
+  $('calc').addEventListener('click', render);
+  render();
+</script>
