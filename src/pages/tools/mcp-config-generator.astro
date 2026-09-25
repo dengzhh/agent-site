@@ -1,0 +1,62 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+---
+<BaseLayout
+  title="MCP Config Generator — Claude Code, Cursor & VS Code"
+  description="Generate MCP server configuration JSON for Claude Code, Cursor, and VS Code. Add servers once, export to every client."
+>
+  <h1>MCP Config Generator</h1>
+  <p>Add MCP servers once, then copy the configuration JSON in the shape each client expects.</p>
+  <form id="add-form">
+    <label for="target">Target client</label>
+    <select id="target">
+      <option value="claude-code">Claude Code (~/.claude.json)</option>
+      <option value="cursor">Cursor (.cursor/mcp.json)</option>
+      <option value="vscode">VS Code (.vscode/mcp.json)</option>
+    </select>
+    <label for="name">Server name</label>
+    <input id="name" placeholder="github" />
+    <label for="cmd">Command (stdio server)</label>
+    <input id="cmd" placeholder="npx -y @modelcontextprotocol/server-github" />
+    <label for="url">— or URL (HTTP server)</label>
+    <input id="url" placeholder="https://docs.example.com/mcp" />
+    <button id="add" type="submit">Add server</button>
+  </form>
+  <h2 style="font-size:1rem">Added servers</h2>
+  <ul id="list" style="color:var(--muted);font-size:.9rem"></ul>
+  <pre id="out" class="result" style="white-space:pre-wrap" aria-live="polite">{'{ }'}</pre>
+</BaseLayout>
+
+<script>
+  import { generateMcpConfig, type McpServer, type McpTarget } from '../../lib/mcp';
+  const $ = (id: string) => document.getElementById(id)! as HTMLInputElement;
+  const servers: McpServer[] = [];
+
+  // Server names come from user input and are interpolated into innerHTML — escape them.
+  const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
+
+  function render() {
+    const list = document.getElementById('list') as HTMLElement;
+    list.innerHTML = servers.map((s, i) =>
+      `<li>${esc(s.name)} (${s.url ? 'http' : 'stdio'}) <button data-i="${i}" class="rm" type="button" style="padding:.1rem .5rem;font-size:.8rem">remove</button></li>`).join('');
+    const out = document.getElementById('out') as HTMLElement;
+    // JSON goes through textContent, so it is never parsed as markup.
+    out.textContent = generateMcpConfig(($('target') as unknown as HTMLSelectElement).value as McpTarget, servers);
+    list.querySelectorAll('.rm').forEach((b) =>
+      b.addEventListener('click', () => { servers.splice(Number((b as HTMLElement).dataset.i), 1); render(); }));
+  }
+
+  ($('add-form') as unknown as HTMLFormElement).addEventListener('submit', (e) => {
+    e.preventDefault();
+    const name = $('name').value.trim();
+    if (!name) return;
+    const url = $('url').value.trim();
+    const cmdStr = $('cmd').value.trim();
+    const parts = cmdStr.split(/\s+/).filter(Boolean);
+    servers.push(url ? { name, url } : { name, command: parts[0], args: parts.slice(1) });
+    $('name').value = ''; $('cmd').value = ''; $('url').value = '';
+    render();
+  });
+  $('target').addEventListener('change', render);
+  render();
+</script>
