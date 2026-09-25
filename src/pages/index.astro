@@ -11,7 +11,7 @@ const tools = [
 <BaseLayout title="AgentToolbox — Free AI Agent Tools" description="Free online tools for AI agent developers: API cost calculators, token estimators, prompt generators, and MCP config builders.">
   <h1>Free Tools for AI Agent Builders</h1>
   <p>Everything you need to plan, build, and cost out your next AI agent — no signup, runs entirely in your browser.</p>
-  <div style="display:grid;gap:1rem;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));margin-top:1.5rem;">
+  <div class="tool-grid">
     {tools.map((t) => (
       <a class="tool-card" href={t.href}><h2>{t.name}</h2><p>{t.desc}</p></a>
     ))}
