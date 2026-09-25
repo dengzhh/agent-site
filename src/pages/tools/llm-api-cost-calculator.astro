@@ -1,7 +1,30 @@
 ---
 import BaseLayout from '../../layouts/BaseLayout.astro';
+import { monthlyCost, type ModelPricing } from '../../lib/cost';
 import data from '../../data/models.json';
-const models = data.providers.flatMap((p) => p.models.map((m) => ({ ...m, provider: p.name })));
+
+type ToolModel = ModelPricing & { provider: string; unverified: boolean };
+
+const all: ToolModel[] = data.providers.flatMap((p) => {
+  const unverified = (p as { verify?: boolean }).verify === true;
+  return p.models.map((m) => ({ ...m, provider: p.name, unverified }));
+});
+
+// Opus 5.5 first and default-selected, so the page loads on the $80 acceptance baseline.
+const DEFAULT_MODEL_ID = 'claude-opus-5-5';
+const ordered: ToolModel[] = [
+  ...all.filter((m) => m.id === DEFAULT_MODEL_ID),
+  ...all.filter((m) => m.id !== DEFAULT_MODEL_ID),
+];
+const defaultModel = ordered[0];
+
+// Default usage (10k in / 2k out / 1000 req / 0% cache) is rendered server-side
+// so crawlers see real price content; the island script overwrites it on submit.
+const defaultUsage = { inputTokens: 10_000, outputTokens: 2_000, requestsPerMonth: 1000, cacheReadPct: 0 };
+const defaultCost = monthlyCost(defaultModel, defaultUsage);
+const defaultRows = ordered
+  .map((m) => ({ m, c: monthlyCost(m, defaultUsage) }))
+  .sort((a, b) => a.c - b.c);
 ---
 <BaseLayout
   title="LLM API Cost Calculator — Claude vs GPT vs Gemini Pricing"
@@ -9,45 +32,79 @@ const models = data.providers.flatMap((p) => p.models.map((m) => ({ ...m, provid
 >
   <h1>LLM API Cost Calculator</h1>
   <p>Estimate your monthly spend per model, then compare all models side by side. Pricing as of {data.asOf}.</p>
+  <p class="caveat">{data.note}</p>
 
-  <div class="field-row">
-    <div><label for="model">Model</label>
-      <select id="model">{models.map((m) => <option value={m.id}>{m.provider} · {m.label}</option>)}</select>
+  <form id="calc-form">
+    <div class="field-row">
+      <div><label for="model">Model</label>
+        <select id="model">{ordered.map((m) => <option value={m.id} selected={m.id === defaultModel.id}>{m.provider} · {m.label}{m.unverified ? ' (unverified)' : ''}</option>)}</select>
+      </div>
+      <div><label for="reqs">Requests / month</label><input id="reqs" type="number" value="1000" min="0" /></div>
     </div>
-    <div><label for="reqs">Requests / month</label><input id="reqs" type="number" value="1000" min="0" /></div>
-  </div>
-  <div class="field-row">
-    <div><label for="in">Input tokens / request</label><input id="in" type="number" value="10000" min="0" /></div>
-    <div><label for="out">Output tokens / request</label><input id="out" type="number" value="2000" min="0" /></div>
-  </div>
-  <div><label for="cache">Cache read % of input (0–100)</label><input id="cache" type="number" value="0" min="0" max="100" /></div>
-  <button id="calc">Calculate</button>
+    <div class="field-row">
+      <div><label for="in">Input tokens / request</label><input id="in" type="number" value="10000" min="0" /></div>
+      <div><label for="out">Output tokens / request</label><input id="out" type="number" value="2000" min="0" /></div>
+    </div>
+    <div><label for="cache">Cache read % of input (0–100)</label><input id="cache" type="number" value="0" min="0" max="100" /></div>
+    <button id="calc" type="submit">Calculate</button>
+  </form>
 
-  <div class="result" id="single" hidden></div>
-  <h2 style="margin-top:2rem">All models comparison</h2>
-  <div class="result" id="table"></div>
+  <div class="result" id="single" aria-live="polite">
+    <strong>{defaultModel.provider} {defaultModel.label}</strong>: <code>${defaultCost.toFixed(2)}</code>/month
+  </div>
+  <h2>All models comparison</h2>
+  <div class="result" id="table" aria-live="polite">
+    <table>
+      <thead><tr><th scope="col">Provider</th><th scope="col">Model</th><th scope="col">Monthly cost</th></tr></thead>
+      <tbody>
+        {defaultRows.map(({ m, c }) => (
+          <tr>
+            <td>{m.provider}</td>
+            <td>{m.label}{m.unverified ? ' (unverified)' : ''}</td>
+            <td>${c.toFixed(2)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </div>
 </BaseLayout>
 
 <style>
   .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
   @media (max-width: 600px) { .field-row { grid-template-columns: 1fr; } }
+  .caveat { color: var(--muted); font-size: .85rem; }
+  h2 { margin-top: 2rem; }
 </style>
 
 <script>
   import { monthlyCost, type ModelPricing } from '../../lib/cost';
   import data from '../../data/models.json';
 
-  const models: (ModelPricing & { provider: string })[] = data.providers.flatMap((p) =>
-    p.models.map((m) => ({ ...m, provider: p.name })),
-  );
+  type ToolModel = ModelPricing & { provider: string; unverified: boolean };
+
+  const DEFAULT_MODEL_ID = 'claude-opus-5-5';
+  const all: ToolModel[] = data.providers.flatMap((p) => {
+    const unverified = (p as { verify?: boolean }).verify === true;
+    return p.models.map((m) => ({ ...m, provider: p.name, unverified }));
+  });
+  const models: ToolModel[] = [
+    ...all.filter((m) => m.id === DEFAULT_MODEL_ID),
+    ...all.filter((m) => m.id !== DEFAULT_MODEL_ID),
+  ];
+
   const $ = (id: string) => document.getElementById(id)!;
+
+  // Clamp to >= 0: mixed negative inputs would otherwise produce nonsense costs.
+  function num(id: string): number {
+    return Math.max(0, Number(($(id) as HTMLInputElement).value) || 0);
+  }
 
   function inputs() {
     return {
-      inputTokens: Number(($('in') as HTMLInputElement).value) || 0,
-      outputTokens: Number(($('out') as HTMLInputElement).value) || 0,
-      requestsPerMonth: Number(($('reqs') as HTMLInputElement).value) || 0,
-      cacheReadPct: (Number(($('cache') as HTMLInputElement).value) || 0) / 100,
+      inputTokens: num('in'),
+      outputTokens: num('out'),
+      requestsPerMonth: num('reqs'),
+      cacheReadPct: num('cache') / 100,
     };
   }
 
@@ -55,18 +112,25 @@ const models = data.providers.flatMap((p) => p.models.map((m) => ({ ...m, provid
     const i = inputs();
     const id = ($('model') as HTMLSelectElement).value;
     const m = models.find((x) => x.id === id)!;
+    const mark = m.unverified ? ' (unverified)' : '';
     const cost = monthlyCost(m, i);
-    ($('single') as HTMLElement).hidden = false;
-    $('single').innerHTML = `<strong>${m.provider} ${m.label}</strong>: <code>$${cost.toFixed(2)}</code>/month`;
+    $('single').innerHTML = `<strong>${m.provider} ${m.label}${mark}</strong>: <code>$${cost.toFixed(2)}</code>/month`;
 
     const rows = models
       .map((x) => ({ x, c: monthlyCost(x, i) }))
       .sort((a, b) => a.c - b.c)
-      .map(({ x, c }) => `<tr><td>${x.provider}</td><td>${x.label}</td><td>$${c.toFixed(2)}</td></tr>`)
+      .map(({ x, c }) => {
+        const xm = x.unverified ? ' (unverified)' : '';
+        return `<tr><td>${x.provider}</td><td>${x.label}${xm}</td><td>$${c.toFixed(2)}</td></tr>`;
+      })
       .join('');
-    $('table').innerHTML = `<table><thead><tr><th>Provider</th><th>Model</th><th>Monthly cost</th></tr></thead><tbody>${rows}</tbody></table>`;
+    $('table').innerHTML = `<table><thead><tr><th scope="col">Provider</th><th scope="col">Model</th><th scope="col">Monthly cost</th></tr></thead><tbody>${rows}</tbody></table>`;
   }
 
-  $('calc').addEventListener('click', render);
+  ($('calc-form') as HTMLFormElement).addEventListener('submit', (e) => {
+    e.preventDefault();
+    render();
+  });
+  $('model').addEventListener('change', render);
   render();
 </script>
