@@ -1,0 +1,37 @@
+{
+  "asOf": "2026-09-25",
+  "note": "Prices per 1M tokens, USD. Verify non-Anthropic prices before relying on them.",
+  "providers": [
+    {
+      "id": "anthropic",
+      "name": "Anthropic",
+      "models": [
+        { "id": "claude-fable-5-1", "label": "Claude Fable 5.1", "contextWindow": 1000000, "inputPerMTok": 10.0, "outputPerMTok": 50.0, "cacheReadPerMTok": 0.25 },
+        { "id": "claude-opus-5-5", "label": "Claude Opus 5.5", "contextWindow": 1000000, "inputPerMTok": 4.0, "outputPerMTok": 20.0, "cacheReadPerMTok": 0.20 },
+        { "id": "claude-opus-5", "label": "Claude Opus 5", "contextWindow": 1000000, "inputPerMTok": 5.0, "outputPerMTok": 25.0, "cacheReadPerMTok": 0.50 },
+        { "id": "claude-sonnet-5", "label": "Claude Sonnet 5", "contextWindow": 1000000, "inputPerMTok": 2.0, "outputPerMTok": 10.0, "cacheReadPerMTok": 0.20 },
+        { "id": "claude-haiku-4-5", "label": "Claude Haiku 4.5", "contextWindow": 200000, "inputPerMTok": 1.0, "outputPerMTok": 5.0, "cacheReadPerMTok": 0.10 },
+        { "id": "claude-opus-4-8", "label": "Claude Opus 4.8", "contextWindow": 1000000, "inputPerMTok": 5.0, "outputPerMTok": 25.0, "cacheReadPerMTok": 0.50 }
+      ]
+    },
+    {
+      "id": "openai",
+      "name": "OpenAI",
+      "verify": true,
+      "models": [
+        { "id": "gpt-5", "label": "GPT-5", "contextWindow": 400000, "inputPerMTok": 1.25, "outputPerMTok": 10.0, "cacheReadPerMTok": 0.125 },
+        { "id": "gpt-5-mini", "label": "GPT-5 mini", "contextWindow": 400000, "inputPerMTok": 0.25, "outputPerMTok": 2.0, "cacheReadPerMTok": 0.025 },
+        { "id": "gpt-5-nano", "label": "GPT-5 nano", "contextWindow": 400000, "inputPerMTok": 0.05, "outputPerMTok": 0.40, "cacheReadPerMTok": 0.005 }
+      ]
+    },
+    {
+      "id": "google",
+      "name": "Google",
+      "verify": true,
+      "models": [
+        { "id": "gemini-3-pro", "label": "Gemini 3 Pro", "contextWindow": 1000000, "inputPerMTok": 2.0, "outputPerMTok": 12.0, "cacheReadPerMTok": 0.20 },
+        { "id": "gemini-3-flash", "label": "Gemini 3 Flash", "contextWindow": 1000000, "inputPerMTok": 0.50, "outputPerMTok": 3.0, "cacheReadPerMTok": 0.05 }
+      ]
+    }
+  ]
+}
