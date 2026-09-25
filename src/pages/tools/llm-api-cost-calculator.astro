@@ -32,7 +32,7 @@ const defaultRows = ordered
 >
   <h1>LLM API Cost Calculator</h1>
   <p>Estimate your monthly spend per model, then compare all models side by side. Pricing as of {data.asOf}.</p>
-  <p class="caveat">{data.note}</p>
+  <p class="muted-note">{data.note}</p>
 
   <form id="calc-form">
     <div class="field-row">
@@ -72,7 +72,6 @@ const defaultRows = ordered
 <style>
   .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
   @media (max-width: 600px) { .field-row { grid-template-columns: 1fr; } }
-  .caveat { color: var(--muted); font-size: .85rem; }
   h2 { margin-top: 2rem; }
 </style>
 

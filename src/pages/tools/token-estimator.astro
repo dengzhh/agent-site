@@ -16,6 +16,23 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
   import { estimateTokens } from '../../lib/tokens';
   const ta = document.getElementById('text') as HTMLTextAreaElement;
   const out = document.getElementById('out') as HTMLElement;
+
+  // Whitespace splitting reports 1 word for a whole CJK paragraph (no spaces).
+  // Intl.Segmenter breaks on word boundaries regardless of script.
+  let wordMatcher: ((s: string) => number) | null = null;
+  if ('Segmenter' in Intl) {
+    const seg = new Intl.Segmenter('en', { granularity: 'word' });
+    wordMatcher = (s: string) =>
+      Array.from(seg.segment(s)).filter((x) => x.isWordLike).length;
+  }
+
+  function wordCount(text: string): number {
+    const trimmed = text.trim();
+    if (!trimmed) return 0;
+    if (wordMatcher) return wordMatcher(trimmed);
+    return trimmed.split(/\s+/).length;
+  }
+
   function render() {
     const text = ta.value;
     if (!text.trim()) { out.hidden = true; return; }
@@ -23,7 +40,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     const rows = (['claude', 'gpt', 'gemini'] as const).map((f) =>
       `<tr><td>${f.toUpperCase()}</td><td>${estimateTokens(text, f).toLocaleString()}</td></tr>`).join('');
     out.innerHTML = `<table><thead><tr><th scope="col">Family</th><th scope="col">≈ Tokens</th></tr></thead><tbody>${rows}</tbody></table>
-      <p style="color:var(--muted);font-size:.85rem">Characters: ${text.length.toLocaleString()} · Words: ${text.trim().split(/\s+/).length.toLocaleString()}</p>`;
+      <p class="muted-note">Characters: ${text.length.toLocaleString()} · Words: ${wordCount(text).toLocaleString()}</p>`;
   }
   ta.addEventListener('input', render);
 </script>

@@ -33,3 +33,4 @@ table { border-collapse: collapse; width: 100%; font-size: .9rem; }
 th, td { border: 1px solid var(--border); padding: .5rem .65rem; text-align: left; }
 th { background: var(--card); }
 .result { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin-top: 1rem; }
+.muted-note { color: var(--muted); font-size: .85rem; }
