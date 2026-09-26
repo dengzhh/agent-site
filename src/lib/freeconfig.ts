@@ -60,6 +60,7 @@ export function generateConfig(
           2,
         ),
         '# Save as ~/.claude/settings.json (merge the env block into existing settings)',
+        '# Docs: https://code.claude.com/docs/en/model-config',
       ].join('\n');
     }
     if (provider.api == null) {
@@ -91,6 +92,8 @@ export function generateConfig(
       '#',
       '# Alternatively pick a provider with a native Anthropic-compatible',
       '# endpoint (marked "direct"), e.g. Z.ai GLM.',
+      '#',
+      '# Docs: https://code.claude.com/docs/en/model-config',
     ].join('\n');
   }
 

@@ -1,7 +1,9 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
+import freeIdx from '../data/free-models.json';
 const BASE_URL = import.meta.env.BASE_URL.replace(/\/?$/, '/');
 const tools = [
+  { href: BASE_URL + 'free-models/', name: 'Free model directory', desc: `Every $0-per-token model across ${freeIdx.providers.length} providers, synced daily — with one-click config for Claude Code and Codex.`, tag: 'Free' },
   { href: BASE_URL + 'tools/token-estimator/', name: 'Token estimator', desc: 'Size a prompt before you send it. Live counts for Claude, GPT, and Gemini tokenizers, CJK included.', tag: 'Measure' },
   { href: BASE_URL + 'tools/system-prompt-generator/', name: 'System prompt builder', desc: 'Turn a role, a task, and a few rules into a clean, structured system prompt. Copy it in one click.', tag: 'Author' },
   { href: BASE_URL + 'tools/mcp-config-generator/', name: 'MCP config writer', desc: 'Add servers once, export valid JSON for Claude Code, Cursor, and VS Code — shapes handled for you.', tag: 'Wire' },

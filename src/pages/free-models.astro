@@ -42,7 +42,7 @@ const fmtCtx = (n: number) =>
           <thead><tr>
             <th scope="col">Model</th><th scope="col" class="num">Context</th>
             <th scope="col" class="num">Max out</th><th scope="col">Capabilities</th>
-            <th scope="col">Config</th>
+            <th scope="col">Updated</th><th scope="col">Config</th>
           </tr></thead>
           <tbody>
             {p.models.map((m) => (
@@ -56,6 +56,7 @@ const fmtCtx = (n: number) =>
                 <td class="num">{fmtCtx(m.context)}</td>
                 <td class="num">{fmtCtx(m.maxOutput)}</td>
                 <td>{caps(m).length ? caps(m).join(' · ') : '—'}</td>
+                <td>{m.lastUpdated ? m.lastUpdated.slice(0, 7) : '—'}</td>
                 <td><a href="#configure" class="pick" data-provider={p.id} data-model={m.id}>Configure →</a></td>
               </tr>
             ))}
