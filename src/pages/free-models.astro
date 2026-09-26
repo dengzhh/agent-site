@@ -3,13 +3,14 @@ import BaseLayout from '../layouts/BaseLayout.astro';
 import data from '../data/free-models.json';
 import type { FreeModelsIndex } from '../lib/free-models';
 const idx = data as FreeModelsIndex;
-const BASE_URL = import.meta.env.BASE_URL.replace(/\/?$/, '/');
 
+// 展示词与 data-caps 筛选键不同：reason → reasoning、open-weights → open（见下方 tr 的 data-caps）
 const caps = (m: { toolCall: boolean; reasoning: boolean; attachment: boolean; openWeights: boolean }) =>
   [m.toolCall && 'tools', m.reasoning && 'reason', m.attachment && 'vision', m.openWeights && 'open-weights']
     .filter(Boolean) as string[];
 
-const fmtCtx = (n: number) => (n >= 1000 ? `${Math.round(n / 1024)}K` : String(n));
+const fmtCtx = (n: number) =>
+  n >= 1e6 ? `${(n / 1048576).toFixed(1).replace(/\.0$/, '')}M` : n >= 1000 ? `${Math.round(n / 1024)}K` : String(n);
 ---
 <BaseLayout
   title="Free LLM Models — Every Zero-Cost API Model in One Table"
@@ -23,13 +24,14 @@ const fmtCtx = (n: number) => (n >= 1000 ? `${Math.round(n / 1024)}K` : String(n
   </p>
 
   <nav class="cap-filter" aria-label="Filter by capability">
-    <button type="button" class="cap-chip is-active" data-cap="all">All {idx.totalFree}</button>
-    <button type="button" class="cap-chip" data-cap="tools">Tool calling</button>
-    <button type="button" class="cap-chip" data-cap="reasoning">Reasoning</button>
-    <button type="button" class="cap-chip" data-cap="vision">Vision</button>
-    <button type="button" class="cap-chip" data-cap="long">Long context ≥400K</button>
-    <button type="button" class="cap-chip" data-cap="open">Open weights</button>
+    <button type="button" class="cap-chip is-active" aria-pressed="true" data-cap="all">All {idx.totalFree}</button>
+    <button type="button" class="cap-chip" aria-pressed="false" data-cap="tools">Tool calling</button>
+    <button type="button" class="cap-chip" aria-pressed="false" data-cap="reasoning">Reasoning</button>
+    <button type="button" class="cap-chip" aria-pressed="false" data-cap="vision">Vision</button>
+    <button type="button" class="cap-chip" aria-pressed="false" data-cap="long">Long context ≥400K</button>
+    <button type="button" class="cap-chip" aria-pressed="false" data-cap="open">Open weights</button>
   </nav>
+  <p id="filter-status" class="muted-note" role="status" aria-live="polite"></p>
 
   {idx.providers.map((p) => (
     <section class="provider" data-provider={p.id}>
@@ -44,6 +46,7 @@ const fmtCtx = (n: number) => (n >= 1000 ? `${Math.round(n / 1024)}K` : String(n
           </tr></thead>
           <tbody>
             {p.models.map((m) => (
+              // data-caps 键与上面 caps() 的展示词不同：reasoning ↔ reason、open ↔ open-weights
               <tr data-caps={[
                     m.toolCall && 'tools', m.reasoning && 'reasoning',
                     m.attachment && 'vision', m.openWeights && 'open',
@@ -62,7 +65,7 @@ const fmtCtx = (n: number) => (n >= 1000 ? `${Math.round(n / 1024)}K` : String(n
     </section>
   ))}
 
-  <section id="configure" class="generator">
+  <section id="configure" class="generator" tabindex="-1">
     <h2>Generate your config</h2>
     <p>Pick a model in the table above, or choose here. Your API key is merged in your browser only — it never leaves this page.</p>
     <form id="gen-form">
@@ -132,8 +135,14 @@ const fmtCtx = (n: number) => (n >= 1000 ? `${Math.round(n / 1024)}K` : String(n
 
   function fillModels() {
     const p = idx.providers.find((x) => x.id === provSel.value)!;
-    modelSel.innerHTML = p.models
-      .map((m) => `<option value="${m.id}">${m.name}</option>`).join('');
+    // DOM 构建：模型 id/name 来自同步数据，不用 innerHTML 模板，杜绝注入面
+    modelSel.innerHTML = '';
+    p.models.forEach((m) => {
+      const o = document.createElement('option');
+      o.value = m.id;
+      o.textContent = m.name;
+      modelSel.append(o);
+    });
   }
 
   function flash(msg: string) {
@@ -180,17 +189,28 @@ const fmtCtx = (n: number) => (n >= 1000 ? `${Math.round(n / 1024)}K` : String(n
   // 能力筛选：chip 点击 → 按 tr 的 data-caps 显隐整行，全空的 provider 节隐藏
   document.querySelectorAll<HTMLButtonElement>('.cap-chip').forEach((chip) => {
     chip.addEventListener('click', () => {
-      document.querySelectorAll('.cap-chip').forEach((c) => c.classList.remove('is-active'));
+      document.querySelectorAll('.cap-chip').forEach((c) => {
+        c.classList.remove('is-active');
+        c.setAttribute('aria-pressed', 'false');
+      });
       chip.classList.add('is-active');
+      chip.setAttribute('aria-pressed', 'true');
       const cap = chip.dataset.cap!;
       document.querySelectorAll<HTMLTableRowElement>('tr[data-caps]').forEach((tr) => {
         const show = cap === 'all' || tr.dataset.caps.split(' ').includes(cap);
         tr.classList.toggle('is-hidden', !show);
       });
       document.querySelectorAll<HTMLElement>('.provider').forEach((sec) => {
-        const any = sec.querySelectorAll('tr:not(.is-hidden)').length > 0;
+        // 只看 tbody 的数据行，thead 的 tr 不参与计数
+        const any = sec.querySelectorAll('tbody tr:not(.is-hidden)').length > 0;
         sec.classList.toggle('is-hidden', !any);
       });
+      const status = $('filter-status');
+      if (status) {
+        status.textContent = cap === 'all'
+          ? `${document.querySelectorAll('tbody tr[data-caps]').length} models`
+          : `${document.querySelectorAll('tbody tr[data-caps]:not(.is-hidden)').length} models match`;
+      }
     });
   });
 
