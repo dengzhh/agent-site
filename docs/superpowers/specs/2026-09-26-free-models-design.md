@@ -92,7 +92,7 @@ GitHub Actions (cron 每日 UTC 03:23，避开整点)
 流程：选 provider → 选模型 → （可选）粘贴 API key → 选目标工具 → 生成 + 复制。
 
 - **目标工具首期 4 个**：
-  1. **Claude Code**：`~/.claude/settings.json` 的 `env` 块（`ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL`）——仅对 OpenAI 兼容 provider 有效；Anthropic 原生协议 provider（如 zai 的 anthropic 兼容端点）用对应字段
+  1. **Claude Code**：`~/.claude/settings.json` 的 `env` 块（`ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL`）——**仅对提供 Anthropic 协议兼容端点的 provider 生成直连配置**（如 zai）；OpenAI 协议的 provider（如 OpenRouter）不能直连，生成 claude-code-router 指引而非假配置
   2. **Codex CLI**：`~/.codex/config.toml` 片段（model_provider 定义 + env）
   3. **环境变量**：`export` 命令（shell 通用）
   4. **AI SDK**：该 provider 的 npm 包 + `createOpenRouter(...)` 示例代码（用数据里的 `npm` 字段）
