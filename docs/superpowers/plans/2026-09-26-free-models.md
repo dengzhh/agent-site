@@ -143,7 +143,7 @@ import { writeFileSync } from 'node:fs';
 
 export const PROVIDER_ALLOWLIST = [
   'openrouter', 'nvidia', 'groq', 'mistral', 'cerebras', 'zai',
-  'github-copilot', 'cloudflare-workers-ai', 'alibaba-token-plan',
+  'github-copilot', 'cloudflare-workers-ai', 'alibaba-token-plan', 'opencode',
   'deepinfra', 'together', 'fireworks',
 ];
 
@@ -151,6 +151,7 @@ export const PROVIDER_ALLOWLIST = [
 export const PROVIDER_OVERRIDES = {
   zai: { anthropicApi: 'https://api.z.ai/api/anthropic' },
   openrouter: { note: 'Free models are rate-limited: ~20 req/min with a $10 credit, 50 requests/day without.' },
+  opencode: { note: 'No account needed — the Zen endpoint serves free models without a key.' },
 };
 
 const trim = (m) => ({
@@ -621,8 +622,17 @@ const fmtCtx = (n: number) => (n >= 1000 ? `${Math.round(n / 1024)}K` : String(n
     "Free" means $0 input and $0 output — rate limits still apply per provider.
   </p>
 
+  <nav class="cap-filter" aria-label="Filter by capability">
+    <button type="button" class="cap-chip is-active" data-cap="all">All {idx.totalFree}</button>
+    <button type="button" class="cap-chip" data-cap="tools">Tool calling</button>
+    <button type="button" class="cap-chip" data-cap="reasoning">Reasoning</button>
+    <button type="button" class="cap-chip" data-cap="vision">Vision</button>
+    <button type="button" class="cap-chip" data-cap="long">Long context ≥400K</button>
+    <button type="button" class="cap-chip" data-cap="open">Open weights</button>
+  </nav>
+
   {idx.providers.map((p) => (
-    <section class="provider">
+    <section class="provider" data-provider={p.id}>
       <h2>{p.name} <span class="count">{p.models.length} free</span></h2>
       {p.note && <p class="muted-note">{p.note}</p>}
       <div class="tablewrap">
@@ -634,7 +644,11 @@ const fmtCtx = (n: number) => (n >= 1000 ? `${Math.round(n / 1024)}K` : String(n
           </tr></thead>
           <tbody>
             {p.models.map((m) => (
-              <tr>
+              <tr data-caps={[
+                    m.toolCall && 'tools', m.reasoning && 'reasoning',
+                    m.attachment && 'vision', m.openWeights && 'open',
+                    m.context >= 400000 && 'long',
+                  ].filter(Boolean).join(' ')}>
                 <td>{m.name}<br /><code>{m.id}</code></td>
                 <td class="num">{fmtCtx(m.context)}</td>
                 <td class="num">{fmtCtx(m.maxOutput)}</td>
@@ -693,6 +707,14 @@ const fmtCtx = (n: number) => (n >= 1000 ? `${Math.round(n / 1024)}K` : String(n
   .generator { border-top: 1px solid var(--line); padding-top: 1rem; margin-top: 3rem; }
   .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
   @media (max-width: 600px) { .field-row { grid-template-columns: 1fr; } }
+  .cap-filter { display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 1.25rem 0 0.5rem; }
+  .cap-chip {
+    background: var(--surface); color: var(--ink-soft);
+    border: 1px solid var(--line-strong); border-radius: 999px;
+    padding: 0.3rem 0.85rem; font-size: 0.85rem; font-weight: 500;
+  }
+  .cap-chip.is-active { background: var(--cobalt); color: #fff; border-color: var(--cobalt); }
+  .provider.is-hidden, tr.is-hidden { display: none; }
 </style>
 
 <script>
@@ -752,6 +774,23 @@ const fmtCtx = (n: number) => (n >= 1000 ? `${Math.round(n / 1024)}K` : String(n
       fillModels();
       modelSel.value = a.dataset.model!;
       render();
+    });
+  });
+
+  // 能力筛选：chip 点击 → 按 tr 的 data-caps 显隐整行，全空的 provider 节隐藏
+  document.querySelectorAll<HTMLButtonElement>('.cap-chip').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      document.querySelectorAll('.cap-chip').forEach((c) => c.classList.remove('is-active'));
+      chip.classList.add('is-active');
+      const cap = chip.dataset.cap!;
+      document.querySelectorAll<HTMLTableRowElement>('tr[data-caps]').forEach((tr) => {
+        const show = cap === 'all' || tr.dataset.caps.split(' ').includes(cap);
+        tr.classList.toggle('is-hidden', !show);
+      });
+      document.querySelectorAll<HTMLElement>('.provider').forEach((sec) => {
+        const any = sec.querySelectorAll('tr:not(.is-hidden)').length > 0;
+        sec.classList.toggle('is-hidden', !any);
+      });
     });
   });
 
