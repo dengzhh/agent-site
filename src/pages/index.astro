@@ -2,19 +2,232 @@
 import BaseLayout from '../layouts/BaseLayout.astro';
 const BASE_URL = import.meta.env.BASE_URL.replace(/\/?$/, '/');
 const tools = [
-  { href: BASE_URL + 'tools/llm-api-cost-calculator/', name: 'LLM API Cost Calculator', desc: 'Compare monthly API costs across Claude, GPT, and Gemini models.' },
-  { href: BASE_URL + 'tools/token-estimator/', name: 'Token Estimator', desc: 'Estimate how many tokens your prompt uses per model family.' },
-  { href: BASE_URL + 'tools/system-prompt-generator/', name: 'System Prompt Generator', desc: 'Build a structured system prompt for your AI agent.' },
-  { href: BASE_URL + 'tools/mcp-config-generator/', name: 'MCP Config Generator', desc: 'Generate MCP server configs for Claude Code, Cursor, and VS Code.' },
-  { href: BASE_URL + 'compare/agent-frameworks/', name: 'Agent Framework Comparison', desc: 'LangGraph vs CrewAI vs OpenAI Agents SDK vs Claude Agent SDK.' },
+  { href: BASE_URL + 'tools/token-estimator/', name: 'Token estimator', desc: 'Size a prompt before you send it. Live counts for Claude, GPT, and Gemini tokenizers, CJK included.', tag: 'Measure' },
+  { href: BASE_URL + 'tools/system-prompt-generator/', name: 'System prompt builder', desc: 'Turn a role, a task, and a few rules into a clean, structured system prompt. Copy it in one click.', tag: 'Author' },
+  { href: BASE_URL + 'tools/mcp-config-generator/', name: 'MCP config writer', desc: 'Add servers once, export valid JSON for Claude Code, Cursor, and VS Code — shapes handled for you.', tag: 'Wire' },
+  { href: BASE_URL + 'compare/agent-frameworks/', name: 'Framework field guide', desc: 'LangGraph, CrewAI, OpenAI Agents SDK, Claude Agent SDK, AutoGen — what each is actually good at.', tag: 'Compare' },
+];
+const mini = [
+  { m: 'Claude Opus 5.5', c: '$80' },
+  { m: 'Claude Sonnet 5', c: '$40' },
+  { m: 'GPT-5', c: '$33' },
+  { m: 'Gemini 3 Flash', c: '$11' },
 ];
 ---
-<BaseLayout title="AgentToolbox — Free AI Agent Tools" description="Free online tools for AI agent developers: API cost calculators, token estimators, prompt generators, and MCP config builders.">
-  <h1>Free Tools for AI Agent Builders</h1>
-  <p>Everything you need to plan, build, and cost out your next AI agent — no signup, runs entirely in your browser.</p>
-  <div class="tool-grid">
-    {tools.map((t) => (
-      <a class="tool-card" href={t.href}><h2>{t.name}</h2><p>{t.desc}</p></a>
-    ))}
-  </div>
+<BaseLayout title="AgentToolbox — Free Tools for AI Agent Builders" description="Free online tools for AI agent developers: API cost calculators, token estimators, prompt generators, and MCP config builders.">
+  <section class="hero">
+    <div class="hero-copy">
+      <h1>Ship agents with<br />a full toolbox.</h1>
+      <p class="hero-sub">Cost the models, size the prompts, wire the servers, pick the framework. Free tools for people building AI agents — everything runs in your browser, nothing gets sent anywhere.</p>
+      <div class="hero-cta">
+        <a class="button button--primary" href={BASE_URL + 'tools/llm-api-cost-calculator/'}>Run the cost calculator</a>
+        <a class="button button--ghost" href="#tools">Browse all tools</a>
+      </div>
+    </div>
+    <figure class="hero-figure" aria-hidden="true">
+      <svg viewBox="0 0 340 300" class="orchestra">
+        <!-- connectors -->
+        <path class="wire" d="M170 58 C120 100 70 106 60 158" />
+        <path class="wire" d="M170 58 C220 100 270 106 280 158" />
+        <path class="wire" d="M60 202 C60 232 110 236 140 246" />
+        <path class="wire" d="M280 202 C280 232 230 236 200 246" />
+        <!-- workers -->
+        <g class="node node--w1">
+          <rect x="34" y="158" width="52" height="44" rx="9" />
+          <circle cx="50" cy="174" r="3.5" class="dot" />
+          <rect x="58" y="171.5" width="20" height="5" rx="2.5" class="dash" />
+          <circle cx="50" cy="188" r="3.5" class="dot" />
+          <rect x="58" y="185.5" width="14" height="5" rx="2.5" class="dash" />
+        </g>
+        <g class="node node--w2">
+          <rect x="254" y="158" width="52" height="44" rx="9" />
+          <circle cx="270" cy="174" r="3.5" class="dot" />
+          <rect x="278" y="171.5" width="20" height="5" rx="2.5" class="dash" />
+          <circle cx="270" cy="188" r="3.5" class="dot" />
+          <rect x="278" y="185.5" width="14" height="5" rx="2.5" class="dash" />
+        </g>
+        <!-- memory cylinder -->
+        <g class="node node--mem">
+          <ellipse cx="170" cy="252" rx="34" ry="10" />
+          <path d="M136 252 v22 a34 10 0 0 0 68 0 v-22" />
+          <ellipse cx="170" cy="274" rx="34" ry="10" class="mem-lip" />
+        </g>
+        <!-- hub: label left, pulsing dot right -->
+        <g class="node node--hub">
+          <rect x="124" y="14" width="92" height="44" rx="9" />
+          <circle cx="196" cy="36" r="7" class="hub-dot" />
+          <text x="157" y="41" text-anchor="middle" class="hub-label">agent</text>
+        </g>
+        <text x="60" y="286" text-anchor="middle" class="svg-label">worker</text>
+        <text x="280" y="286" text-anchor="middle" class="svg-label">worker</text>
+        <text x="170" y="241" text-anchor="middle" class="svg-label">memory</text>
+      </svg>
+    </figure>
+  </section>
+
+  <section id="tools" class="toolbelt">
+    <a class="flagship" href={BASE_URL + 'tools/llm-api-cost-calculator/'}>
+      <div class="flagship-copy">
+        <span class="tag">Plan</span>
+        <h2>LLM API cost calculator</h2>
+        <p>What does this agent cost per month? Compare Claude, GPT, and Gemini pricing side by side, caching discounts included.</p>
+        <span class="flagship-cta">Open the calculator</span>
+      </div>
+      <div class="flagship-demo" aria-hidden="true">
+        <div class="mini-head">10k in / 2k out × 1,000 requests</div>
+        {mini.map((row) => (
+          <div class="mini-row">
+            <span>{row.m}</span>
+            <span class="mini-cost">{row.c}</span>
+          </div>
+        ))}
+        <div class="mini-foot">per month</div>
+      </div>
+    </a>
+
+    <div class="tool-grid">
+      {tools.map((t) => (
+        <a class="tool-card" href={t.href}>
+          <span class="tag">{t.tag}</span>
+          <h3>{t.name}</h3>
+          <p>{t.desc}</p>
+        </a>
+      ))}
+    </div>
+  </section>
 </BaseLayout>
+
+<style>
+  /* ---------- hero ---------- */
+  .hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+    gap: 2rem;
+    align-items: center;
+    padding: 3rem 0 2.5rem;
+  }
+  .hero-sub { font-size: 1.06rem; color: var(--ink-soft); max-width: 34em; }
+  .hero-cta { display: flex; gap: 0.75rem; flex-wrap: wrap; margin-top: 0.5rem; }
+  @media (max-width: 760px) {
+    .hero { grid-template-columns: 1fr; padding-top: 1.5rem; }
+    .hero-figure { max-width: 340px; margin: 0 auto; }
+  }
+
+  /* ---------- orchestration figure ---------- */
+  .hero-figure { margin: 0; }
+  .orchestra { width: 100%; height: auto; }
+
+  .orchestra .wire {
+    stroke: var(--line-strong);
+    stroke-width: 2.5;
+    fill: none;
+    stroke-linecap: round;
+    stroke-dasharray: 300;
+    stroke-dashoffset: 300;
+    animation: draw 0.9s ease-out forwards;
+  }
+  .orchestra .wire:nth-of-type(2) { animation-delay: 0.15s; }
+  .orchestra .wire:nth-of-type(3) { animation-delay: 0.15s; }
+  .orchestra .wire:nth-of-type(4) { animation-delay: 0.45s; }
+  .orchestra .wire:nth-of-type(5) { animation-delay: 0.45s; }
+  @keyframes draw { to { stroke-dashoffset: 0; } }
+
+  .orchestra .node { opacity: 0; animation: pop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) forwards; }
+  .orchestra .node--hub { animation-delay: 0.05s; }
+  .orchestra .node--w1, .orchestra .node--w2 { animation-delay: 0.55s; }
+  .orchestra .node--mem { animation-delay: 0.85s; }
+  @keyframes pop { from { opacity: 0; transform: scale(0.7); } to { opacity: 1; transform: scale(1); } }
+  .orchestra .node { transform-origin: 170px 150px; transform-box: view-box; }
+
+  .orchestra .node rect, .orchestra .node path {
+    fill: var(--surface);
+    stroke: var(--line-strong);
+    stroke-width: 2;
+  }
+  .orchestra .node ellipse { fill: var(--surface); stroke: var(--line-strong); stroke-width: 2; }
+  .orchestra .node--hub rect { fill: #0f1830; stroke: none; }
+  .orchestra .hub-dot { fill: #f5a524; }
+  .orchestra .hub-label {
+    font-family: var(--font-display);
+    font-size: 15px;
+    font-weight: 700;
+    fill: #ffffff;
+  }
+  .orchestra .dot { fill: var(--cobalt); }
+  .orchestra .dash { fill: var(--line-strong); }
+  .orchestra .mem-lip { fill: var(--cobalt-wash); }
+  .orchestra .svg-label {
+    font-family: var(--font-body);
+    font-size: 12px;
+    fill: var(--ink-soft);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .orchestra .wire { animation: none; stroke-dashoffset: 0; }
+    .orchestra .node { animation: none; opacity: 1; }
+  }
+
+  /* ---------- toolbelt ---------- */
+  .toolbelt { padding-bottom: 1rem; }
+
+  .tag {
+    display: inline-block;
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--cobalt);
+    background: var(--cobalt-wash);
+    border-radius: 5px;
+    padding: 0.18rem 0.5rem;
+    margin-bottom: 0.65rem;
+  }
+
+  /* flagship card */
+  .flagship {
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+    gap: 1.5rem;
+    align-items: center;
+    background: #0f1830;
+    border-radius: var(--radius);
+    padding: 1.6rem 1.75rem;
+    text-decoration: none !important;
+    color: #fff;
+    margin-bottom: 1.25rem;
+  }
+  .flagship:hover .flagship-cta { text-decoration: underline; }
+  .flagship-copy h2 { color: #fff; margin: 0 0 0.5rem; }
+  .flagship-copy p { color: rgba(231, 235, 244, 0.75); margin-bottom: 0.9rem; }
+  .flagship .tag { background: rgba(141, 162, 255, 0.16); color: #a9baff; }
+  .flagship-cta { color: #f5a524; font-weight: 600; }
+
+  .flagship-demo {
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 10px;
+    padding: 0.9rem 1rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .mini-head { font-size: 0.74rem; color: rgba(231, 235, 244, 0.55); margin-bottom: 0.6rem; }
+  .mini-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.88rem;
+    color: #e7ebf4;
+    padding: 0.32rem 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  .mini-row:last-of-type { border-bottom: none; }
+  .mini-cost { color: #f5a524; font-weight: 600; }
+  .mini-foot { font-size: 0.74rem; color: rgba(231, 235, 244, 0.55); text-align: right; margin-top: 0.4rem; }
+  @media (max-width: 700px) { .flagship { grid-template-columns: 1fr; } }
+
+  /* secondary grid */
+  .tool-grid {
+    display: grid;
+    gap: 1.25rem;
+    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  }
+  .tool-card h3 { margin-top: 0; }
+  .tool-card p { margin: 0; color: var(--ink-soft); font-size: 0.94rem; }
+</style>

@@ -1,36 +1,330 @@
+/* ============================================================
+   AgentToolbox — paper & ink engineering-document design system
+   Cool drafting paper, navy ink, cobalt circuits, amber signals.
+   ============================================================ */
+
 :root {
   color-scheme: light;
-  --bg: #ffffff; --fg: #1a1a2e; --muted: #6b7280;
-  --card: #f6f7f9; --accent: #4f46e5; --border: #e5e7eb;
+  --paper: #f5f7fa;
+  --surface: #ffffff;
+  --ink: #101828;
+  --ink-soft: #47546a;
+  --line: #dfe5ee;
+  --line-strong: #c4cddc;
+  --cobalt: #2a4ce0;
+  --cobalt-ink: #1e3ab8;
+  --cobalt-wash: #edf1fe;
+  --amber: #e8930c;
+  --amber-wash: #fdf3e1;
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.05), 0 8px 24px rgba(16, 24, 40, 0.06);
+  --radius: 14px;
+  --font-display: 'Bricolage Grotesque', system-ui, sans-serif;
+  --font-body: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --paper: #0c1222;
+    --surface: #121b31;
+    --ink: #e7ebf4;
+    --ink-soft: #98a3bb;
+    --line: #22304f;
+    --line-strong: #33436c;
+    --cobalt: #8da2ff;
+    --cobalt-ink: #a9baff;
+    --cobalt-wash: #18264c;
+    --amber: #ffb65c;
+    --amber-wash: #33280f;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.35);
+  }
+}
+
+* { box-sizing: border-box; }
+
+@media (prefers-color-scheme: dark) {
+  html { scrollbar-color: var(--line-strong) var(--paper); }
+}
+
+html { scroll-behavior: smooth; }
+
+body {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.65;
+  background: var(--paper);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, h4 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+
+h1 { font-size: clamp(1.85rem, 1.3rem + 2.2vw, 2.9rem); margin: 0 0 0.75rem; }
+h2 { font-size: clamp(1.35rem, 1.1rem + 1.1vw, 1.8rem); margin: 2.5rem 0 0.75rem; }
+h3 { font-size: 1.1rem; margin: 0 0 0.4rem; }
+
+p { margin: 0 0 1rem; }
+a { color: var(--cobalt); }
+
+.container { max-width: 980px; margin: 0 auto; padding: 2rem 1.5rem 3.5rem; }
+
+/* ---------- header ---------- */
+
+.site-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 0.8rem 1.5rem;
+  background: var(--paper);
+  border-bottom: 1px solid var(--line);
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  text-decoration: none;
+}
+
+.brand-mark { display: block; }
+
+.mark-tile { fill: #0f1830; }
+.mark-edges { stroke: rgba(255, 255, 255, 0.85); stroke-width: 2.5; fill: none; stroke-linecap: round; }
+.mark-node { fill: #8da2ff; }
+.mark-node--hub { fill: #f5a524; }
+
+.brand-name {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.2rem;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+
+.brand-name em { font-style: normal; color: var(--cobalt); }
+
+.site-header nav { display: flex; gap: 1.25rem; flex-wrap: wrap; }
+
+.site-header nav a {
+  font-size: 0.92rem;
+  font-weight: 500;
+  color: var(--ink-soft);
+  text-decoration: none;
+  padding: 0.25rem 0;
+  border-bottom: 2px solid transparent;
+}
+
+.site-header nav a:hover { color: var(--cobalt); }
+
+.site-header nav a[aria-current='page'] {
+  color: var(--cobalt);
+  font-weight: 600;
+  border-bottom-color: var(--cobalt);
+}
+
+.site-header nav a:focus-visible {
+  outline: 2px solid var(--cobalt);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+
+/* ---------- footer ---------- */
+
+.site-footer {
+  border-top: 1px solid var(--line);
+  padding: 1.4rem 1.5rem 2rem;
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+}
+
+.site-footer a { color: var(--ink-soft); }
+.site-footer a:hover { color: var(--cobalt); }
+.site-footer p { margin: 0; }
+
+/* ---------- content links ---------- */
+
+main a { color: var(--cobalt); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--cobalt) 35%, transparent); text-underline-offset: 3px; }
+main a:hover { text-decoration-color: var(--cobalt); }
+
+/* ---------- buttons ---------- */
+
+.button {
+  display: inline-block;
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+  font-weight: 600;
+  padding: 0.65rem 1.3rem;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  text-decoration: none !important;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.button--primary { background: var(--cobalt); color: #fff; }
+.button--primary:hover { background: var(--cobalt-ink); }
+
+.button--ghost {
+  background: transparent;
+  color: var(--ink);
+  border-color: var(--line-strong);
+}
+.button--ghost:hover { border-color: var(--cobalt); color: var(--cobalt); }
+
+button {
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+  font-weight: 600;
+  padding: 0.6rem 1.25rem;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  background: var(--cobalt);
+  color: #fff;
+  transition: background-color 0.15s ease;
+}
+
+button:hover { background: var(--cobalt-ink); }
+
+@media (prefers-color-scheme: dark) {
+  button, .button--primary { color: #0c1222; }
+}
+
+button:focus-visible, .button:focus-visible,
+input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--cobalt);
+  outline-offset: 2px;
+}
+
+/* ---------- forms ---------- */
+
+label {
+  display: block;
+  font-size: 0.88rem;
+  font-weight: 500;
+  margin-bottom: 0.3rem;
+  color: var(--ink-soft);
+}
+
+input, select, textarea {
+  width: 100%;
+  padding: 0.6rem 0.75rem;
+  margin-bottom: 1.1rem;
+  font: inherit;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  transition: border-color 0.15s ease;
+}
+
+input:hover, select:hover, textarea:hover { border-color: var(--cobalt); }
+
+::placeholder { color: var(--ink-soft); opacity: 0.65; }
+
+/* ---------- results & code ---------- */
+
+.result {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 1.1rem 1.25rem;
+  margin-top: 1.25rem;
+}
+
+pre {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  line-height: 1.55;
+  background: var(--cobalt-wash);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1rem;
+  overflow-x: auto;
+}
+
+code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: var(--cobalt-wash);
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+}
+
+pre code { background: none; padding: 0; }
+
+/* 结果价格徽章：品牌蓝 */
+#single code {
+  background: var(--cobalt);
+  color: #fff;
+  font-weight: 600;
+  padding: 0.18em 0.5em;
+  border-radius: 6px;
 }
 @media (prefers-color-scheme: dark) {
-  :root { color-scheme: dark; --bg: #0f1117; --fg: #e5e7eb; --muted: #9ca3af; --card: #1a1d27; --accent: #818cf8; --border: #2a2e3a; }
-  button { color: var(--bg); }
+  #single code { color: #0c1222; }
 }
-* { box-sizing: border-box; }
-body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--fg); line-height: 1.6; }
-.container { max-width: 860px; margin: 0 auto; padding: 1.5rem; }
-.site-header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 1.5rem; border-bottom: 1px solid var(--border); flex-wrap: wrap; gap: .5rem; }
-.brand { font-weight: 700; font-size: 1.15rem; color: var(--accent); text-decoration: none; }
-.site-header nav { display: flex; gap: 1rem; flex-wrap: wrap; }
-.site-header nav a { color: var(--muted); text-decoration: none; font-size: .9rem; }
-.site-header nav a:hover { color: var(--accent); }
-.site-footer { border-top: 1px solid var(--border); padding: 1rem 1.5rem; color: var(--muted); font-size: .85rem; }
-main a { color: var(--accent); text-decoration: underline; }
-.tool-grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); margin-top: 1.5rem; }
-.tool-card { display: block; background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 1.25rem; text-decoration: none; color: inherit; }
-.tool-card:hover, .tool-card:focus-visible { border-color: var(--accent); }
-.tool-card h2 { margin: 0 0 .25rem; font-size: 1.05rem; }
-.tool-card p { margin: 0; color: var(--muted); font-size: .9rem; }
-label { display: block; font-size: .85rem; margin-bottom: .25rem; color: var(--muted); }
-input, select, textarea {
-  width: 100%; padding: .5rem .65rem; margin-bottom: 1rem;
-  background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; font: inherit;
+
+/* ---------- tables ---------- */
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.92rem;
+  font-variant-numeric: tabular-nums;
 }
-button { background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: .55rem 1.2rem; font: inherit; cursor: pointer; }
-pre { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; overflow-x: auto; font-size: .85rem; }
-table { border-collapse: collapse; width: 100%; font-size: .9rem; }
-th, td { border: 1px solid var(--border); padding: .5rem .65rem; text-align: left; }
-th { background: var(--card); }
-.result { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin-top: 1rem; }
-.muted-note { color: var(--muted); font-size: .85rem; }
+
+th {
+  text-align: left;
+  font-weight: 600;
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+  background: var(--cobalt-wash);
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--line);
+}
+
+td {
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--line);
+}
+
+/* 金额等数值列右对齐（财务表惯例） */
+td.num, th.num { text-align: right; }
+
+tbody tr:hover { background: color-mix(in srgb, var(--cobalt-wash) 55%, transparent); }
+
+/* ---------- misc ---------- */
+
+.muted-note { color: var(--ink-soft); font-size: 0.85rem; }
+
+.tool-card {
+  display: block;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1.25rem;
+  text-decoration: none !important;
+  color: inherit;
+}
+
+.tool-card:hover { border-color: var(--cobalt); }
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  * { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+}

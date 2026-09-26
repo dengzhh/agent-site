@@ -55,13 +55,13 @@ const defaultRows = ordered
   <h2>All models comparison</h2>
   <div class="result" id="table" aria-live="polite">
     <table>
-      <thead><tr><th scope="col">Provider</th><th scope="col">Model</th><th scope="col">Monthly cost</th></tr></thead>
+      <thead><tr><th scope="col">Provider</th><th scope="col">Model</th><th scope="col" class="num">Monthly cost</th></tr></thead>
       <tbody>
         {defaultRows.map(({ m, c }) => (
           <tr>
             <td>{m.provider}</td>
             <td>{m.label}{m.unverified ? ' (unverified)' : ''}</td>
-            <td>${c.toFixed(2)}</td>
+            <td class="num">${c.toFixed(2)}</td>
           </tr>
         ))}
       </tbody>
@@ -120,10 +120,10 @@ const defaultRows = ordered
       .sort((a, b) => a.c - b.c)
       .map(({ x, c }) => {
         const xm = x.unverified ? ' (unverified)' : '';
-        return `<tr><td>${x.provider}</td><td>${x.label}${xm}</td><td>$${c.toFixed(2)}</td></tr>`;
+        return `<tr><td>${x.provider}</td><td>${x.label}${xm}</td><td class="num">$${c.toFixed(2)}</td></tr>`;
       })
       .join('');
-    $('table').innerHTML = `<table><thead><tr><th scope="col">Provider</th><th scope="col">Model</th><th scope="col">Monthly cost</th></tr></thead><tbody>${rows}</tbody></table>`;
+    $('table').innerHTML = `<table><thead><tr><th scope="col">Provider</th><th scope="col">Model</th><th scope="col" class="num">Monthly cost</th></tr></thead><tbody>${rows}</tbody></table>`;
   }
 
   ($('calc-form') as HTMLFormElement).addEventListener('submit', (e) => {

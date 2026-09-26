@@ -1,0 +1,21 @@
+---
+// AgentToolbox 标志：协调者节点分派两个工作者——最小而通用的 Agent 拓扑。
+// 复用于页眉与 favicon（dark 底固定配色，保证任何背景下可辨）。
+interface Props { size?: number }
+const { size = 30 } = Astro.props;
+---
+<svg
+  class="brand-mark"
+  width={size}
+  height={size}
+  viewBox="0 0 40 40"
+  role="img"
+  aria-label="AgentToolbox logo"
+>
+  <rect class="mark-tile" width="40" height="40" rx="9" />
+  <path class="mark-edges" d="M20 12.5 L10.5 25.5 M20 12.5 L29.5 25.5 M20 12.5 L20 21" />
+  <circle class="mark-node mark-node--hub" cx="20" cy="11" r="4.6" />
+  <circle class="mark-node" cx="10" cy="26.5" r="4.6" />
+  <circle class="mark-node" cx="30" cy="26.5" r="4.6" />
+  <circle class="mark-node mark-node--hub" cx="20" cy="23.5" r="2.8" />
+</svg>
