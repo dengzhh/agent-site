@@ -1,7 +1,7 @@
 {
-  "syncedAt": "2026-09-26T10:21:32.585Z",
+  "syncedAt": "2026-09-26T15:34:41.111Z",
   "source": "models.dev + openrouter/api/v1/models",
-  "totalFree": 184,
+  "totalFree": 185,
   "providers": [
     {
       "id": "openrouter",
@@ -1789,6 +1789,17 @@
           "attachment": true,
           "openWeights": false,
           "lastUpdated": "2026-09-02"
+        },
+        {
+          "id": "longcat-2.5-preview-free",
+          "name": "LongCat 2.5 Preview Free",
+          "context": 1000000,
+          "maxOutput": 131072,
+          "toolCall": true,
+          "reasoning": true,
+          "attachment": true,
+          "openWeights": false,
+          "lastUpdated": "2026-09-25"
         },
         {
           "id": "longcat-2.0-free",
