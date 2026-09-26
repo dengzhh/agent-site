@@ -16,6 +16,39 @@ export const PROVIDER_OVERRIDES = {
   opencode: { note: 'No account needed — the Zen endpoint serves free models without a key.' },
 };
 
+// ── Pricing index（成本计算器数据）：三家主流 provider 的有价文本模型 ──
+const PRICING_PROVIDERS = ['anthropic', 'openai', 'google'];
+const NON_TEXT = /image|tts|stt|embed|veo|lyria|omni|realtime|computer-use|deep-research/i;
+
+export function buildPricingIndex(modelsdev) {
+  const providers = [];
+  let count = 0;
+  for (const pid of PRICING_PROVIDERS) {
+    const p = modelsdev[pid];
+    if (!p?.models) continue;
+    const models = Object.values(p.models)
+      .filter((m) =>
+        m.cost?.input != null && m.cost?.output != null &&
+        (m.limit?.context ?? 0) >= 32000 &&
+        !NON_TEXT.test(m.id ?? '') )
+      .map((m) => ({
+        id: m.id,
+        label: m.name ?? m.id,
+        context: m.limit?.context ?? 0,
+        input: m.cost.input,
+        output: m.cost.output,
+        cacheRead: m.cost.cache_read ?? null,
+        cacheWrite: m.cost.cache_write ?? null,
+      }))
+      .sort((a, b) => b.context - a.context || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0)); // context 降序；同 context 按 id 降序 → 输出顺序确定，上游插入序变化不会产生噪声 diff
+    if (models.length === 0) continue;
+    count += models.length;
+    providers.push({ id: pid, name: p.name || pid, models });
+  }
+  if (count === 0) throw new Error('no priced models extracted — refusing to write pricing index');
+  return { syncedAt: new Date().toISOString(), source: 'models.dev', providers };
+}
+
 const trim = (m) => ({
   id: m.id,
   name: m.name,
@@ -107,21 +140,46 @@ async function main() {
 
   const outPath = new URL('../src/data/free-models.json', import.meta.url);
   // 噪声抑制：内容（除 syncedAt）与旧文件一致则不写盘，避免 Actions 提交时间戳噪声
+  let freeChanged = true;
   try {
     const old = JSON.parse(readFileSync(outPath, 'utf8'));
     const { syncedAt: _old, ...oldRest } = old;
     const { syncedAt: _new, ...newRest } = idx;
     if (JSON.stringify(oldRest) === JSON.stringify(newRest)) {
-      console.log('no changes');
-      return;
+      freeChanged = false;
     }
   } catch (err) {
     if (err.code !== 'ENOENT') console.warn('could not diff old index:', err.message);
   }
-  // 原子写：先写 tmp 再 rename，避免半截 JSON 被读到
-  writeFileSync(new URL('../src/data/free-models.json.tmp', import.meta.url), JSON.stringify(idx, null, 2) + '\n');
-  renameSync(new URL('../src/data/free-models.json.tmp', import.meta.url), outPath);
-  console.log('wrote src/data/free-models.json');
+  if (freeChanged) {
+    // 原子写：先写 tmp 再 rename，避免半截 JSON 被读到
+    writeFileSync(new URL('../src/data/free-models.json.tmp', import.meta.url), JSON.stringify(idx, null, 2) + '\n');
+    renameSync(new URL('../src/data/free-models.json.tmp', import.meta.url), outPath);
+    console.log('wrote src/data/free-models.json');
+  } else {
+    console.log('free-models: no changes');
+  }
+
+  const pricing = buildPricingIndex(modelsdev);
+  const pricingPath = new URL('../src/data/pricing.json', import.meta.url);
+  let pricingChanged = true;
+  try {
+    const oldPricing = JSON.parse(readFileSync(pricingPath, 'utf8'));
+    const { syncedAt: _o, ...oldRest } = oldPricing;
+    const { syncedAt: _n, ...newRest } = pricing;
+    pricingChanged = JSON.stringify(oldRest) !== JSON.stringify(newRest);
+  } catch (err) {
+    if (err.code !== 'ENOENT') console.warn('pricing compare failed:', err.message);
+  }
+  if (pricingChanged) {
+    // 原子写：先写 tmp 再 rename，避免半截 JSON 被读到
+    writeFileSync(new URL('../src/data/pricing.json.tmp', import.meta.url), JSON.stringify(pricing, null, 2) + '\n');
+    renameSync(new URL('../src/data/pricing.json.tmp', import.meta.url), pricingPath);
+    console.log('wrote src/data/pricing.json');
+  } else {
+    console.log('pricing: no changes');
+  }
+  console.log(`pricing: providers ${pricing.providers.length}, priced models ${pricing.providers.reduce((n, p) => n + p.models.length, 0)}`);
 }
 
 if (process.argv[1] && process.argv[1].endsWith('sync-free-models.mjs')) {

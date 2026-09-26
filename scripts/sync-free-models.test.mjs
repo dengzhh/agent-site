@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildFreeModelsIndex, PROVIDER_ALLOWLIST } from './sync-free-models.mjs';
+import { buildFreeModelsIndex, buildPricingIndex, PROVIDER_ALLOWLIST } from './sync-free-models.mjs';
 
 // 与 models.dev api.json 同构的最小 fixture
 const md = (pid, models, extra = {}) => ({
@@ -78,5 +78,58 @@ describe('buildFreeModelsIndex', () => {
       'github-copilot', 'cloudflare-workers-ai', 'alibaba-token-plan',
       'opencode', 'deepinfra', 'togetherai', 'fireworks-ai',
     ]);
+  });
+});
+
+describe('buildPricingIndex', () => {
+  const pricingSrc = {
+    anthropic: {
+      id: 'anthropic', name: 'Anthropic', env: [], npm: null,
+      models: {
+        'claude-opus-5-5': { id: 'claude-opus-5-5', name: 'Claude Opus 5.5', limit: { context: 1000000, output: 64000 }, cost: { input: 4, output: 20, cache_read: 0.2, cache_write: 5 } },
+        'claude-haiku-4-5': { id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5', limit: { context: 200000, output: 32000 }, cost: { input: 1, output: 5, cache_read: 0.1, cache_write: 1.25 } },
+        'claude-no-cache':  { id: 'claude-no-cache', name: 'No Cache', limit: { context: 200000, output: 32000 }, cost: { input: 2, output: 8 } },
+      },
+    },
+    openai: {
+      id: 'openai', name: 'OpenAI', env: [], npm: null,
+      models: {
+        'gpt-image-x': { id: 'gpt-image-x', name: 'Image X', limit: { context: 128000 }, cost: { input: 5, output: 20 } },
+        'tiny-embed':  { id: 'tiny-embed', name: 'Embed', limit: { context: 8191 }, cost: { input: 0.02, output: 0 } },
+        'gpt-5':       { id: 'gpt-5', name: 'GPT-5', limit: { context: 400000, output: 128000 }, cost: { input: 1.25, output: 10, cache_read: 0.125 } },
+      },
+    },
+    google: {
+      id: 'google', name: 'Google', env: [], npm: null,
+      models: {
+        'gemini-3-flash': { id: 'gemini-3-flash', name: 'Gemini 3 Flash', limit: { context: 1048576 }, cost: { input: 0.5, output: 3, cache_read: 0.05 } },
+      },
+    },
+  };
+
+  it('keeps priced text models, drops images/embeds/tiny-context', () => {
+    const idx = buildPricingIndex(pricingSrc);
+    const openai = idx.providers.find((p) => p.id === 'openai');
+    expect(openai.models.map((m) => m.id)).toEqual(['gpt-5']);
+  });
+
+  it('maps fields with null cache defaults and sorts by context desc', () => {
+    const idx = buildPricingIndex(pricingSrc);
+    const anthropic = idx.providers.find((p) => p.id === 'anthropic');
+    expect(anthropic.models.map((m) => m.id)).toEqual(['claude-opus-5-5', 'claude-no-cache', 'claude-haiku-4-5']);
+    expect(anthropic.models[1]).toEqual({
+      id: 'claude-no-cache', label: 'No Cache', context: 200000,
+      input: 2, output: 8, cacheRead: null, cacheWrite: null,
+    });
+  });
+
+  it('covers exactly the three mainstream providers', () => {
+    const idx = buildPricingIndex(pricingSrc);
+    expect(idx.providers.map((p) => p.id)).toEqual(['anthropic', 'openai', 'google']);
+  });
+
+  it('throws on zero priced models (schema collapse guard)', () => {
+    expect(() => buildPricingIndex({ anthropic: { id: 'anthropic', name: 'A', models: {} } }))
+      .toThrow(/no priced models/i);
   });
 });
