@@ -1,14 +1,22 @@
 ---
 import BaseLayout from '../../layouts/BaseLayout.astro';
 import { monthlyCost, type ModelPricing } from '../../lib/cost';
-import data from '../../data/models.json';
+import data from '../../data/pricing.json';
 
-type ToolModel = ModelPricing & { provider: string; unverified: boolean };
+type ToolModel = ModelPricing & { provider: string };
 
-const all: ToolModel[] = data.providers.flatMap((p) => {
-  const unverified = (p as { verify?: boolean }).verify === true;
-  return p.models.map((m) => ({ ...m, provider: p.name, unverified }));
+// pricing.json 字段 → ModelPricing 字段，组装处统一映射一次
+const toPricing = (m: typeof data.providers[number]['models'][number], provider: string): ToolModel => ({
+  id: m.id,
+  label: m.label,
+  contextWindow: m.context,
+  inputPerMTok: m.input,
+  outputPerMTok: m.output,
+  cacheReadPerMTok: m.cacheRead ?? undefined,
+  provider,
 });
+
+const all: ToolModel[] = data.providers.flatMap((p) => p.models.map((m) => toPricing(m, p.name)));
 
 // Opus 5.5 first and default-selected, so the page loads on the $80 acceptance baseline.
 const DEFAULT_MODEL_ID = 'claude-opus-5-5';
@@ -31,13 +39,19 @@ const defaultRows = ordered
   description="Calculate and compare monthly API costs for Claude, GPT, and Gemini models. Includes prompt caching discounts."
 >
   <h1>LLM API Cost Calculator</h1>
-  <p>Estimate your monthly spend per model, then compare all models side by side. Pricing as of {data.asOf}.</p>
-  <p class="muted-note">{data.note}</p>
+  <p>Estimate your monthly spend per model, then compare all models side by side.</p>
+  <p class="muted-note">Aggregated from models.dev, synced {data.syncedAt.slice(0, 10)}. Prices per 1M tokens, USD.</p>
 
   <form id="calc-form">
     <div class="field-row">
       <div><label for="model">Model</label>
-        <select id="model">{ordered.map((m) => <option value={m.id} selected={m.id === defaultModel.id}>{m.provider} · {m.label}{m.unverified ? ' (unverified)' : ''}</option>)}</select>
+        <select id="model">
+          {data.providers.map((p) => (
+            <optgroup label={p.name}>
+              {p.models.map((m) => <option value={m.id} selected={m.id === defaultModel.id}>{p.name} · {m.label}</option>)}
+            </optgroup>
+          ))}
+        </select>
       </div>
       <div><label for="reqs">Requests / month</label><input id="reqs" type="number" value="1000" min="0" /></div>
     </div>
@@ -60,7 +74,7 @@ const defaultRows = ordered
         {defaultRows.map(({ m, c }) => (
           <tr>
             <td>{m.provider}</td>
-            <td>{m.label}{m.unverified ? ' (unverified)' : ''}</td>
+            <td>{m.label}</td>
             <td class="num">${c.toFixed(2)}</td>
           </tr>
         ))}
@@ -77,15 +91,23 @@ const defaultRows = ordered
 
 <script>
   import { monthlyCost, type ModelPricing } from '../../lib/cost';
-  import data from '../../data/models.json';
+  import data from '../../data/pricing.json';
 
-  type ToolModel = ModelPricing & { provider: string; unverified: boolean };
+  type ToolModel = ModelPricing & { provider: string };
+
+  type PricingModel = typeof data.providers[number]['models'][number];
+  const toPricing = (m: PricingModel, provider: string): ToolModel => ({
+    id: m.id,
+    label: m.label,
+    contextWindow: m.context,
+    inputPerMTok: m.input,
+    outputPerMTok: m.output,
+    cacheReadPerMTok: m.cacheRead ?? undefined,
+    provider,
+  });
 
   const DEFAULT_MODEL_ID = 'claude-opus-5-5';
-  const all: ToolModel[] = data.providers.flatMap((p) => {
-    const unverified = (p as { verify?: boolean }).verify === true;
-    return p.models.map((m) => ({ ...m, provider: p.name, unverified }));
-  });
+  const all: ToolModel[] = data.providers.flatMap((p) => p.models.map((m) => toPricing(m, p.name)));
   const models: ToolModel[] = [
     ...all.filter((m) => m.id === DEFAULT_MODEL_ID),
     ...all.filter((m) => m.id !== DEFAULT_MODEL_ID),
@@ -111,17 +133,13 @@ const defaultRows = ordered
     const i = inputs();
     const id = ($('model') as HTMLSelectElement).value;
     const m = models.find((x) => x.id === id)!;
-    const mark = m.unverified ? ' (unverified)' : '';
     const cost = monthlyCost(m, i);
-    $('single').innerHTML = `<strong>${m.provider} ${m.label}${mark}</strong>: <code>$${cost.toFixed(2)}</code>/month`;
+    $('single').innerHTML = `<strong>${m.provider} ${m.label}</strong>: <code>$${cost.toFixed(2)}</code>/month`;
 
     const rows = models
       .map((x) => ({ x, c: monthlyCost(x, i) }))
       .sort((a, b) => a.c - b.c)
-      .map(({ x, c }) => {
-        const xm = x.unverified ? ' (unverified)' : '';
-        return `<tr><td>${x.provider}</td><td>${x.label}${xm}</td><td class="num">$${c.toFixed(2)}</td></tr>`;
-      })
+      .map(({ x, c }) => `<tr><td>${x.provider}</td><td>${x.label}</td><td class="num">$${c.toFixed(2)}</td></tr>`)
       .join('');
     $('table').innerHTML = `<table><thead><tr><th scope="col">Provider</th><th scope="col">Model</th><th scope="col" class="num">Monthly cost</th></tr></thead><tbody>${rows}</tbody></table>`;
   }
