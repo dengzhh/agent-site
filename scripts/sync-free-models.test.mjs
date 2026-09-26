@@ -45,10 +45,15 @@ describe('buildFreeModelsIndex', () => {
     const idx = buildFreeModelsIndex(modelsdev, orApi);
     const or = idx.providers.find((p) => p.id === 'openrouter');
     expect(or.models[0].id).toBe('google/gemma:free');
-    // 官方 API 没有的 :free id → 丢弃
+    // 校验源在线但没有任何 :free id → 模型清空，provider 整节不出现
     const idx2 = buildFreeModelsIndex(modelsdev, { data: [] });
-    const or2 = idx2.providers.find((p) => p.id === 'openrouter');
-    expect(or2.models).toEqual([]);
+    expect(idx2.providers.find((p) => p.id === 'openrouter')).toBeUndefined();
+  });
+
+  it('keeps openrouter main-source models when cross-check API is unavailable', () => {
+    const idx = buildFreeModelsIndex(modelsdev, null); // OR API 故障 → 保留主源
+    const or = idx.providers.find((p) => p.id === 'openrouter');
+    expect(or.models.map((m) => m.id)).toEqual(['google/gemma:free']);
   });
 
   it('trims fields and carries provider meta + overrides', () => {
@@ -71,7 +76,7 @@ describe('buildFreeModelsIndex', () => {
     expect(PROVIDER_ALLOWLIST).toEqual([
       'openrouter', 'nvidia', 'groq', 'mistral', 'cerebras', 'zai',
       'github-copilot', 'cloudflare-workers-ai', 'alibaba-token-plan',
-      'deepinfra', 'together', 'fireworks',
+      'opencode', 'deepinfra', 'togetherai', 'fireworks-ai',
     ]);
   });
 });
