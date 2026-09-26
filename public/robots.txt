@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://agenttools.example.com/sitemap-index.xml
+Sitemap: https://dengzhh.github.io/agent-site/sitemap-index.xml

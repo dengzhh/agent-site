@@ -11,5 +11,5 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <p>We may display ads served by third-party networks (such as Google AdSense). These vendors may use cookies to serve ads based on your prior visits to this or other websites. You can opt out of personalized advertising via <a href="https://www.google.com/settings/ads" rel="noopener">Google Ads Settings</a> or the <a href="https://optout.aboutads.info/" rel="noopener">DAA opt-out tool</a>.</p>
   <p>Users in the European Economic Area are shown a consent notice before personalized ads are served.</p>
   <h2>Contact</h2>
-  <p>Questions about this policy? See the <a href="/contact/">contact page</a>.</p>
+  <p>Questions about this policy? See the <a href={import.meta.env.BASE_URL + '/contact/'}>contact page</a>.</p>
 </BaseLayout>

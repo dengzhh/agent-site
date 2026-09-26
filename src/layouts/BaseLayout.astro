@@ -1,6 +1,8 @@
 ---
 interface Props { title: string; description: string; }
 const { title, description } = Astro.props;
+// 根部署时为 '/'，GitHub Pages 子路径部署时为 '/agent-site/'——所有内部链接统一走它
+const BASE_URL = import.meta.env.BASE_URL.replace(/\/?$/, '/');
 ---
 <!doctype html>
 <html lang="en">
@@ -9,7 +11,7 @@ const { title, description } = Astro.props;
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{title}</title>
     <meta name="description" content={description} />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/svg+xml" href={BASE_URL + 'favicon.svg'} />
     <link rel="canonical" href={new URL(Astro.url.pathname, Astro.site)} />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
@@ -19,18 +21,18 @@ const { title, description } = Astro.props;
   </head>
   <body>
     <header class="site-header">
-      <a class="brand" href="/">AgentToolbox</a>
+      <a class="brand" href={BASE_URL}>AgentToolbox</a>
       <nav>
-        <a href="/tools/llm-api-cost-calculator/">Cost Calculator</a>
-        <a href="/tools/token-estimator/">Token Estimator</a>
-        <a href="/tools/system-prompt-generator/">Prompt Generator</a>
-        <a href="/tools/mcp-config-generator/">MCP Config</a>
-        <a href="/compare/agent-frameworks/">Frameworks</a>
+        <a href={BASE_URL + 'tools/llm-api-cost-calculator/'}>Cost Calculator</a>
+        <a href={BASE_URL + 'tools/token-estimator/'}>Token Estimator</a>
+        <a href={BASE_URL + 'tools/system-prompt-generator/'}>Prompt Generator</a>
+        <a href={BASE_URL + 'tools/mcp-config-generator/'}>MCP Config</a>
+        <a href={BASE_URL + 'compare/agent-frameworks/'}>Frameworks</a>
       </nav>
     </header>
     <main class="container"><slot /></main>
     <footer class="site-footer">
-      <p>© {new Date().getFullYear()} AgentToolbox · <a href="/about/">About</a> · <a href="/privacy/">Privacy</a> · <a href="/contact/">Contact</a></p>
+      <p>© {new Date().getFullYear()} AgentToolbox · <a href={BASE_URL + 'about/'}>About</a> · <a href={BASE_URL + 'privacy/'}>Privacy</a> · <a href={BASE_URL + 'contact/'}>Contact</a></p>
     </footer>
   </body>
 </html>

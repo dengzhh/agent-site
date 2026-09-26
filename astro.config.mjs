@@ -4,6 +4,8 @@ import sitemap from '@astrojs/sitemap';
 
 // https://astro.build/config
 export default defineConfig({
-  site: 'https://agenttools.example.com', // Task 12 买了域名后替换为真实域名
+  // GitHub Pages 预览配置；买域名后：site 换真实域名、删掉 base、内部链接的 BASE_URL 前缀可保留（会变成 '/'）
+  site: 'https://dengzhh.github.io',
+  base: '/agent-site',
   integrations: [sitemap()],
 });
