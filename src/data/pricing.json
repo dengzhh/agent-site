@@ -1,5 +1,5 @@
 {
-  "syncedAt": "2026-09-26T17:39:59.244Z",
+  "syncedAt": "2026-09-28T09:59:13.442Z",
   "source": "models.dev",
   "providers": [
     {
@@ -148,6 +148,15 @@
       "name": "OpenAI",
       "models": [
         {
+          "id": "gpt-daybreak-blue-latest",
+          "label": "Daybreak Blue",
+          "context": 1050000,
+          "input": 4,
+          "output": 20,
+          "cacheRead": 0.4,
+          "cacheWrite": 5
+        },
+        {
           "id": "gpt-6-sol",
           "label": "GPT-6 Sol",
           "context": 1050000,
@@ -272,6 +281,15 @@
           "output": 8,
           "cacheRead": 0.5,
           "cacheWrite": null
+        },
+        {
+          "id": "gpt-daybreak-red-latest",
+          "label": "Daybreak Red",
+          "context": 400000,
+          "input": 12.5,
+          "output": 75,
+          "cacheRead": 1.25,
+          "cacheWrite": 15.625
         },
         {
           "id": "gpt-5.4-nano",
