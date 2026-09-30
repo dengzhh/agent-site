@@ -1,5 +1,5 @@
 {
-  "syncedAt": "2026-09-29T09:58:40.569Z",
+  "syncedAt": "2026-09-30T09:50:43.926Z",
   "source": "models.dev",
   "providers": [
     {
@@ -164,6 +164,15 @@
           "output": 20,
           "cacheRead": 0.4,
           "cacheWrite": 5
+        },
+        {
+          "id": "gpt-6.1-sol",
+          "label": "GPT-6.1 Sol",
+          "context": 1050000,
+          "input": 2,
+          "output": 10,
+          "cacheRead": 0.1,
+          "cacheWrite": 2.5
         },
         {
           "id": "gpt-6-sol",
