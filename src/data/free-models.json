@@ -1,7 +1,7 @@
 {
-  "syncedAt": "2026-09-29T09:58:40.567Z",
+  "syncedAt": "2026-10-02T09:55:22.038Z",
   "source": "models.dev + openrouter/api/v1/models",
-  "totalFree": 182,
+  "totalFree": 187,
   "providers": [
     {
       "id": "openrouter",
@@ -122,6 +122,17 @@
           "attachment": false,
           "openWeights": false,
           "lastUpdated": "2026-09-04"
+        },
+        {
+          "id": "apodex/apodex-1.1-mini:free",
+          "name": "Apodex 1.1 Mini (free)",
+          "context": 262144,
+          "maxOutput": 235929,
+          "toolCall": true,
+          "reasoning": true,
+          "attachment": false,
+          "openWeights": false,
+          "lastUpdated": "2026-10-01"
         },
         {
           "id": "nvidia/nemotron-3-super-120b-a12b:free",
@@ -277,6 +288,17 @@
           "attachment": false,
           "openWeights": true,
           "lastUpdated": "2026-07-31"
+        },
+        {
+          "id": "deepseek-ai/deepseek-v4.1-flash",
+          "name": "DeepSeek V4.1 Flash",
+          "context": 1000000,
+          "maxOutput": 384000,
+          "toolCall": true,
+          "reasoning": true,
+          "attachment": true,
+          "openWeights": true,
+          "lastUpdated": "2026-09-10"
         },
         {
           "id": "deepseek-ai/deepseek-v4-pro-0813",
@@ -453,6 +475,17 @@
           "attachment": true,
           "openWeights": true,
           "lastUpdated": "2026-04-28"
+        },
+        {
+          "id": "google/diffusiongemma-26b-a4b-it",
+          "name": "DiffusionGemma 26B A4B IT",
+          "context": 250000,
+          "maxOutput": 32768,
+          "toolCall": true,
+          "reasoning": true,
+          "attachment": true,
+          "openWeights": true,
+          "lastUpdated": "2026-07-15"
         },
         {
           "id": "minimaxai/minimax-m2.7",
@@ -937,6 +970,17 @@
           "attachment": true,
           "openWeights": true,
           "lastUpdated": "2025-10-28"
+        },
+        {
+          "id": "nvidia/nemotron-3.5-content-safety",
+          "name": "Nemotron 3.5 Content Safety",
+          "context": 128000,
+          "maxOutput": 8192,
+          "toolCall": false,
+          "reasoning": true,
+          "attachment": true,
+          "openWeights": true,
+          "lastUpdated": "2026-06-04"
         },
         {
           "id": "nvidia/gliner-pii",
@@ -1713,6 +1757,17 @@
       "note": "No account needed — the Zen endpoint serves free models without a key.",
       "anthropicApi": null,
       "models": [
+        {
+          "id": "fledge-alpha-free",
+          "name": "Fledge Alpha Free",
+          "context": 1048576,
+          "maxOutput": 131072,
+          "toolCall": true,
+          "reasoning": true,
+          "attachment": true,
+          "openWeights": false,
+          "lastUpdated": "2026-10-01"
+        },
         {
           "id": "mimo-v2-pro-free",
           "name": "MiMo V2 Pro Free",
