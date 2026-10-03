@@ -1,7 +1,7 @@
 {
-  "syncedAt": "2026-10-02T09:55:22.038Z",
+  "syncedAt": "2026-10-03T09:17:16.834Z",
   "source": "models.dev + openrouter/api/v1/models",
-  "totalFree": 187,
+  "totalFree": 188,
   "providers": [
     {
       "id": "openrouter",
@@ -1877,6 +1877,17 @@
           "attachment": true,
           "openWeights": false,
           "lastUpdated": "2026-04-02"
+        },
+        {
+          "id": "ling-3.1-flash-free",
+          "name": "Ling 3.1 Flash Free",
+          "context": 262144,
+          "maxOutput": 32768,
+          "toolCall": true,
+          "reasoning": true,
+          "attachment": false,
+          "openWeights": false,
+          "lastUpdated": "2026-09-29"
         },
         {
           "id": "ling-3.0-tiny-free",
