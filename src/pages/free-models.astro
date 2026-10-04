@@ -58,7 +58,14 @@ const fmtCtx = (n: number) =>
                 <td class="num">{fmtCtx(m.maxOutput)}</td>
                 <td>{caps(m).length ? caps(m).join(' · ') : '—'}</td>
                 <td>{m.lastUpdated ? m.lastUpdated.slice(0, 7) : '—'}</td>
-                <td><a href="#configure" class="pick" data-provider={p.id} data-model={m.id}>Configure →</a></td>
+                <td>
+                  <a href="#configure" class="pick" data-provider={p.id} data-model={m.id}>Configure →</a>
+                  {p.id !== 'github-copilot' && (
+                    <br /><a href="#chat" class="chat-pick" data-provider={p.id} data-model={m.id}
+                      data-base={p.api ?? ''} data-envkey={p.envKey} data-ctx={m.context} data-maxout={m.maxOutput}
+                      data-name={m.name} data-keyless={p.id === 'opencode' ? '1' : '0'}>Chat →</a>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -103,6 +110,35 @@ const fmtCtx = (n: number) =>
     <pre id="g-out" class="result" aria-live="polite" style="white-space:pre-wrap"></pre>
     <button id="g-copy" type="button" hidden>Copy</button>
   </section>
+
+  <aside id="chat-drawer" aria-label="Chat with this model" aria-hidden="true">
+    <header class="chat-head">
+      <div><strong id="chat-model-name"></strong><div id="chat-provider-name" class="chat-sub"></div></div>
+      <button id="chat-close" type="button" aria-label="Close chat">✕</button>
+    </header>
+    <div id="chat-install" class="chat-pane" hidden>
+      <p>Chat runs through a tiny local service (your keys never leave your machine):</p>
+      <pre class="chat-cmd"><code>npx agenttoolbox-agent@latest</code></pre>
+      <button id="chat-copy-cmd" type="button" class="cap-chip">Copy command</button>
+      <p class="chat-sub">Waiting for the local service…</p>
+    </div>
+    <div id="chat-key" class="chat-pane" hidden>
+      <p>This provider needs an API key. It's stored in your browser and sent only to your local agent.</p>
+      <label for="chat-key-input">API key</label>
+      <input id="chat-key-input" type="password" autocomplete="off" />
+      <button id="chat-key-save" type="button">Save &amp; continue</button>
+    </div>
+    <div id="chat-main" class="chat-pane" hidden>
+      <div id="chat-log" aria-live="polite"></div>
+      <form id="chat-form">
+        <textarea id="chat-input" rows="2" placeholder="Ask anything…"></textarea>
+        <div class="chat-actions">
+          <button type="submit" id="chat-send">Send</button>
+          <button type="button" id="chat-abort" hidden>Stop</button>
+        </div>
+      </form>
+    </div>
+  </aside>
 </BaseLayout>
 
 <style>
@@ -120,11 +156,37 @@ const fmtCtx = (n: number) =>
   }
   .cap-chip.is-active { background: var(--cobalt); color: #fff; border-color: var(--cobalt); }
   .provider.is-hidden, tr.is-hidden { display: none; }
+  /* ---------- chat drawer ---------- */
+  #chat-drawer {
+    position: fixed; top: 0; right: 0; bottom: 0;
+    width: min(430px, 100vw);
+    background: var(--surface); border-left: 1px solid var(--line-strong);
+    box-shadow: -12px 0 32px rgba(0,0,0,0.35);
+    transform: translateX(102%); transition: transform .25s ease;
+    display: flex; flex-direction: column; z-index: 60;
+    padding: 1rem 1.1rem;
+  }
+  #chat-drawer.is-open { transform: translateX(0); }
+  .chat-head { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 1px solid var(--line); padding-bottom: .6rem; }
+  .chat-sub { font-size: .8rem; color: var(--ink-soft); }
+  .chat-pane { display: flex; flex-direction: column; gap: .6rem; overflow-y: auto; flex: 1; }
+  .chat-pane[hidden] { display: none; } /* display:flex 会盖过 UA 的 [hidden]，需显式还原 */
+  #chat-main { min-height: 0; }
+  #chat-log { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: .55rem; padding: .3rem 0; }
+  .chat-msg { padding: .5rem .7rem; border-radius: 10px; white-space: pre-wrap; font-size: .92rem; }
+  .chat-msg--user { background: var(--cobalt-wash); align-self: flex-end; }
+  .chat-msg--assistant { background: rgba(127,127,127,0.12); align-self: flex-start; }
+  .chat-msg--error { color: #ff8f8f; }
+  .chat-cmd { background: #0f1830; color: #e7ebf4; padding: .7rem .8rem; border-radius: 8px; overflow-x: auto; font-size: .85rem; }
+  #chat-form textarea { width: 100%; resize: vertical; }
+  .chat-actions { display: flex; gap: .6rem; margin-top: .4rem; }
+  a.chat-pick { display: inline-block; margin-top: .25rem; }
 </style>
 
 <script>
   import data from '../data/free-models.json';
   import { generateConfig, type ConfigTarget } from '../lib/freeconfig';
+  import { probeHealth, createSession, streamMessage, abortSession, keyStorage, type ChatEvent } from '../lib/agentchat';
 
   const idx = data;
   const $ = (id: string) => document.getElementById(id)!;
@@ -217,4 +279,111 @@ const fmtCtx = (n: number) =>
   });
 
   fillModels();
+
+  // ── Chat 抽屉：探测本地 agent → 建 session → SSE 聊天 ──
+  const drawer = $('chat-drawer');
+  const panes = { install: $('chat-install'), key: $('chat-key'), main: $('chat-main') } as Record<string, HTMLElement>;
+  const chatLog = $('chat-log');
+  const chatInput = $('chat-input') as HTMLTextAreaElement;
+  const sendBtn = $('chat-send') as HTMLButtonElement;
+  const abortBtn = $('chat-abort') as HTMLButtonElement;
+  type ChatState = {
+    provider: string; model: string; base: string; envKey: string;
+    ctx: number; maxOut: number; name: string; keyless: boolean;
+    sessionId: string | null; streaming: boolean; probeTimer?: ReturnType<typeof setInterval>;
+    streamAbort?: AbortController;
+  };
+  let chat: ChatState | null = null;
+
+  const showPane = (k: 'install' | 'key' | 'main') => {
+    for (const [name, el] of Object.entries(panes)) el.hidden = name !== k;
+  };
+  const chatMsg = (role: 'user' | 'assistant' | 'error', text: string) => {
+    const div = document.createElement('div');
+    div.className = `chat-msg chat-msg--${role}`;
+    div.textContent = text;
+    chatLog.append(div);
+    chatLog.scrollTop = chatLog.scrollHeight;
+    return div;
+  };
+
+  function stopProbe() { if (chat?.probeTimer) { clearInterval(chat.probeTimer); chat.probeTimer = undefined; } }
+
+  async function ensureSession(): Promise<void> {
+    const c = chat!;
+    if (c.sessionId) return;
+    const apiKey = c.keyless ? null : keyStorage.get(c.provider);
+    c.sessionId = await createSession({
+      provider: c.provider, model: c.model, baseUrl: c.base || null, apiKey,
+      envKey: c.envKey || null, name: c.name, contextWindow: c.ctx, maxOutput: c.maxOut,
+    });
+  }
+
+  async function tryGoChat(): Promise<void> {
+    const c = chat!;
+    if (!(await probeHealth())) { showPane('install'); stopProbe(); c.probeTimer = setInterval(tryGoChat, 3000); return; }
+    stopProbe();
+    if (!c.keyless && !keyStorage.get(c.provider)) { showPane('key'); return; }
+    try { await ensureSession(); showPane('main'); chatInput.focus(); }
+    catch (e) { chatMsg('error', String((e as Error).message)); showPane('key'); }
+  }
+
+  function openChat(a: HTMLAnchorElement) {
+    chat = {
+      provider: a.dataset.provider!, model: a.dataset.model!, base: a.dataset.base ?? '',
+      envKey: a.dataset.envkey ?? '', ctx: Number(a.dataset.ctx), maxOut: Number(a.dataset.maxout),
+      name: a.dataset.name ?? '', keyless: a.dataset.keyless === '1',
+      sessionId: null, streaming: false,
+    };
+    $('chat-model-name').textContent = chat.name;
+    $('chat-provider-name').textContent = `${chat.provider} · ${chat.model}`;
+    chatLog.textContent = '';
+    drawer.classList.add('is-open');
+    drawer.setAttribute('aria-hidden', 'false');
+    void tryGoChat();
+  }
+
+  document.querySelectorAll<HTMLAnchorElement>('a.chat-pick').forEach((a) => {
+    a.addEventListener('click', (e) => { e.preventDefault(); openChat(a); });
+  });
+  $('chat-close').addEventListener('click', () => {
+    drawer.classList.remove('is-open');
+    drawer.setAttribute('aria-hidden', 'true');
+    stopProbe();
+    chat?.streamAbort?.abort();
+  });
+  $('chat-copy-cmd').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText('npx agenttoolbox-agent@latest'); } catch { /* 手选 */ }
+  });
+  $('chat-key-save').addEventListener('click', () => {
+    const v = ($('chat-key-input') as HTMLInputElement).value.trim();
+    if (!v || !chat) return;
+    keyStorage.set(chat.provider, v);
+    void tryGoChat();
+  });
+
+  $('chat-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const c = chat;
+    if (!c?.sessionId || c.streaming) return;
+    const text = chatInput.value.trim();
+    if (!text) return;
+    chatInput.value = '';
+    chatMsg('user', text);
+    const outDiv = chatMsg('assistant', '');
+    c.streaming = true; sendBtn.disabled = true; abortBtn.hidden = false;
+    c.streamAbort = new AbortController();
+    abortBtn.onclick = () => { c.streamAbort?.abort(); void abortSession(c.sessionId!); };
+    try {
+      await streamMessage(c.sessionId, text, (ev: ChatEvent) => {
+        if (ev.type === 'delta') outDiv.textContent += ev.text;
+        else if (ev.type === 'error') outDiv.textContent += `\n[error] ${ev.message}`;
+        chatLog.scrollTop = chatLog.scrollHeight;
+      }, c.streamAbort.signal);
+    } catch { outDiv.textContent += '\n[connection closed]'; }
+    finally { c.streaming = false; sendBtn.disabled = false; abortBtn.hidden = true; }
+  });
+  chatInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ($('chat-form') as HTMLFormElement).requestSubmit(); }
+  });
 </script>
