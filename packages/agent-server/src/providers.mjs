@@ -42,6 +42,9 @@ const sanitize = (id) => id.replace(/[^a-z0-9-]/gi, '-').toLowerCase();
  * 返回 { model, providerId }。
  */
 export function resolveModel(models, req) {
+  if (!req.provider || !req.model) {
+    throw new UnsupportedError(`provider and model are required`);
+  }
   const factory = BUILTIN_FACTORIES[req.provider];
   if (factory) {
     const p = factory();
@@ -66,9 +69,11 @@ export function resolveModel(models, req) {
       maxTokens: req.maxOutput || 8192,
       reasoning: false,
     };
+    // keyless（如 OpenCode Zen）：占位 key 让 openai-completions 适配器放行请求；
+    // 真实端点不校验该头时即免费可用。带 envKey/apiKey 的仍走真实凭证。
     const auth = req.envKey
       ? { apiKey: envApiKeyAuth(req.name || req.provider, [req.envKey]) }
-      : { apiKey: { name: req.name || req.provider, resolve: async () => ({ auth: {} }) } };
+      : { apiKey: { name: req.name || req.provider, resolve: async () => ({ auth: { apiKey: 'unused' } }) } };
     models.setProvider(createProvider({
       id: pid, name: req.name || req.provider, baseUrl: req.baseUrl,
       auth, models: [model], api: openAICompletionsApi(),

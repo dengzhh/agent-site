@@ -51,3 +51,48 @@ test('dynamic model registered under its provider id', () => {
   });
   assert.ok(models.getModel('atbx-opencode', 'm1'));
 });
+
+// 缺 provider/model → UnsupportedError（而非 TypeError → 500）
+test('missing provider or model throws UnsupportedError', () => {
+  const models = createModels();
+  assert.throws(() => resolveModel(models, { baseUrl: 'https://x.test/v1' }), UnsupportedError);
+  assert.throws(() => resolveModel(models, { provider: 'zai' }), UnsupportedError);
+});
+
+// keyless 动态 provider 的流式冒烟：占位 key 让请求真正发出（stub fetch），
+// 防止 auth resolve 返回空导致 openai-completions 在本地抛 "No API key"
+test('keyless dynamic provider reaches the wire with placeholder key', async () => {
+  const models = createModels();
+  resolveModel(models, {
+    provider: 'opencode', model: 'wire-m', baseUrl: 'https://x.test/v1',
+    name: 'Wire', contextWindow: 1000, maxOutput: 100,
+  });
+  const calls = [];
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    calls.push(url);
+    // pi-ai 适配器按 OpenAI 流式协议解析：返回 text/event-stream 的分块响应
+    const sseBody =
+      'data: ' + JSON.stringify({ id: 'x', object: 'chat.completion.chunk', created: 1, model: 'wire-m',
+        choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: null }] }) + '\n\n' +
+      'data: ' + JSON.stringify({ id: 'x', object: 'chat.completion.chunk', created: 1, model: 'wire-m',
+        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }) + '\n\n';
+    return new Response(sseBody, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  };
+  t_refetch: try {
+    const stream = models.streamSimple(models.getModel('atbx-opencode', 'wire-m'), {
+      messages: [{ role: 'user', content: 'hi', timestamp: Date.now() }],
+    });
+    let sawText = false; let sawError = null;
+    for await (const ev of stream) {
+      if (ev.type === 'text_delta') sawText = true;
+      if (ev.type === 'error') sawError = ev.error?.message ?? 'error';
+    }
+    assert.equal(calls.length, 1, 'exactly one HTTP request');
+    assert.ok(sawText, 'stream produced text');
+    assert.equal(sawError, null);
+    break t_refetch;
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
