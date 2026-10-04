@@ -85,13 +85,18 @@ export async function streamMessage(
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const { events, rest } = parseSSEChunk(buffer);
-    buffer = rest;
-    events.forEach(onEvent);
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const { events, rest } = parseSSEChunk(buffer);
+      buffer = rest;
+      events.forEach(onEvent);
+    }
+  } finally {
+    // onEvent 抛错时也要释放流，否则连接挂到 GC
+    reader.cancel().catch(() => {});
   }
 }
 
