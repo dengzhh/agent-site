@@ -1,5 +1,6 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
+import SyncBadge from '../components/SyncBadge.astro';
 import data from '../data/free-models.json';
 import type { FreeModelsIndex } from '../lib/free-models';
 const idx = data as FreeModelsIndex;
@@ -17,9 +18,9 @@ const fmtCtx = (n: number) =>
   description="All free LLM API models from OpenRouter, Nvidia, Groq, Mistral, Z.ai and more: context windows, tool calling, and one-click config snippets for Claude Code and Codex. Synced daily."
 >
   <h1>Free LLM models</h1>
+  <SyncBadge date={idx.syncedAt} detail="auto-synced daily from models.dev + OpenRouter" />
   <p>Every model below costs exactly $0 per token, aggregated from {idx.providers.length} providers. Generate ready-to-paste config for Claude Code, Codex CLI, or your own code.</p>
   <p class="muted-note">
-    Data synced {new Date(idx.syncedAt).toISOString().slice(0, 10)} from {idx.source}.
     "Free" means $0 input and $0 output — rate limits still apply per provider.
   </p>
 

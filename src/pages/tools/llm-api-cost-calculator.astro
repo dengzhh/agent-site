@@ -1,5 +1,6 @@
 ---
 import BaseLayout from '../../layouts/BaseLayout.astro';
+import SyncBadge from '../../components/SyncBadge.astro';
 import { monthlyCost, type ModelPricing } from '../../lib/cost';
 import data from '../../data/pricing.json';
 
@@ -39,8 +40,9 @@ const defaultRows = ordered
   description="Calculate and compare monthly API costs for Claude, GPT, and Gemini models. Includes prompt caching discounts."
 >
   <h1>LLM API Cost Calculator</h1>
+  <SyncBadge date={data.syncedAt} detail="auto-synced daily from models.dev" />
   <p>Estimate your monthly spend per model, then compare all models side by side.</p>
-  <p class="muted-note">Aggregated from models.dev, synced {data.syncedAt.slice(0, 10)}. Prices per 1M tokens, USD.</p>
+  <p class="muted-note">Prices per 1M tokens, USD.</p>
 
   <form id="calc-form">
     <div class="field-row">

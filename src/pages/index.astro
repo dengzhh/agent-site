@@ -1,6 +1,8 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
 import freeIdx from '../data/free-models.json';
+import pricing from '../data/pricing.json';
+import { monthlyCost } from '../lib/cost';
 const BASE_URL = import.meta.env.BASE_URL.replace(/\/?$/, '/');
 const tools = [
   { href: BASE_URL + 'free-models/', name: 'Free model directory', desc: `Every $0-per-token model across ${freeIdx.providers.length} providers, synced daily — with one-click config for Claude Code and Codex.`, tag: 'Free' },
@@ -9,12 +11,17 @@ const tools = [
   { href: BASE_URL + 'tools/mcp-config-generator/', name: 'MCP config writer', desc: 'Add servers once, export valid JSON for Claude Code, Cursor, and VS Code — shapes handled for you.', tag: 'Wire' },
   { href: BASE_URL + 'compare/agent-frameworks/', name: 'Framework field guide', desc: 'LangGraph, CrewAI, OpenAI Agents SDK, Claude Agent SDK, AutoGen — what each is actually good at.', tag: 'Compare' },
 ];
-const mini = [
-  { m: 'Claude Opus 5.5', c: '$80' },
-  { m: 'Claude Sonnet 5', c: '$40' },
-  { m: 'GPT-5', c: '$33' },
-  { m: 'Gemini 3 Flash', c: '$11' },
-];
+// 首页迷你价格表：按固定 model id 从 pricing.json 实时计算（10k in / 2k out × 1000 req）。
+// id 在上游消失（改名/下架）时该行自动跳过，页面不崩。
+const MINI_USAGE = { inputTokens: 10_000, outputTokens: 2_000, requestsPerMonth: 1000 };
+const MINI_IDS = ['claude-opus-5-5', 'claude-sonnet-5', 'gpt-5', 'gemini-3-flash-preview'];
+const byId = new Map(pricing.providers.flatMap((p) => p.models.map((m) => [m.id, m] as const)));
+const mini = MINI_IDS
+  .flatMap((id) => (byId.has(id) ? [byId.get(id)!] : []))
+  .map((m) => ({ m: m.label, c: `$${Math.round(monthlyCost(
+    { ...m, contextWindow: m.context, inputPerMTok: m.input, outputPerMTok: m.output },
+    MINI_USAGE,
+  ))}` }));
 ---
 <BaseLayout title="AgentToolbox — Free Tools for AI Agent Builders" description="Free online tools for AI agent developers: API cost calculators, token estimators, prompt generators, and MCP config builders.">
   <section class="hero">
@@ -83,7 +90,7 @@ const mini = [
             <span class="mini-cost">{row.c}</span>
           </div>
         ))}
-        <div class="mini-foot">per month</div>
+        <div class="mini-foot">per month · pricing synced {pricing.syncedAt.slice(0, 10)}</div>
       </div>
     </a>
 

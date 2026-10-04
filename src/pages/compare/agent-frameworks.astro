@@ -1,5 +1,6 @@
 ---
 import BaseLayout from '../../layouts/BaseLayout.astro';
+import SyncBadge from '../../components/SyncBadge.astro';
 import data from '../../data/frameworks.json';
 ---
 <BaseLayout
@@ -7,7 +8,8 @@ import data from '../../data/frameworks.json';
   description={`Compare the major AI agent frameworks: ${data.frameworks.map((f) => f.name).join(', ')}. Strengths, languages, and when to pick each.`}
 >
   <h1>AI Agent Framework Comparison</h1>
-  <p>Updated {data.asOf}. Quick take: pick by control vs speed-to-prototype, not by hype.</p>
+  <SyncBadge date={data.asOf} detail="manually curated" />
+  <p>Quick take: pick by control vs speed-to-prototype, not by hype.</p>
   <div style="overflow-x:auto">
     <table>
       <thead><tr><th scope="col">Framework</th><th scope="col">Language</th><th scope="col">Strengths</th><th scope="col">Best for</th></tr></thead>
