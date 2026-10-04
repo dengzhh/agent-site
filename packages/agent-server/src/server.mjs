@@ -68,7 +68,7 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
 
     const cors = origin === undefined ? {} : (corsHeaders(origin, allowedOrigins) ?? null);
     if (cors === null) { res.writeHead(403, { 'content-type': 'application/json' }).end('{"error":"origin not allowed"}'); return; }
-    const json = (code, obj) => res.writeHead(code, { 'content-type': 'application/json', ...cors }).end(JSON.stringify(obj));
+    const json = (code, obj) => res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors }).end(JSON.stringify(obj));
 
     try {
       if (req.method === 'GET' && url.pathname === '/health') {
@@ -77,6 +77,7 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
 
       if (req.method === 'POST' && url.pathname === '/sessions') {
         const body = await readJson(req);
+        if (body == null || typeof body !== 'object') return json(400, { error: 'JSON object body required' });
         const { model, providerId } = resolve(models, body);
         const id = randomUUID();
         const agent = makeAgent(models, model, id, body.apiKey ?? null);
@@ -89,8 +90,16 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
         const session = sessions.get(msgMatch[1]);
         if (!session) return json(404, { error: 'unknown session' });
         if (session.streaming) return json(409, { error: 'already streaming' });
-        const { text } = await readJson(req);
-        if (typeof text !== 'string' || !text.trim()) return json(400, { error: 'text required' });
+        // 先同步占位再读 body：否则两个并发请求都能通过检查（TOCTOU）
+        session.streaming = true;
+        const { text } = await readJson(req).catch((err) => {
+          session.streaming = false;
+          throw err;
+        });
+        if (typeof text !== 'string' || !text.trim()) {
+          session.streaming = false;
+          return json(400, { error: 'text required' });
+        }
 
         res.writeHead(200, {
           'content-type': 'text/event-stream',
@@ -99,7 +108,6 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
           ...cors,
         });
         const send = (type, payload) => res.write(encodeSSE(type, payload));
-        session.streaming = true;
         // 客户端断开 → 中止本轮生成
         res.on('close', () => { if (session.streaming) session.agent.abort(); });
         const unsub = session.agent.subscribe((ev) => {
@@ -107,6 +115,11 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
             send('delta', { text: ev.assistantMessageEvent.delta });
           } else if (ev.type === 'turn_end') {
             send('turn_end', { stopReason: ev.message.stopReason ?? null });
+            // agent.prompt 不 reject provider 错误：失败编码为 stopReason:'error' +
+            // errorMessage。不转发的话客户端只会看到空白回复。
+            if (ev.message.stopReason === 'error') {
+              send('error', { message: ev.message.errorMessage ?? 'provider error' });
+            }
           }
         });
         try {

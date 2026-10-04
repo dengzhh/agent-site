@@ -85,3 +85,49 @@ test('unknown session 404, malformed JSON 400', async (t) => {
     body: '{oops',
   })).status, 400);
 });
+
+// provider 失败编码为 turn_end{stopReason:'error'} + errorMessage → 必须转发 error 帧，
+// 否则错 key 的用户只看到空白回复（agent.prompt 不 reject）
+test('provider error surfaces as SSE error frame', async (t) => {
+  const { json, base, faux } = await withFauxServer(t);
+  // faux 队列耗尽 → stream 报错
+  const create = await json('/sessions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ provider: 'faux', model: 'faux' }),
+  });
+  const { sessionId } = create.body;
+  const res = await fetch(`${base}/sessions/${sessionId}/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ text: 'hi' }),
+  });
+  const events = (await res.text()).split('\n\n').filter((b) => b.startsWith('data: ')).map((b) => JSON.parse(b.slice(6)));
+  assert.ok(events.some((e) => e.type === 'error'), 'error frame present');
+  assert.equal(events.at(-1).type, 'done');
+  void faux;
+});
+
+// body 校验失败必须释放 streaming 占位，否则会话卡死在 409
+test('failed body validation releases the streaming slot', async (t) => {
+  const { json, base } = await withFauxServer(t);
+  const create = await json('/sessions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ provider: 'faux', model: 'faux' }),
+  });
+  const { sessionId } = create.body;
+  assert.equal((await json(`/sessions/${sessionId}/messages`, {
+    method: 'POST', headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ text: '   ' }),
+  })).status, 400);
+  // 占位已释放：合法请求应正常进入 SSE 而非 409
+  faux_set: {
+    const res = await fetch(`${base}/sessions/${sessionId}/messages`, {
+      method: 'POST', headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+      body: JSON.stringify({ text: 'hi' }),
+    });
+    assert.equal(res.status, 200);
+    await res.text();
+  }
+});
