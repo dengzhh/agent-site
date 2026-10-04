@@ -1,6 +1,9 @@
 // 内存会话：Map 插入序即 LRU 序；get/set 触发 TTL 清扫。重启即清空，key 不落盘。
 export class SessionStore {
   constructor(capacity = 16, ttlMs = 30 * 60_000) {
+    if (!Number.isInteger(capacity) || capacity < 1) {
+      throw new TypeError(`capacity must be a positive integer, got ${capacity}`);
+    }
     this.capacity = capacity;
     this.ttlMs = ttlMs;
     this.map = new Map();
@@ -23,6 +26,8 @@ export class SessionStore {
   peek(id) { return this.map.get(id); }        // 不 touch（测试/内部用）
   set(session) {
     this.#sweep();
+    // 缺 lastUsed 会让 NaN 比较永不过期（永生会话）；0 则立即被清扫。由 store 兜底盖章。
+    if (!session.lastUsed) session.lastUsed = Date.now();
     this.map.delete(session.id);
     this.map.set(session.id, session);
     while (this.map.size > this.capacity) {
