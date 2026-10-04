@@ -63,7 +63,7 @@ const fmtCtx = (n: number) =>
                   {p.id !== 'github-copilot' && (
                     <br /><a href="#chat" class="chat-pick" data-provider={p.id} data-model={m.id}
                       data-base={p.api ?? ''} data-envkey={p.envKey} data-ctx={m.context} data-maxout={m.maxOutput}
-                      data-name={m.name} data-keyless={p.id === 'opencode' ? '1' : '0'}>Chat →</a>
+                      data-name={m.name}>Chat →</a>
                   )}
                 </td>
               </tr>
@@ -289,7 +289,7 @@ const fmtCtx = (n: number) =>
   const abortBtn = $('chat-abort') as HTMLButtonElement;
   type ChatState = {
     provider: string; model: string; base: string; envKey: string;
-    ctx: number; maxOut: number; name: string; keyless: boolean;
+    ctx: number; maxOut: number; name: string;
     sessionId: string | null; streaming: boolean; probeTimer?: ReturnType<typeof setInterval>;
     streamAbort?: AbortController;
   };
@@ -312,11 +312,9 @@ const fmtCtx = (n: number) =>
   async function ensureSession(): Promise<void> {
     const c = chat!;
     if (c.sessionId) return;
-    const apiKey = c.keyless ? null : keyStorage.get(c.provider);
     c.sessionId = await createSession({
-      provider: c.provider, model: c.model, baseUrl: c.base || null, apiKey,
-      // keyless 行不带 envKey：否则服务端选 env 鉴权分支，本地无该 env 时直接报"未配置"
-      envKey: c.keyless ? null : (c.envKey || null),
+      provider: c.provider, model: c.model, baseUrl: c.base || null,
+      apiKey: keyStorage.get(c.provider),
       name: c.name, contextWindow: c.ctx, maxOutput: c.maxOut,
     });
   }
@@ -325,7 +323,7 @@ const fmtCtx = (n: number) =>
     const c = chat!;
     if (!(await probeHealth())) { showPane('install'); stopProbe(); c.probeTimer = setInterval(tryGoChat, 3000); return; }
     stopProbe();
-    if (!c.keyless && !keyStorage.get(c.provider)) { showPane('key'); return; }
+    if (!keyStorage.get(c.provider)) { showPane('key'); return; }
     try { await ensureSession(); showPane('main'); chatInput.focus(); }
     catch (e) { chatMsg('error', String((e as Error).message)); showPane('key'); }
   }
@@ -334,7 +332,7 @@ const fmtCtx = (n: number) =>
     chat = {
       provider: a.dataset.provider!, model: a.dataset.model!, base: a.dataset.base ?? '',
       envKey: a.dataset.envkey ?? '', ctx: Number(a.dataset.ctx), maxOut: Number(a.dataset.maxout),
-      name: a.dataset.name ?? '', keyless: a.dataset.keyless === '1',
+      name: a.dataset.name ?? '',
       sessionId: null, streaming: false,
     };
     $('chat-model-name').textContent = chat.name;

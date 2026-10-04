@@ -15,7 +15,7 @@ export const PROVIDER_ALLOWLIST = [
 export const PROVIDER_OVERRIDES = {
   zai: { anthropicApi: 'https://api.z.ai/api/anthropic' },
   openrouter: { note: 'Free models are rate-limited: ~20 req/min with a $10 credit, 50 requests/day without.' },
-  opencode: { note: 'No account needed — the Zen endpoint serves free models without a key.' },
+  opencode: { note: 'Free models on the Zen endpoint — requires a (free) OpenCode API key; get one at opencode.ai.' },
   groq: { api: 'https://api.groq.com/openai/v1' },
 };
 

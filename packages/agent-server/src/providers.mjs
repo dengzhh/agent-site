@@ -46,9 +46,10 @@ export function resolveModel(models, req) {
     throw new UnsupportedError(`provider and model are required`);
   }
   const factory = BUILTIN_FACTORIES[req.provider];
-  // 无凭证（无 apiKey 且 envKey 未设置）时跳过内置分支：内置 provider 硬性要求 env，
-  // 会抛 "Provider is not configured"。落到下方动态分支用占位 key 放行 keyless 端点。
-  const hasCredential = Boolean(req.apiKey || !req.envKey || process.env[req.envKey]);
+  // 无可用凭证（无 apiKey 且 envKey 未设/未配置）时跳过内置分支：所有内置 provider 都
+  // 硬性要求 env key，无凭证时必抛 "Provider is not configured"。落到动态分支用占位 key
+  // 放行 keyless 端点（opencode zen 等不校验鉴权头）。
+  const hasCredential = Boolean(req.apiKey || (req.envKey && process.env[req.envKey]));
   if (factory && hasCredential) {
     const p = factory();
     models.setProvider(p);

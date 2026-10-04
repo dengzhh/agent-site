@@ -3,12 +3,17 @@ import assert from 'node:assert/strict';
 import { createModels, fauxProvider } from '@earendil-works/pi-ai';
 import { resolveModel, UnsupportedError } from '../src/providers.mjs';
 
-// groq 是内置 provider：目录命中且无 baseUrl → 内置模型
+// groq 是内置 provider：目录命中、envKey 已配置 → 内置模型
 test('builtin provider hit returns catalog model', () => {
-  const models = createModels();
-  const r = resolveModel(models, { provider: 'groq', model: 'llama-3.3-70b-versatile' });
-  assert.equal(r.model.provider, 'groq');
-  assert.equal(r.model.id, 'llama-3.3-70b-versatile');
+  process.env.ATBX_GROQ_TEST = 'k';
+  try {
+    const models = createModels();
+    const r = resolveModel(models, { provider: 'groq', model: 'llama-3.3-70b-versatile', envKey: 'ATBX_GROQ_TEST' });
+    assert.equal(r.model.provider, 'groq');
+    assert.equal(r.model.id, 'llama-3.3-70b-versatile');
+  } finally {
+    delete process.env.ATBX_GROQ_TEST;
+  }
 });
 
 // baseUrl 与目录不一致（如 zai 免费档走 paas 端点而非 coding 端点）→ 动态回退

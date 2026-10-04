@@ -1754,7 +1754,7 @@
       "envKey": "OPENCODE_API_KEY",
       "npm": "@ai-sdk/openai-compatible",
       "doc": "https://opencode.ai/docs/zen",
-      "note": "No account needed — the Zen endpoint serves free models without a key.",
+      "note": "Free models on the Zen endpoint — requires a (free) OpenCode API key; get one at opencode.ai.",
       "anthropicApi": null,
       "models": [
         {
