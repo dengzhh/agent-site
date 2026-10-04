@@ -1339,7 +1339,7 @@
     {
       "id": "groq",
       "name": "Groq",
-      "api": null,
+      "api": "https://api.groq.com/openai/v1",
       "envKey": "GROQ_API_KEY",
       "npm": "@ai-sdk/groq",
       "doc": "https://console.groq.com/docs/models",

@@ -10,10 +10,13 @@ export const PROVIDER_ALLOWLIST = [
 ];
 
 // models.dev 不携带的 provider 级补充信息（Anthropic 兼容端点、免费档限流说明）
+// groq 补 OpenAI 兼容端点：models.dev 无 api 字段，而其免费模型不在下游工具的
+// 静态目录里，需要 baseUrl 才能走动态回退（Chat 抽屉场景）
 export const PROVIDER_OVERRIDES = {
   zai: { anthropicApi: 'https://api.z.ai/api/anthropic' },
   openrouter: { note: 'Free models are rate-limited: ~20 req/min with a $10 credit, 50 requests/day without.' },
   opencode: { note: 'No account needed — the Zen endpoint serves free models without a key.' },
+  groq: { api: 'https://api.groq.com/openai/v1' },
 };
 
 // ── Pricing index（成本计算器数据）：三家主流 provider 的有价文本模型 ──
