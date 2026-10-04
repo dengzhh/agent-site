@@ -46,7 +46,10 @@ export function resolveModel(models, req) {
     throw new UnsupportedError(`provider and model are required`);
   }
   const factory = BUILTIN_FACTORIES[req.provider];
-  if (factory) {
+  // 无凭证（无 apiKey 且 envKey 未设置）时跳过内置分支：内置 provider 硬性要求 env，
+  // 会抛 "Provider is not configured"。落到下方动态分支用占位 key 放行 keyless 端点。
+  const hasCredential = Boolean(req.apiKey || !req.envKey || process.env[req.envKey]);
+  if (factory && hasCredential) {
     const p = factory();
     models.setProvider(p);
     const found = models.getModel(p.id, req.model);
@@ -69,11 +72,14 @@ export function resolveModel(models, req) {
       maxTokens: req.maxOutput || 8192,
       reasoning: false,
     };
-    // keyless（如 OpenCode Zen）：占位 key 让 openai-completions 适配器放行请求；
-    // 真实端点不校验该头时即免费可用。带 envKey/apiKey 的仍走真实凭证。
-    const auth = req.envKey
-      ? { apiKey: envApiKeyAuth(req.name || req.provider, [req.envKey]) }
-      : { apiKey: { name: req.name || req.provider, resolve: async () => ({ auth: { apiKey: 'unused' } }) } };
+    // auth 三选一：显式 apiKey > 可用 env > 占位 key（keyless 端点不校验该头时免费可用）。
+    // envKey 有值但 env 未设置时不能选 env 鉴权——resolve 返回 undefined 会报
+    // "Provider is not configured"，keyless 体验就断了。
+    const auth = req.apiKey
+      ? { apiKey: { name: req.name || req.provider, resolve: async () => ({ auth: { apiKey: req.apiKey } }) } }
+      : req.envKey && process.env[req.envKey]
+        ? { apiKey: envApiKeyAuth(req.name || req.provider, [req.envKey]) }
+        : { apiKey: { name: req.name || req.provider, resolve: async () => ({ auth: { apiKey: 'unused' } }) } };
     models.setProvider(createProvider({
       id: pid, name: req.name || req.provider, baseUrl: req.baseUrl,
       auth, models: [model], api: openAICompletionsApi(),

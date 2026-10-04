@@ -315,7 +315,9 @@ const fmtCtx = (n: number) =>
     const apiKey = c.keyless ? null : keyStorage.get(c.provider);
     c.sessionId = await createSession({
       provider: c.provider, model: c.model, baseUrl: c.base || null, apiKey,
-      envKey: c.envKey || null, name: c.name, contextWindow: c.ctx, maxOutput: c.maxOut,
+      // keyless 行不带 envKey：否则服务端选 env 鉴权分支，本地无该 env 时直接报"未配置"
+      envKey: c.keyless ? null : (c.envKey || null),
+      name: c.name, contextWindow: c.ctx, maxOutput: c.maxOut,
     });
   }
 

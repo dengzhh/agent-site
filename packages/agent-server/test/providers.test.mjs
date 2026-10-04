@@ -42,6 +42,99 @@ test('keyless dynamic provider resolves', () => {
   assert.equal(r.model.provider, 'atbx-opencode');
 });
 
+// 抽屉的 keyless 行带 envKey 字段（数据里有 OPENCODE_API_KEY）但用户本地没设该 env：
+// 内置 opencode provider 硬性要求 env，必须跳过内置分支落到占位 key 动态分支。
+// （B1 回归：此前这场景 100% 报 "Provider is not configured"）
+test('keyless request with unconfigured envKey skips builtin provider', () => {
+  assert.equal(process.env.OPENCODE_API_KEY, undefined, 'precondition: env not set in test runner');
+  const models = createModels();
+  const r = resolveModel(models, {
+    provider: 'opencode', model: 'mimo-v2-pro-free',
+    baseUrl: 'https://opencode.ai/zen/v1', envKey: 'OPENCODE_API_KEY',
+    name: 'MiMo V2 Pro Free', contextWindow: 200000, maxOutput: 8192,
+  });
+  assert.equal(r.model.provider, 'atbx-opencode');
+});
+
+// env 已设置时仍优先内置目录（鉴权可用，目录 compat 信息更全）
+test('builtin provider used when envKey is configured', () => {
+  process.env.ATBX_TEST_ENV_KEY = 'test-key-123';
+  try {
+    const models = createModels();
+    const r = resolveModel(models, {
+      provider: 'groq', model: 'llama-3.3-70b-versatile', envKey: 'ATBX_TEST_ENV_KEY',
+    });
+    assert.equal(r.model.provider, 'groq');
+  } finally {
+    delete process.env.ATBX_TEST_ENV_KEY;
+  }
+});
+
+// 动态分支 auth 三选一：envKey 有值但 env 未设置 → 占位 key（B1 第二层 gate 回归）。
+// 若此处误选 env 鉴权，resolve 返回 undefined → "Provider is not configured"。
+test('dynamic branch uses placeholder key when envKey unset', async () => {
+  assert.equal(process.env.OPENCODE_API_KEY, undefined, 'precondition: env not set');
+  const models = createModels();
+  const { model } = resolveModel(models, {
+    provider: 'opencode', model: 'wire-k', baseUrl: 'https://x.test/v1',
+    envKey: 'OPENCODE_API_KEY', name: 'Wire', contextWindow: 1000, maxOutput: 100,
+  });
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(
+    'data: ' + JSON.stringify({ id: 'x', object: 'chat.completion.chunk', created: 1, model: 'wire-k',
+      choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: null }] }) + '\n\n' +
+    'data: ' + JSON.stringify({ id: 'x', object: 'chat.completion.chunk', created: 1, model: 'wire-k',
+      choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }) + '\n\n',
+    { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  try {
+    const s = models.streamSimple(model, { messages: [{ role: 'user', content: 'hi', timestamp: Date.now() }] });
+    let sawText = false; let err = null;
+    for await (const ev of s) {
+      if (ev.type === 'text_delta') sawText = true;
+      if (ev.type === 'error') err = ev.error?.errorMessage;
+    }
+    assert.equal(err, null, `stream error: ${err}`);
+    assert.ok(sawText, 'keyless envKey path reaches the wire');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+// 动态分支：显式 apiKey 覆盖一切（BYOK 直接用它，不碰 env）
+test('dynamic branch prefers explicit apiKey over envKey', async () => {
+  process.env.ATBX_TEST_ENV_KEY2 = 'env-key';
+  try {
+    const models = createModels();
+    const { model } = resolveModel(models, {
+      provider: 'zai', model: 'wire-byok', baseUrl: 'https://x.test/v1',
+      envKey: 'ATBX_TEST_ENV_KEY2', apiKey: 'byok-key',
+      name: 'Wire', contextWindow: 1000, maxOutput: 100,
+    });
+    let authHeader = null;
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (_url, opts) => {
+      // pi-ai 传 Headers 实例，需用 get() 读取
+      const h = opts?.headers;
+      authHeader = typeof h?.get === 'function' ? h.get('authorization') : (h?.authorization ?? h?.Authorization ?? null);
+      return new Response(
+        'data: ' + JSON.stringify({ id: 'x', object: 'chat.completion.chunk', created: 1, model: 'wire-byok',
+          choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: null }] }) + '\n\n' +
+        'data: ' + JSON.stringify({ id: 'x', object: 'chat.completion.chunk', created: 1, model: 'wire-byok',
+          choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }) + '\n\n',
+        { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    };
+    try {
+      const s = models.streamSimple(model, { messages: [{ role: 'user', content: 'hi', timestamp: Date.now() }] });
+      for await (const ev of s) { if (ev.type === 'error') throw new Error(ev.error?.errorMessage); if (ev.type === 'text_delta') break; }
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+    assert.equal(authHeader, 'Bearer byok-key');
+  } finally {
+    delete process.env.ATBX_TEST_ENV_KEY2;
+  }
+});
+
 // faux 冒烟：解析出的模型能进 Agent（本测试只验证 model 对象形状可被 getModel 找回）
 test('dynamic model registered under its provider id', () => {
   const models = createModels();
