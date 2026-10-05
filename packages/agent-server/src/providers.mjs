@@ -36,6 +36,22 @@ export class UnsupportedError extends Error {
 
 const sanitize = (id) => id.replace(/[^a-z0-9-]/gi, '-').toLowerCase();
 
+// OpenRouter 免费模型的 "agentic harness" 网关按请求头判定调用方，缺应用归因头的
+// 请求会被 403。带上标准归因头（HTTP-Referer / X-Title），把 AgentToolbox 声明为
+// 调用应用。仅 openrouter baseUrl 生效；返回原对象表示无需修改。
+function withHarnessHeaders(model, req) {
+  const baseUrl = model.baseUrl || req.baseUrl || '';
+  if (!baseUrl.includes('openrouter')) return model;
+  return {
+    ...model,
+    headers: {
+      ...(model.headers ?? {}),
+      'HTTP-Referer': 'https://dengzhh.github.io/agent-site/',
+      'X-Title': 'AgentToolbox',
+    },
+  };
+}
+
 /**
  * 解析 free-models 页发来的 {provider, model, baseUrl?, envKey?, name?,
  * contextWindow?, maxOutput?, apiKey?} 为 pi-ai Model，注册进 models 集合。
@@ -56,6 +72,16 @@ export function resolveModel(models, req) {
     const found = models.getModel(p.id, req.model);
     // baseUrl 一致或未提供 → 用内置目录（env 鉴权 pi-ai 自动解析）
     if (found && (!req.baseUrl || found.baseUrl === req.baseUrl)) {
+      // openrouter 免费模型需要应用归因头：用带 headers 的浅拷贝替换目录条目
+      const patched = withHarnessHeaders(found, req);
+      if (patched !== found) {
+        models.setProvider({
+          ...p,
+          getModels: () => [patched],
+          getModel: (id) => (id === patched.id ? patched : undefined),
+        });
+        return { model: patched, providerId: p.id };
+      }
       return { model: found, providerId: p.id };
     }
   }
@@ -72,6 +98,15 @@ export function resolveModel(models, req) {
       contextWindow: req.contextWindow || 128000,
       maxTokens: req.maxOutput || 8192,
       reasoning: false,
+      // OpenRouter 的免费模型有 "agentic harness" 网关：按请求头特征判定调用方。
+      // 声明应用身份（HTTP-Referer/X-Title 是 OpenRouter 的标准归因头），否则
+      // 部分 :free 模型直接 403 "only available on agentic harnesses"。
+      headers: req.baseUrl.includes('openrouter')
+        ? {
+            'HTTP-Referer': 'https://dengzhh.github.io/agent-site/',
+            'X-Title': 'AgentToolbox',
+          }
+        : undefined,
     };
     // auth 三选一：显式 apiKey > 可用 env > 占位 key（keyless 端点不校验该头时免费可用）。
     // envKey 有值但 env 未设置时不能选 env 鉴权——resolve 返回 undefined 会报
