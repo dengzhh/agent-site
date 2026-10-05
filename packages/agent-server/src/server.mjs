@@ -37,10 +37,26 @@ async function readJson(req, cap = 1_000_000) {
   }
 }
 
+// 免费模型推理排队慢（OpenRouter 免费档高峰可等数分钟），OpenAI SDK 默认 10 分钟超时
+// 会被 undici 的 300s headersTimeout 先打断（"Request timed out"）。修法两层：
+// ① streamSimple 传大 timeoutMs（SDK 侧）；② 传 undici 包的 fetch + 长超时 dispatcher
+// （传输层——OpenAI SDK 用全局 fetch 时其内置 undici 的 300s headersTimeout 无法配置）。
+import { Agent as UndiciAgent, fetch as undiciFetch } from 'undici';
+const STREAM_TIMEOUT_MS = 15 * 60_000;
+const streamDispatcher = new UndiciAgent({
+  headersTimeout: STREAM_TIMEOUT_MS,
+  bodyTimeout: STREAM_TIMEOUT_MS,
+});
+const longTimeoutFetch = (url, init) => undiciFetch(url, { ...init, dispatcher: streamDispatcher });
+
 function makeAgent(models, model, sessionId, apiKey) {
   return new Agent({
     initialState: { systemPrompt: SYSTEM_PROMPT, model },
-    streamFn: models.streamSimple.bind(models),
+    streamFn: (model, context, options) => models.streamSimple(model, context, {
+      ...options,
+      timeoutMs: STREAM_TIMEOUT_MS,
+      fetch: longTimeoutFetch,
+    }),
     sessionId,
     getApiKey: () => apiKey,
   });
