@@ -1,7 +1,7 @@
 {
   "syncedAt": "2026-10-03T09:17:16.834Z",
   "source": "models.dev + openrouter/api/v1/models",
-  "totalFree": 188,
+  "totalFree": 161,
   "providers": [
     {
       "id": "openrouter",
@@ -1769,28 +1769,6 @@
           "lastUpdated": "2026-10-01"
         },
         {
-          "id": "mimo-v2-pro-free",
-          "name": "MiMo V2 Pro Free",
-          "context": 1048576,
-          "maxOutput": 64000,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": true,
-          "openWeights": true,
-          "lastUpdated": "2026-03-18"
-        },
-        {
-          "id": "muse-spark-1.2-contributor-free",
-          "name": "Muse Spark 1.2 Free",
-          "context": 1048576,
-          "maxOutput": 131072,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": true,
-          "openWeights": false,
-          "lastUpdated": "2026-08-05"
-        },
-        {
           "id": "space-bunny-free",
           "name": "Space Bunny Free",
           "context": 1048576,
@@ -1824,17 +1802,6 @@
           "lastUpdated": "2026-09-25"
         },
         {
-          "id": "longcat-2.0-free",
-          "name": "LongCat-2.0 Free",
-          "context": 1000000,
-          "maxOutput": 131072,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": false,
-          "openWeights": false,
-          "lastUpdated": "2026-06-30"
-        },
-        {
           "id": "nemotron-3-ultra-free",
           "name": "Nemotron 3 Ultra Free",
           "context": 1000000,
@@ -1844,17 +1811,6 @@
           "attachment": false,
           "openWeights": true,
           "lastUpdated": "2026-06-04"
-        },
-        {
-          "id": "x-preview-f-free",
-          "name": "Ox Alpha Free (Unlimited)",
-          "context": 1000000,
-          "maxOutput": 131072,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": true,
-          "openWeights": false,
-          "lastUpdated": "2026-08-21"
         },
         {
           "id": "ling-3.0-flash-fin-free",
@@ -1868,17 +1824,6 @@
           "lastUpdated": "2026-08-27"
         },
         {
-          "id": "qwen3.6-plus-free",
-          "name": "Qwen3.6 Plus Free",
-          "context": 262144,
-          "maxOutput": 65536,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": true,
-          "openWeights": false,
-          "lastUpdated": "2026-04-02"
-        },
-        {
           "id": "ling-3.1-flash-free",
           "name": "Ling 3.1 Flash Free",
           "context": 262144,
@@ -1888,28 +1833,6 @@
           "attachment": false,
           "openWeights": false,
           "lastUpdated": "2026-09-29"
-        },
-        {
-          "id": "ling-3.0-tiny-free",
-          "name": "Ling-3.0-tiny Free",
-          "context": 262144,
-          "maxOutput": 32768,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": false,
-          "openWeights": false,
-          "lastUpdated": "2026-08-06"
-        },
-        {
-          "id": "kimi-k2.5-free",
-          "name": "Kimi K2.5 Free",
-          "context": 262144,
-          "maxOutput": 262144,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": true,
-          "openWeights": true,
-          "lastUpdated": "2026-01-27"
         },
         {
           "id": "nemotron-3.5-lightning-free",
@@ -1923,171 +1846,6 @@
           "lastUpdated": "2026-08-11"
         },
         {
-          "id": "mimo-v2-omni-free",
-          "name": "MiMo V2 Omni Free",
-          "context": 262144,
-          "maxOutput": 64000,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": true,
-          "openWeights": true,
-          "lastUpdated": "2026-03-18"
-        },
-        {
-          "id": "ling-3.0-flash-free",
-          "name": "Ling-3.0-flash Free",
-          "context": 262144,
-          "maxOutput": 32768,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": false,
-          "openWeights": false,
-          "lastUpdated": "2026-07-23"
-        },
-        {
-          "id": "mimo-v2-flash-free",
-          "name": "MiMo V2 Flash Free",
-          "context": 262144,
-          "maxOutput": 65536,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": false,
-          "openWeights": true,
-          "lastUpdated": "2025-12-16"
-        },
-        {
-          "id": "ling-2.6-flash-free",
-          "name": "Ling 2.6 Flash Free",
-          "context": 262100,
-          "maxOutput": 32800,
-          "toolCall": true,
-          "reasoning": false,
-          "attachment": false,
-          "openWeights": true,
-          "lastUpdated": "2026-04-21"
-        },
-        {
-          "id": "ring-2.6-1t-free",
-          "name": "Ring 2.6 1T Free",
-          "context": 262000,
-          "maxOutput": 66000,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": false,
-          "openWeights": true,
-          "lastUpdated": "2026-05-08"
-        },
-        {
-          "id": "laguna-s-2.1-free",
-          "name": "Laguna S 2.1 Free",
-          "context": 256000,
-          "maxOutput": 32000,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": false,
-          "openWeights": true,
-          "lastUpdated": "2026-07-21"
-        },
-        {
-          "id": "hy3-preview-free",
-          "name": "Hy3 preview Free",
-          "context": 256000,
-          "maxOutput": 64000,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": false,
-          "openWeights": true,
-          "lastUpdated": "2026-04-20"
-        },
-        {
-          "id": "grok-code",
-          "name": "Grok Code Fast 1",
-          "context": 256000,
-          "maxOutput": 256000,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": false,
-          "openWeights": false,
-          "lastUpdated": "2025-08-20"
-        },
-        {
-          "id": "north-mini-code-free",
-          "name": "North Mini Code Free",
-          "context": 256000,
-          "maxOutput": 64000,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": false,
-          "openWeights": true,
-          "lastUpdated": "2026-06-09"
-        },
-        {
-          "id": "glm-5-free",
-          "name": "GLM-5 Free",
-          "context": 204800,
-          "maxOutput": 131072,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": false,
-          "openWeights": true,
-          "lastUpdated": "2026-02-11"
-        },
-        {
-          "id": "glm-4.7-free",
-          "name": "GLM-4.7 Free",
-          "context": 204800,
-          "maxOutput": 131072,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": false,
-          "openWeights": true,
-          "lastUpdated": "2025-12-22"
-        },
-        {
-          "id": "minimax-m2.5-free",
-          "name": "MiniMax-M2.5 Free",
-          "context": 204800,
-          "maxOutput": 131072,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": false,
-          "openWeights": true,
-          "lastUpdated": "2026-02-12"
-        },
-        {
-          "id": "nemotron-3-super-free",
-          "name": "Nemotron 3 Super Free",
-          "context": 204800,
-          "maxOutput": 128000,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": false,
-          "openWeights": true,
-          "lastUpdated": "2026-03-11"
-        },
-        {
-          "id": "minimax-m2.1-free",
-          "name": "MiniMax-M2.1 Free",
-          "context": 204800,
-          "maxOutput": 131072,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": false,
-          "openWeights": true,
-          "lastUpdated": "2025-12-23"
-        },
-        {
-          "id": "minimax-m3-free",
-          "name": "MiniMax-M3 Free",
-          "context": 200000,
-          "maxOutput": 32000,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": false,
-          "openWeights": true,
-          "lastUpdated": "2026-05-31"
-        },
-        {
           "id": "mimo-v2.6-flash-free",
           "name": "MiMo-V2.6-Flash Free",
           "context": 200000,
@@ -2097,61 +1855,6 @@
           "attachment": true,
           "openWeights": true,
           "lastUpdated": "2026-09-22"
-        },
-        {
-          "id": "mimo-v2.5-free",
-          "name": "MiMo V2.5 Free",
-          "context": 200000,
-          "maxOutput": 32000,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": true,
-          "openWeights": true,
-          "lastUpdated": "2026-04-24"
-        },
-        {
-          "id": "deepseek-v4-flash-free",
-          "name": "DeepSeek V4 Flash Free",
-          "context": 200000,
-          "maxOutput": 128000,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": false,
-          "openWeights": true,
-          "lastUpdated": "2026-07-31"
-        },
-        {
-          "id": "big-pickle",
-          "name": "Big Pickle",
-          "context": 200000,
-          "maxOutput": 32000,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": false,
-          "openWeights": false,
-          "lastUpdated": "2025-10-17"
-        },
-        {
-          "id": "hy3-free",
-          "name": "Hy3 Free",
-          "context": 190000,
-          "maxOutput": 64000,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": false,
-          "openWeights": true,
-          "lastUpdated": "2026-07-06"
-        },
-        {
-          "id": "trinity-large-preview-free",
-          "name": "Trinity Large Preview",
-          "context": 131072,
-          "maxOutput": 131072,
-          "toolCall": true,
-          "reasoning": false,
-          "attachment": false,
-          "openWeights": true,
-          "lastUpdated": "2026-01-28"
         }
       ]
     }

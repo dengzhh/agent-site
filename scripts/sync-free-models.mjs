@@ -64,6 +64,17 @@ const trim = (m) => ({
   lastUpdated: m.last_updated ?? null,
 });
 
+// models.dev 与真实端点脱节的 provider：models.dev 的目录过期严重（opencode 曾 36 个
+// 免费模型实际端点只认 9 个）。这些 provider 只保留 pi-ai 静态目录也收录的交集，
+// Chat 抽屉才能真正对话。pi-ai 目录从真实端点生成，是更准的下游事实。
+export const ENDPOINT_VERIFIED_PROVIDERS = {
+  opencode: [
+    'fledge-alpha-free', 'ling-3.0-flash-fin-free', 'ling-3.1-flash-free',
+    'longcat-2.5-preview-free', 'mimo-v2.6-flash-free', 'nemotron-3-ultra-free',
+    'nemotron-3.5-lightning-free', 'space-bunny-free', 'muse-spark-1.3-contributor-free',
+  ],
+};
+
 export function buildFreeModelsIndex(modelsdev, openrouterApi) {
   const orFreeIds = new Set(
     (openrouterApi?.data ?? []).map((m) => m.id).filter((id) => id.endsWith(':free')),
@@ -87,6 +98,8 @@ export function buildFreeModelsIndex(modelsdev, openrouterApi) {
       // openrouter/free、stealth/space-bunny-alpha、google/lyria-*（见交叉源 api/v1/models）。
       models = models.filter((m) => orFreeIds.has(m.id));
     }
+    const verified = ENDPOINT_VERIFIED_PROVIDERS[pid];
+    if (verified) models = models.filter((m) => verified.includes(m.id));
     // 校验源在线但过滤后为空 → 不留 0 模型的 provider 节
     if (models.length === 0) continue;
     totalFree += models.length;
