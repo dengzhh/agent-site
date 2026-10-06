@@ -9,6 +9,8 @@ export interface FreeModel {
   attachment: boolean;
   openWeights: boolean;
   lastUpdated: string | null;
+  // 能承载该模型的网关适配器偏好序（网关 /sessions 的 agents 参数）
+  agents: string[];
 }
 
 export interface FreeProvider {

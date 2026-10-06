@@ -21,6 +21,7 @@ const gemma: FreeModel = {
   id: 'google/gemma-4-31b-it:free', name: 'Gemma 4 31B (free)', context: 262144,
   maxOutput: 32768, toolCall: true, reasoning: true, attachment: true,
   openWeights: true, lastUpdated: '2026-04-02',
+  agents: ['cc', 'pi'],
 };
 
 describe('generateConfig', () => {
