@@ -1,6 +1,6 @@
 {
   "name": "agenttoolbox-agent",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Local agent bridge for AgentToolbox: pi-agent chat sessions for the free-models page, BYOK, loopback only",
   "type": "module",
   "license": "MIT",
