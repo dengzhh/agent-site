@@ -137,6 +137,9 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
         res.on('close', () => ac.abort());
         try {
           for await (const ev of session.adapter.run({
+            // sessionId 是 pi 适配器跨轮缓存 Agent（= 多轮上下文）的键；前端每轮只发
+            // { text }，历史只能由服务端持有。
+            sessionId: session.id,
             messages: [{ role: 'user', content: text }],
             request: session.request,
             apiKey: session.apiKey,

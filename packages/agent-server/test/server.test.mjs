@@ -166,3 +166,44 @@ test('session response reports the adapter that will serve it', async (t) => {
   assert.equal(create.status, 200);
   assert.equal(create.body.adapter, 'pi');
 });
+
+// 多轮上下文回归：前端每轮只发 `{ text }`，历史只能由服务端持有——pi 适配器按
+// sessionId 跨轮缓存同一个 Agent。若改回「每轮新建 Agent」，第 2 轮发给模型的输入
+// 会退化成 system + 本轮 user（实测过：4 条 → 2 条），此断言即红。
+// 普通往返测试抓不到：SSE 契约不变，回复依旧正确，只是模型忘了前文。
+test('multi-turn: the second turn carries the earlier transcript', async (t) => {
+  const { json, base, faux } = await withFauxServer(t);
+  const seen = [];
+  // faux 的 response 可以是函数：拿到本轮的 context（即真正发给模型的消息）
+  const capture = (reply) => (ctx) => {
+    seen.push(ctx.messages);
+    return fauxAssistantMessage([fauxText(reply)]);
+  };
+  faux.setResponses([capture('reply one'), capture('reply two')]);
+
+  const create = await json('/sessions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ provider: 'faux', model: 'faux' }),
+  });
+  const { sessionId } = create.body;
+  for (const text of ['first question', 'second question']) {
+    const res = await fetch(`${base}/sessions/${sessionId}/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+      body: JSON.stringify({ text }),
+    });
+    assert.equal(res.status, 200);
+    await res.text();
+  }
+
+  assert.equal(seen.length, 2, 'model called once per turn');
+  const second = JSON.stringify(seen[1]);
+  assert.ok(second.includes('first question'), 'turn 2 carries the first user turn');
+  assert.ok(second.includes('reply one'), 'turn 2 carries the first assistant turn');
+  assert.deepEqual(
+    seen[1].filter((m) => m.role !== 'system').map((m) => m.role),
+    ['user', 'assistant', 'user'],
+    'transcript accumulates in order',
+  );
+});
