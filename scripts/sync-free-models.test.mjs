@@ -56,6 +56,37 @@ describe('buildFreeModelsIndex', () => {
     expect(or.models.map((m) => m.id)).toEqual(['google/gemma:free']);
   });
 
+  it('annotates agents: openrouter prefers cc, others pi', () => {
+    // OpenRouter 免费模型受 agentic harness 限制，只有 cc 适配器能承载；其余走默认 pi
+    const src = {
+      ...md('openrouter', [model({ id: 'google/gemma:free' })]),
+      ...md('groq', [model({ id: 'llama-free' })]),
+    };
+    const idx = buildFreeModelsIndex(src, orApi);
+    const or = idx.providers.find((p) => p.id === 'openrouter');
+    const groq = idx.providers.find((p) => p.id === 'groq');
+    expect(or.models[0].agents).toEqual(['cc', 'pi']);
+    expect(groq.models[0].agents).toEqual(['pi']);
+  });
+
+  it('annotates every surviving model, including the openrouter API-down path', () => {
+    // 标注在 provider 循环内对过滤后的存活模型逐个施加：既覆盖交叉校验幸存者，
+    // 也覆盖官方 API 拉取失败（null）时保留的主源模型。
+    const src = {
+      ...md('openrouter', [model({ id: 'a:free' }), model({ id: 'b:free' })]),
+      ...md('nvidia', [model({ id: 'nemotron' })]),
+    };
+    const idx = buildFreeModelsIndex(src, { data: [{ id: 'a:free' }, { id: 'b:free' }] });
+    const or = idx.providers.find((p) => p.id === 'openrouter');
+    expect(or.models.map((m) => m.agents)).toEqual([['cc', 'pi'], ['cc', 'pi']]);
+
+    const down = buildFreeModelsIndex(src, null);
+    const orDown = down.providers.find((p) => p.id === 'openrouter');
+    const nvDown = down.providers.find((p) => p.id === 'nvidia');
+    expect(orDown.models.every((m) => m.agents?.[0] === 'cc')).toBe(true);
+    expect(nvDown.models[0].agents).toEqual(['pi']);
+  });
+
   it('trims fields and carries provider meta + overrides', () => {
     const idx = buildFreeModelsIndex(modelsdev, orApi);
     const zai = idx.providers.find((p) => p.id === 'zai');
@@ -63,7 +94,7 @@ describe('buildFreeModelsIndex', () => {
     expect(zai.models[0]).toEqual({
       id: 'glm-4.5-flash', name: 'Test Model', context: 100000, maxOutput: 8192,
       toolCall: true, reasoning: false, attachment: false, openWeights: false,
-      lastUpdated: '2026-09-01',
+      lastUpdated: '2026-09-01', agents: ['pi'],
     });
   });
 
