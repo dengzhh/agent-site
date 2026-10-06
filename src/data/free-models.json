@@ -1,7 +1,7 @@
 {
-  "syncedAt": "2026-10-03T09:17:16.834Z",
+  "syncedAt": "2026-10-06T10:33:08.989Z",
   "source": "models.dev + openrouter/api/v1/models",
-  "totalFree": 161,
+  "totalFree": 160,
   "providers": [
     {
       "id": "openrouter",
@@ -144,17 +144,6 @@
           "attachment": false,
           "openWeights": true,
           "lastUpdated": "2026-03-11"
-        },
-        {
-          "id": "qwen/qwen3.8-27b:free",
-          "name": "Qwen3.8 27B (free)",
-          "context": 262144,
-          "maxOutput": 235929,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": true,
-          "openWeights": true,
-          "lastUpdated": "2026-08-14"
         },
         {
           "id": "cohere/north-mini-code:free",
