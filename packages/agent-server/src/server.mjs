@@ -1,13 +1,16 @@
 // 只监听 127.0.0.1 的 agent 桥：health / sessions / messages(SSE) / abort。
+// 会话的推理不再内联在本文件：由适配器注册表挑一个适配器（pi / cc）承接，
+// server 只负责 HTTP/SSE/CORS 与会话状态（键不落盘）。
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { Agent } from '@earendil-works/pi-agent-core';
 import { resolveModel } from './providers.mjs';
+import { createRegistry } from './adapters/registry.mjs';
+import { createPiAdapter } from './adapters/pi.mjs';
+import { createCcAdapter } from './adapters/cc.mjs';
+import { loadConfig } from './config.mjs';
 import { SessionStore } from './sessions.mjs';
 import { encodeSSE } from './sse.mjs';
 import { VERSION } from './version.mjs';
-
-const SYSTEM_PROMPT = 'You are a helpful assistant chatting in the AgentToolbox web app. Be concise and useful.';
 
 const DEFAULT_ORIGINS = ['https://dengzhh.github.io'];
 
@@ -37,32 +40,13 @@ async function readJson(req, cap = 1_000_000) {
   }
 }
 
-// 免费模型推理排队慢（OpenRouter 免费档高峰可等数分钟），OpenAI SDK 默认 10 分钟超时
-// 会被 undici 的 300s headersTimeout 先打断（"Request timed out"）。修法两层：
-// ① streamSimple 传大 timeoutMs（SDK 侧）；② 传 undici 包的 fetch + 长超时 dispatcher
-// （传输层——OpenAI SDK 用全局 fetch 时其内置 undici 的 300s headersTimeout 无法配置）。
-import { Agent as UndiciAgent, fetch as undiciFetch } from 'undici';
-const STREAM_TIMEOUT_MS = 15 * 60_000;
-const streamDispatcher = new UndiciAgent({
-  headersTimeout: STREAM_TIMEOUT_MS,
-  bodyTimeout: STREAM_TIMEOUT_MS,
-});
-const longTimeoutFetch = (url, init) => undiciFetch(url, { ...init, dispatcher: streamDispatcher });
-
-function makeAgent(models, model, sessionId, apiKey) {
-  return new Agent({
-    initialState: { systemPrompt: SYSTEM_PROMPT, model },
-    streamFn: (model, context, options) => models.streamSimple(model, context, {
-      ...options,
-      timeoutMs: STREAM_TIMEOUT_MS,
-      fetch: longTimeoutFetch,
-    }),
-    sessionId,
-    getApiKey: () => apiKey,
-  });
-}
-
-export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOrigins = DEFAULT_ORIGINS, resolve = resolveModel, models }) {
+// SYSTEM_PROMPT / STREAM_TIMEOUT_MS / undici 长超时 dispatcher 都随 pi 适配器搬到了
+// adapters/pi.mjs（单一来源），本文件不再持有副本。
+export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOrigins = DEFAULT_ORIGINS, resolve = resolveModel, models, registry }) {
+  const reg = registry ?? createRegistry([
+    createPiAdapter({ models, resolve }),
+    createCcAdapter(),
+  ]);
   const sessions = new SessionStore();
 
   const server = http.createServer(async (req, res) => {
@@ -88,17 +72,33 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
 
     try {
       if (req.method === 'GET' && url.pathname === '/health') {
-        return json(200, { ok: true, version: VERSION, grantedDirs: [] });
+        return json(200, {
+          ok: true,
+          version: VERSION,
+          agents: await reg.status(),
+          grantedDirs: loadConfig().grantedDirs,
+        });
       }
 
       if (req.method === 'POST' && url.pathname === '/sessions') {
         const body = await readJson(req);
         if (body == null || typeof body !== 'object') return json(400, { error: 'JSON object body required' });
-        const { model, providerId } = resolve(models, body);
+        // 选适配器（异步探活，必须 await）。body.agents 是前端给的偏好序，
+        // 缺省 ['pi']；全部不可用时 pick 抛错 → 走统一错误出口（500）。
+        const adapter = await reg.pick(body.agents ?? ['pi']);
         const id = randomUUID();
-        const agent = makeAgent(models, model, id, body.apiKey ?? null);
-        sessions.set({ id, agent, model, providerId, apiKey: body.apiKey ?? null, lastUsed: Date.now(), streaming: false });
-        return json(200, { sessionId: id, provider: body.provider, model: body.model });
+        // 不再预建 Agent：适配器在 /messages 时才构造运行时，会话只存运行所需输入。
+        sessions.set({
+          id,
+          adapter,
+          request: body,
+          apiKey: body.apiKey ?? null,
+          grantedDirs: loadConfig().grantedDirs,
+          ccSessionId: null,
+          lastUsed: Date.now(),
+          streaming: false,
+        });
+        return json(200, { sessionId: id, adapter: adapter.id, provider: body.provider, model: body.model });
       }
 
       const msgMatch = req.method === 'POST' && url.pathname.match(/^\/sessions\/([0-9a-f-]+)\/messages$/);
@@ -124,27 +124,39 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
           ...cors,
         });
         const send = (type, payload) => res.write(encodeSSE(type, payload));
-        // 客户端断开 → 中止本轮生成
-        res.on('close', () => { if (session.streaming) session.agent.abort(); });
-        const unsub = session.agent.subscribe((ev) => {
-          if (ev.type === 'message_update' && ev.assistantMessageEvent.type === 'text_delta') {
-            send('delta', { text: ev.assistantMessageEvent.delta });
-          } else if (ev.type === 'turn_end') {
-            send('turn_end', { stopReason: ev.message.stopReason ?? null });
-            // agent.prompt 不 reject provider 错误：失败编码为 stopReason:'error' +
-            // errorMessage。不转发的话客户端只会看到空白回复。
-            if (ev.message.stopReason === 'error') {
-              send('error', { message: ev.message.errorMessage ?? 'provider error' });
-            }
-          }
-        });
+        // 授权目录 → 只读工具 + cwd（只有 cc 适配器用得上：granted 目录是其可读范围，
+        // 无授权时 allowedTools 为空 = 不给任何工具）。
+        const isCc = session.adapter.id === 'cc';
+        const granted = session.grantedDirs ?? [];
+        const allowedTools = isCc && granted.length ? ['Read', 'Grep', 'Glob'] : [];
+        const cwd = isCc ? granted[0] : undefined;
+        // 每轮一个 AbortController：客户端断开 → abort()，/abort 路由也经它取消
+        // （abort 幂等，重复调用无害）。cancel 钩子挂在会话上供 /abort 调用。
+        const ac = new AbortController();
+        session.cancel = () => ac.abort();
+        res.on('close', () => ac.abort());
         try {
-          await session.agent.prompt(text);
+          for await (const ev of session.adapter.run({
+            messages: [{ role: 'user', content: text }],
+            request: session.request,
+            apiKey: session.apiKey,
+            signal: ac.signal,
+            model: session.request.model,
+            baseUrl: session.request.baseUrl,
+            cwd,
+            allowedTools,
+            resumeSessionId: session.ccSessionId,
+          })) {
+            if (ev.sessionId) session.ccSessionId = ev.sessionId; // cc 续会话
+            if (ev.type === 'delta') send('delta', { text: ev.text });
+            else if (ev.type === 'turn_end') send('turn_end', { stopReason: ev.stopReason ?? null });
+            else if (ev.type === 'error') send('error', { message: ev.message });
+          }
         } catch (err) {
           send('error', { message: String(err?.message ?? err) });
         } finally {
-          unsub();
           session.streaming = false;
+          session.cancel = null;
           send('done', {});
           res.end();
         }
@@ -155,7 +167,8 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
       if (abortMatch) {
         const session = sessions.get(abortMatch[1]);
         if (!session) return json(404, { error: 'unknown session' });
-        session.agent.abort();
+        // 未在流式中的会话没有 cancel 钩子：no-op（与旧的 agent.abort() 同为幂等无害）
+        session.cancel?.();
         return res.writeHead(204, cors).end();
       }
 
