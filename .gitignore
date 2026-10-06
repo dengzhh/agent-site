@@ -25,7 +25,3 @@ pnpm-debug.log*
 
 # local browser automation artifacts
 .playwright-mcp/
-
-# one-off verification scripts (design-phase probes, deps not committed)
-scripts/verify/node_modules/
-scripts/verify/package-lock.json
