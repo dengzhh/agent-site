@@ -3,6 +3,33 @@
 import { createModels } from '@earendil-works/pi-ai';
 import { startServer } from '../src/server.mjs';
 import { VERSION } from '../src/version.mjs';
+import { loadConfig, grantDir, revokeDir, DEFAULT_CONFIG_PATH } from '../src/config.mjs';
+
+// CLI 子命令：grant / list / revoke。浏览器无法提供本地路径，故授权只能由终端发起。
+// 必须在 --port 解析之前处理（子命令是本进程的一次性动作，不启动服务器）。
+const CONFIG_PATH = process.env.ATBX_CONFIG_PATH ?? DEFAULT_CONFIG_PATH;
+const sub = process.argv[2];
+
+if (sub === 'grant') {
+  const dir = process.argv[3];
+  if (!dir) { console.error('usage: agenttoolbox-agent grant <dir>'); process.exit(1); }
+  const dirs = grantDir(dir, CONFIG_PATH);
+  console.log(`granted: ${dir}`);
+  console.log(`all granted dirs: ${dirs.join(', ') || '(none)'}`);
+  process.exit(0);
+}
+if (sub === 'revoke') {
+  const dir = process.argv[3];
+  if (!dir) { console.error('usage: agenttoolbox-agent revoke <dir>'); process.exit(1); }
+  revokeDir(dir, CONFIG_PATH);
+  console.log(`revoked: ${dir}`);
+  process.exit(0);
+}
+if (sub === 'list') {
+  const { grantedDirs } = loadConfig(CONFIG_PATH);
+  console.log(grantedDirs.length ? grantedDirs.join('\n') : '(no granted dirs)');
+  process.exit(0);
+}
 
 const args = process.argv.slice(2);
 const portFlag = args.indexOf('--port');
