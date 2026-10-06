@@ -5,7 +5,18 @@ import { dirname, join } from 'node:path';
 import { createCcAdapter } from '../src/adapters/cc.mjs';
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-claude.sh');
+const FLOOD_FIXTURE = join(dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-claude-stderr-flood.sh');
 const collect = async (iter) => { const out = []; for await (const e of iter) out.push(e); return out; };
+
+// 迭代器超时保护：夹具若触发回归（stderr 未排空 / 缺终结事件未收尾），
+// run() 会永久挂起；这里把「挂起」显式变成一次测试失败，而不是拖死整个套件。
+const withTimeout = (promise, ms, label) => {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms: ${label}`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+};
 
 test('cc adapter streams deltas then turn_end', async () => {
   const cc = createCcAdapter({ cliPath: FIXTURE });
@@ -53,4 +64,22 @@ test('cc adapter isolates config from the user environment', async () => {
   assert.ok(line, 'fixture echoed config');
   assert.match(line.text, /atbx-cc-/);
   assert.doesNotMatch(line.text, /\.claude/);
+});
+
+// 回归：stderr 洪泛 + 零终结行。若有人删掉 child.stderr.resume()，子进程会阻塞在
+// 写 stderr 上、'close' 永不触发，本用例超时失败；若有人删掉缺终结事件的收尾逻辑，
+// 同样超时失败。正常时应在超时前 yield 一个合成的 error 事件。
+test('cc adapter drains stderr and terminates without a terminal line', async () => {
+  const cc = createCcAdapter({ cliPath: FLOOD_FIXTURE });
+  const events = await withTimeout(
+    collect(cc.run({
+      messages: [{ role: 'user', content: 'hi' }], model: 'm', apiKey: 'k',
+      baseUrl: 'https://openrouter.ai/api', cwd: '/tmp', allowedTools: [],
+    })),
+    15000,
+    'stderr-flood fixture never terminated',
+  );
+  const last = events.at(-1);
+  assert.equal(last.type, 'error');
+  assert.match(last.message, /exited with code 7/);
 });
