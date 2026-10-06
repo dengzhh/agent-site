@@ -63,6 +63,7 @@ const fmtCtx = (n: number) =>
                   {p.id !== 'github-copilot' && (
                     <br /><a href="#chat" class="chat-pick" data-provider={p.id} data-model={m.id}
                       data-base={p.api ?? ''} data-envkey={p.envKey} data-ctx={m.context} data-maxout={m.maxOutput}
+                      data-agents={m.agents?.join(',') || 'pi'}
                       data-name={m.name}>Chat →</a>
                   )}
                 </td>
@@ -121,6 +122,12 @@ const fmtCtx = (n: number) =>
       <pre class="chat-cmd"><code>npx agenttoolbox-agent@latest</code></pre>
       <button id="chat-copy-cmd" type="button" class="cap-chip">Copy command</button>
       <p class="chat-sub">Waiting for the local service…</p>
+    </div>
+    <div id="chat-cc" class="chat-pane" hidden>
+      <p>This model is only served by agentic harnesses. Your local service is running, but Claude Code isn't installed — install it, then reopen this chat:</p>
+      <pre class="chat-cmd"><code>curl -fsSL https://claude.ai/install.sh | bash</code></pre>
+      <button id="chat-cc-copy" type="button" class="cap-chip">Copy command</button>
+      <p class="chat-sub">No need to reload this page — just click Chat → again once installed.</p>
     </div>
     <div id="chat-key" class="chat-pane" hidden>
       <p>This provider needs an API key. It's stored in your browser and sent only to your local agent.</p>
@@ -282,7 +289,9 @@ const fmtCtx = (n: number) =>
 
   // ── Chat 抽屉：探测本地 agent → 建 session → SSE 聊天 ──
   const drawer = $('chat-drawer');
-  const panes = { install: $('chat-install'), key: $('chat-key'), main: $('chat-main') } as Record<string, HTMLElement>;
+  const panes = {
+    install: $('chat-install'), cc: $('chat-cc'), key: $('chat-key'), main: $('chat-main'),
+  } as Record<string, HTMLElement>;
   const chatLog = $('chat-log');
   const chatInput = $('chat-input') as HTMLTextAreaElement;
   const sendBtn = $('chat-send') as HTMLButtonElement;
@@ -290,12 +299,13 @@ const fmtCtx = (n: number) =>
   type ChatState = {
     provider: string; model: string; base: string; envKey: string;
     ctx: number; maxOut: number; name: string;
+    agents: string[]; // 网关适配器偏好序，来自 data-agents（如 ['cc','pi'] 或 ['pi']）
     sessionId: string | null; streaming: boolean; probeTimer?: ReturnType<typeof setInterval>;
     streamAbort?: AbortController;
   };
   let chat: ChatState | null = null;
 
-  const showPane = (k: 'install' | 'key' | 'main') => {
+  const showPane = (k: 'install' | 'cc' | 'key' | 'main') => {
     for (const [name, el] of Object.entries(panes)) el.hidden = name !== k;
   };
   const chatMsg = (role: 'user' | 'assistant' | 'error', text: string) => {
@@ -316,23 +326,31 @@ const fmtCtx = (n: number) =>
       provider: c.provider, model: c.model, baseUrl: c.base || null,
       apiKey: keyStorage.get(c.provider),
       name: c.name, contextWindow: c.ctx, maxOutput: c.maxOut,
+      agents: c.agents,
     });
   }
 
   async function tryGoChat(): Promise<void> {
     const c = chat!;
-    if (!(await probeHealth())) { showPane('install'); stopProbe(); c.probeTimer = setInterval(tryGoChat, 3000); return; }
+    const health = await probeHealth();
+    if (!health) { showPane('install'); stopProbe(); c.probeTimer = setInterval(tryGoChat, 3000); return; }
     stopProbe();
+    // 该模型只能跑在 CC 上，而本机没装 CC：给安装引导（不轮询——安装要用户时间，装完重开即可）
+    const needsCc = c.agents[0] === 'cc';
+    const ccOk = health.agents?.find((a) => a.id === 'cc')?.available === true;
+    if (needsCc && !ccOk) { showPane('cc'); return; }
     if (!keyStorage.get(c.provider)) { showPane('key'); return; }
     try { await ensureSession(); showPane('main'); chatInput.focus(); }
     catch (e) { chatMsg('error', String((e as Error).message)); showPane('key'); }
   }
 
   function openChat(a: HTMLAnchorElement) {
+    stopProbe(); // 上一次会话（若在等本地服务）的轮询要停掉，否则旧 timer 会打到新 chat 上
     chat = {
       provider: a.dataset.provider!, model: a.dataset.model!, base: a.dataset.base ?? '',
       envKey: a.dataset.envkey ?? '', ctx: Number(a.dataset.ctx), maxOut: Number(a.dataset.maxout),
       name: a.dataset.name ?? '',
+      agents: (a.dataset.agents ?? 'pi').split(',').map((s) => s.trim()).filter(Boolean),
       sessionId: null, streaming: false,
     };
     $('chat-model-name').textContent = chat.name;
@@ -354,6 +372,9 @@ const fmtCtx = (n: number) =>
   });
   $('chat-copy-cmd').addEventListener('click', async () => {
     try { await navigator.clipboard.writeText('npx agenttoolbox-agent@latest'); } catch { /* 手选 */ }
+  });
+  $('chat-cc-copy').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText('curl -fsSL https://claude.ai/install.sh | bash'); } catch { /* 手选 */ }
   });
   $('chat-key-save').addEventListener('click', () => {
     const v = ($('chat-key-input') as HTMLInputElement).value.trim();

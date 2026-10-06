@@ -16,6 +16,8 @@ export interface SessionRequest {
   name?: string | null;
   contextWindow?: number;
   maxOutput?: number;
+  /** 网关适配器偏好序（首个可用者胜出）；缺省时网关按 ['pi'] 处理。 */
+  agents?: string[] | null;
 }
 
 /** 把 SSE 字节流按 \n\n 分块；返回已解析事件与未完成的尾部（下次拼接）。 */
@@ -46,7 +48,15 @@ export const keyStorage = {
   },
 };
 
-export interface HealthInfo { ok: boolean; version: string; grantedDirs: string[] }
+/** 网关已注册适配器及其探活结果（/health 的 agents 字段）。 */
+export interface AgentStatus { id: string; available: boolean }
+
+export interface HealthInfo {
+  ok: boolean;
+  version: string;
+  grantedDirs: string[];
+  agents: AgentStatus[];
+}
 
 export async function probeHealth(baseUrl = AGENT_URL, signal?: AbortSignal): Promise<HealthInfo | null> {
   try {
