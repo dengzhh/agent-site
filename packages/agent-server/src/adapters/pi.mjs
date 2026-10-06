@@ -1,8 +1,10 @@
 // pi 适配器：进程内 pi-agent-core 运行时的封装，事件转成统一契约
 // （delta / turn_end / error），与 cc 适配器成为对等实现。
 //
-// Agent 的构造与 SSE 订阅逻辑原样搬自 server.mjs 的内联实现，行为保持一致；
-// server.mjs 侧的删除在 Task 6 做，本任务不动服务端。
+// Agent 按 sessionId 跨轮缓存——这是多轮上下文的唯一承载处：前端每轮只发
+// `{ text }`，历史只能由服务端持有。Agent 的 transcript 是可变状态，每轮新建
+// 一个 Agent 会让模型在第 2 轮只看到本轮那一句（回归已实测：见
+// test/server.test.mjs 的 multi-turn 用例）。
 import { Agent } from '@earendil-works/pi-agent-core';
 // 免费模型推理排队慢（OpenRouter 免费档高峰可等数分钟），OpenAI SDK 默认 10 分钟超时
 // 会被 undici 的 300s headersTimeout 先打断（"Request timed out"）。修法两层：
@@ -41,13 +43,39 @@ function defaultMakeAgent(models, model, sessionId, apiKey) {
   });
 }
 
-export function createPiAdapter({ models, resolve, makeAgent = defaultMakeAgent } = {}) {
+export function createPiAdapter({ models, resolve, makeAgent = defaultMakeAgent, capacity = 16 } = {}) {
+  // sessionId → { agent, cacheKey }。LRU 容量与 server 的 SessionStore 对齐（16），
+  // 被淘汰的会话下一次发言会从空 transcript 重新开始（与「会话已被回收」同义）。
+  const agents = new Map();
+  // 缓存键必须覆盖 agent 身份的两个维度：换模型换 key 都得换 Agent（否则会把
+  // 上一模型的上下文与凭据带过去）。只比较引用，不存 key 明文。
+  const cacheKey = (model, apiKey) => `${model.provider}/${model.id}\u0000${apiKey ?? ''}`;
+
+  function agentFor(model, sessionId, apiKey) {
+    const key = cacheKey(model, apiKey);
+    const hit = agents.get(sessionId);
+    if (hit && hit.cacheKey === key) {
+      agents.delete(sessionId);      // 重新插入 → 刷新 LRU 序
+      agents.set(sessionId, hit);
+      return hit.agent;
+    }
+    const agent = makeAgent(models, model, sessionId, apiKey);
+    agents.delete(sessionId);
+    agents.set(sessionId, { agent, cacheKey: key });
+    while (agents.size > capacity) agents.delete(agents.keys().next().value);
+    return agent;
+  }
+
   return {
     id: 'pi',
     async available() { return true; },
-    async *run({ messages, request, apiKey = null, sessionId, signal } = {}) {
+    // cache=false → 本轮走一次性 Agent（不读也不写缓存），供不共享运行时状态的
+    // 适配器进行 failover（例如 cc builder 失败后回落到 pi）。
+    async *run({ messages, request, apiKey = null, sessionId, signal, cache = true } = {}) {
       const { model } = resolve(models, request);
-      const agent = makeAgent(models, model, sessionId, apiKey);
+      const agent = cache && sessionId
+        ? agentFor(model, sessionId, apiKey)
+        : makeAgent(models, model, sessionId, apiKey);
 
       // subscribe 回调 → 异步生成器：用队列 + 单次唤醒桥接。
       // 正确性要点（否则会挂起或丢事件）：
@@ -97,9 +125,18 @@ export function createPiAdapter({ models, resolve, makeAgent = defaultMakeAgent 
       } finally {
         // 生成器被提前 return()（调用方 break / 客户端断开）时本轮可能仍在跑：
         // 中止它，避免遗留后台推理。正常结束时进程已 idle，abort() 是 no-op。
+        // abort() 只作用于 activeRun（finishRun 后为 undefined），因此「中止本轮」
+        // 与「保留 transcript 供下一轮续用」并不冲突。
         agent.abort?.();
         signal?.removeEventListener('abort', onAbort);
         unsub();
+        // 被中止/出错的一轮会留下一条占位 assistant 消息（空文本、stopReason 为
+        // 'aborted'/'error'），下一轮带着它继续累积就是脏上下文。命中缓存与否都要判：
+        // 首次发言就失败的 Agent 同样已被写进缓存（cached=false），只查 cached 会
+        // 让它把失败轮带进下一次发言。逐出后该会话从干净 transcript 重开——代价是
+        // 上下文丢失（客户端已收到 error 帧），好过把失败轮喂给模型。
+        // state.errorMessage 由 runWithLifecycle 在每轮开始时清零，成功轮不会误逐。
+        if (cache && sessionId && agent.state?.errorMessage) agents.delete(sessionId);
       }
     },
   };
