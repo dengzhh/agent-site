@@ -9,6 +9,11 @@ export const PROVIDER_ALLOWLIST = [
   'opencode', 'deepinfra', 'togetherai', 'fireworks-ai',
 ];
 
+// OpenRouter 的免费模型受 "agentic harness" 网关限制：只有 Claude Code 这类
+// 官方智能体运行时能调用（实测 pi 请求一律 403）。标注为优先 cc，
+// 让网关路由到能承载它的适配器；其余 provider 走默认 pi。
+const GATED_PROVIDER_IDS = new Set(['openrouter']);
+
 // models.dev 不携带的 provider 级补充信息（Anthropic 兼容端点、免费档限流说明）
 // groq 补 OpenAI 兼容端点：models.dev 无 api 字段，而其免费模型不在下游工具的
 // 静态目录里，需要 baseUrl 才能走动态回退（Chat 抽屉场景）
@@ -102,6 +107,11 @@ export function buildFreeModelsIndex(modelsdev, openrouterApi) {
     if (verified) models = models.filter((m) => verified.includes(m.id));
     // 校验源在线但过滤后为空 → 不留 0 模型的 provider 节
     if (models.length === 0) continue;
+    // 网关适配器偏好：标注在最末（交叉校验/端点过滤之后）的存活模型上，
+    // 只有真正落盘的模型才被标注，被过滤掉的自然无需标注。
+    for (const m of models) {
+      m.agents = GATED_PROVIDER_IDS.has(pid) ? ['cc', 'pi'] : ['pi'];
+    }
     totalFree += models.length;
     providers.push({
       id: pid,

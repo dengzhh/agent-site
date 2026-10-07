@@ -1,15 +1,28 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from '@earendil-works/pi-ai';
-import { startServer } from '../src/server.mjs';
+import { createRegistry } from '../src/adapters/registry.mjs';
+import { createPiAdapter } from '../src/adapters/pi.mjs';
 
-// 每个测试起独立 server + faux provider
+// /health 的 grantedDirs 来自网关配置文件。重定向到临时路径，断言才不依赖开发者本机
+// 是否已 grant 过目录；DEFAULT_CONFIG_PATH 在 config.mjs 被 import 时求值，因此
+// server.mjs（→ config.mjs）必须动态 import，让这次重定向先生效。
+process.env.ATBX_CONFIG_PATH = join(mkdtempSync(join(tmpdir(), 'atbx-srv-cfg-')), 'config.json');
+const { startServer } = await import('../src/server.mjs');
+
+// 每个测试起独立 server + faux provider。
+// 显式注入 registry（只含承接 faux 的 pi 适配器）：默认 registry 里的 cc 适配器会探活
+// 真实的 claude 二进制，测试要的是确定性的 faux 路由，不能依赖宿主机是否装了 claude。
 async function withFauxServer(t, origins = ['http://localhost:4321']) {
   const models = createModels();
   const faux = fauxProvider();
   models.setProvider(faux.provider);
   const resolve = () => ({ model: faux.getModel(), providerId: faux.provider.id });
-  const srv = await startServer({ port: 0, allowedOrigins: origins, resolve, models });
+  const registry = createRegistry([createPiAdapter({ models, resolve })]);
+  const srv = await startServer({ port: 0, allowedOrigins: origins, resolve, models, registry });
   t.after(() => srv.close());
   const base = `http://127.0.0.1:${srv.port}`;
   const json = async (path, opts) => {
@@ -130,4 +143,67 @@ test('failed body validation releases the streaming slot', async (t) => {
     assert.equal(res.status, 200);
     await res.text();
   }
+});
+
+// /health 新增 agents 字段：注册表逐适配器探活
+test('health reports adapters and granted dirs', async (t) => {
+  const { json } = await withFauxServer(t);
+  const { status, body } = await json('/health');
+  assert.equal(status, 200);
+  assert.ok(Array.isArray(body.agents), 'agents array present');
+  assert.ok(body.agents.some((a) => a.id === 'pi' && a.available === true), 'pi available');
+  assert.deepEqual(body.grantedDirs, []);
+});
+
+// /sessions 新增 adapter 字段：告诉前端这一会话由谁承接（pick 是异步探活）
+test('session response reports the adapter that will serve it', async (t) => {
+  const { json } = await withFauxServer(t);
+  const create = await json('/sessions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ provider: 'faux', model: 'faux' }),
+  });
+  assert.equal(create.status, 200);
+  assert.equal(create.body.adapter, 'pi');
+});
+
+// 多轮上下文回归：前端每轮只发 `{ text }`，历史只能由服务端持有——pi 适配器按
+// sessionId 跨轮缓存同一个 Agent。若改回「每轮新建 Agent」，第 2 轮发给模型的输入
+// 会退化成 system + 本轮 user（实测过：4 条 → 2 条），此断言即红。
+// 普通往返测试抓不到：SSE 契约不变，回复依旧正确，只是模型忘了前文。
+test('multi-turn: the second turn carries the earlier transcript', async (t) => {
+  const { json, base, faux } = await withFauxServer(t);
+  const seen = [];
+  // faux 的 response 可以是函数：拿到本轮的 context（即真正发给模型的消息）
+  const capture = (reply) => (ctx) => {
+    seen.push(ctx.messages);
+    return fauxAssistantMessage([fauxText(reply)]);
+  };
+  faux.setResponses([capture('reply one'), capture('reply two')]);
+
+  const create = await json('/sessions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ provider: 'faux', model: 'faux' }),
+  });
+  const { sessionId } = create.body;
+  for (const text of ['first question', 'second question']) {
+    const res = await fetch(`${base}/sessions/${sessionId}/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+      body: JSON.stringify({ text }),
+    });
+    assert.equal(res.status, 200);
+    await res.text();
+  }
+
+  assert.equal(seen.length, 2, 'model called once per turn');
+  const second = JSON.stringify(seen[1]);
+  assert.ok(second.includes('first question'), 'turn 2 carries the first user turn');
+  assert.ok(second.includes('reply one'), 'turn 2 carries the first assistant turn');
+  assert.deepEqual(
+    seen[1].filter((m) => m.role !== 'system').map((m) => m.role),
+    ['user', 'assistant', 'user'],
+    'transcript accumulates in order',
+  );
 });
