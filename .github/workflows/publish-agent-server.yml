@@ -3,9 +3,11 @@ name: Publish agent-server
 on:
   push:
     tags: ['agent-server-v*']
+  workflow_dispatch: {}   # 手动触发：用于验证或补发
 
 permissions:
   contents: read
+  id-token: write         # OIDC trusted publishing 必需（无需 NPM_TOKEN）
 
 jobs:
   publish:
@@ -18,9 +20,12 @@ jobs:
           node-version: 22
           cache: npm
           registry-url: https://registry.npmjs.org
+      # Trusted publishing 需要 npm >= 11.5.1（Node 22 自带的版本可能偏旧）
+      - run: npm install -g npm@latest
       - run: npm ci
       - run: npm test --workspace agenttoolbox-agent
-      - run: npm publish --access public
+      # 无 NODE_AUTH_TOKEN：npm 通过 OIDC 向 registry 证明来源。
+      # 前提：npm 网页上已为 agenttoolbox-agent 配置 trusted publisher
+      # （dengzhh/agent-site + 本文件名），且 provenance 需要仓库 public。
+      - run: npm publish --access public --provenance
         working-directory: packages/agent-server
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
