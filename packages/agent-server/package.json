@@ -9,6 +9,7 @@
   "files": ["bin", "src", "README.md"],
   "scripts": { "test": "node --test \"test/**/*.test.mjs\"" },
   "dependencies": {
+    "@agentclientprotocol/sdk": "^1.7.0",
     "@earendil-works/pi-agent-core": "^1.0.2",
     "@earendil-works/pi-ai": "^1.0.2",
     "undici": "^7.0.0"
