@@ -13,9 +13,11 @@ export function mapSessionUpdate(params) {
       return typeof text === 'string' && text ? [{ type: 'thinking', text }] : [];
     }
     case 'usage_update':
-      return u.usage ? [{ type: 'usage', usage: u.usage }] : [];
+      // 真实 ACP 形状：{used, size, cost?}（上下文窗口用量）。
+      // 注意：不是 {inputTokens, outputTokens}——那是 hermes 的私有扩展，非协议标准。
+      return [{ type: 'usage', usage: { used: u.used, size: u.size, cost: u.cost } }];
     case 'tool_call':
-      return [{ type: 'activity', title: u.title ?? u.kind ?? 'tool call' }];
+      return [{ type: 'activity', title: u.title ?? u.name ?? u.kind ?? 'tool call' }];
     default:
       return [];
   }

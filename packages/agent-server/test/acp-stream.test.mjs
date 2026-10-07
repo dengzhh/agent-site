@@ -12,12 +12,13 @@ test('agent_thought_chunk becomes a thinking event', () => {
   assert.deepEqual(mapSessionUpdate(p), [{ type: 'thinking', text: 'hmm' }]);
 });
 
-test('usage_update is captured, not streamed as text', () => {
-  const p = { sessionId: 's', update: { sessionUpdate: 'usage_update', usage: { inputTokens: 10, outputTokens: 2 } } };
+test('usage_update carries context-window usage, not streamed as text', () => {
+  // 真实 ACP 形状（见 SDK schema zUsageUpdate）：{used, size, cost?}
+  const p = { sessionId: 's', update: { sessionUpdate: 'usage_update', used: 10, size: 200000 } };
   const out = mapSessionUpdate(p);
   assert.equal(out.length, 1);
   assert.equal(out[0].type, 'usage');
-  assert.deepEqual(out[0].usage, { inputTokens: 10, outputTokens: 2 });
+  assert.deepEqual(out[0].usage, { used: 10, size: 200000, cost: undefined });
 });
 
 test('tool_call updates are surfaced as activity, not text', () => {
