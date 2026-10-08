@@ -16,13 +16,17 @@ const { startServer } = await import('../src/server.mjs');
 // 每个测试起独立 server + faux provider。
 // 显式注入 registry（只含承接 faux 的 pi 适配器）：默认 registry 里的 cc 适配器会探活
 // 真实的 claude 二进制，测试要的是确定性的 faux 路由，不能依赖宿主机是否装了 claude。
-async function withFauxServer(t, origins = ['http://localhost:4321']) {
+async function withFauxServer(t, origins = ['http://localhost:4321'], acpProbe) {
   const models = createModels();
   const faux = fauxProvider();
   models.setProvider(faux.provider);
   const resolve = () => ({ model: faux.getModel(), providerId: faux.provider.id });
   const registry = createRegistry([createPiAdapter({ models, resolve })]);
-  const srv = await startServer({ port: 0, allowedOrigins: origins, resolve, models, registry });
+  // acpProbe 缺省返回 false：测试不该 shell 出去跑 `which`，探活必须确定。
+  const srv = await startServer({
+    port: 0, allowedOrigins: origins, resolve, models, registry,
+    acpProbe: acpProbe ?? (async () => false),
+  });
   t.after(() => srv.close());
   const base = `http://127.0.0.1:${srv.port}`;
   const json = async (path, opts) => {
@@ -206,4 +210,37 @@ test('multi-turn: the second turn carries the earlier transcript', async (t) => 
     ['user', 'assistant', 'user'],
     'transcript accumulates in order',
   );
+});
+
+// ── 多 agent（ACP）────────────────────────────────────────────────────────────
+// ACP 子 agent 逐个出现在 /health，且可被 /sessions 显式选中。
+// acpProbe 注入确定性探活：测试不能依赖宿主机是否装了 hermes/codex。
+
+test('health lists each ACP agent with name and availability', async (t) => {
+  const { json } = await withFauxServer(t);
+  const { status, body } = await json('/health');
+  assert.equal(status, 200);
+  const ids = body.agents.map((a) => a.id);
+  assert.ok(ids.includes('pi'), '既有适配器仍在列表里');
+  assert.ok(body.agents.some((a) => a.id === 'acp:hermes' && typeof a.available === 'boolean'));
+  assert.ok(body.agents.some((a) => a.id === 'acp:codex' && typeof a.name === 'string'));
+  assert.equal(body.agents.filter((a) => a.id.startsWith('acp:')).length, 5, '五个 ACP agent 全部列出');
+});
+
+test('sessions can target a specific acp agent', async (t) => {
+  const { json } = await withFauxServer(t);
+  const r = await json('/sessions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ provider: 'faux', model: 'faux', agent: 'acp:hermes' }),
+  });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.adapter, 'acp');
+});
+
+test('acp agent availability reflects the injected probe', async (t) => {
+  const { json } = await withFauxServer(t, ['http://localhost:4321'], async (id) => id === 'hermes');
+  const { body } = await json('/health');
+  assert.equal(body.agents.find((a) => a.id === 'acp:hermes').available, true);
+  assert.equal(body.agents.find((a) => a.id === 'acp:codex').available, false);
 });
