@@ -1,7 +1,7 @@
 {
-  "syncedAt": "2026-10-08T10:45:30.851Z",
+  "syncedAt": "2026-10-09T10:44:30.917Z",
   "source": "models.dev + openrouter/api/v1/models",
-  "totalFree": 161,
+  "totalFree": 160,
   "providers": [
     {
       "id": "openrouter",
@@ -111,17 +111,6 @@
           "attachment": true,
           "openWeights": true,
           "lastUpdated": "2026-04-02"
-        },
-        {
-          "id": "inclusionai/ling-3.0-flash-sante:free",
-          "name": "Ling 3.0 Flash Sante (free)",
-          "context": 262144,
-          "maxOutput": 32768,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": false,
-          "openWeights": false,
-          "lastUpdated": "2026-09-04"
         },
         {
           "id": "apodex/apodex-1.1-mini:free",
