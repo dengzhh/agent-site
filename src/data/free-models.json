@@ -1,5 +1,5 @@
 {
-  "syncedAt": "2026-10-09T10:44:30.917Z",
+  "syncedAt": "2026-10-10T09:59:35.624Z",
   "source": "models.dev + openrouter/api/v1/models",
   "totalFree": 160,
   "providers": [
@@ -1809,8 +1809,8 @@
           "toolCall": true,
           "reasoning": true,
           "attachment": false,
-          "openWeights": false,
-          "lastUpdated": "2026-08-27"
+          "openWeights": true,
+          "lastUpdated": "2026-09-03"
         },
         {
           "id": "ling-3.1-flash-free",
