@@ -3,6 +3,9 @@ export const AGENT_URL = 'http://127.0.0.1:31415';
 
 export type ChatEvent =
   | { type: 'delta'; text: string }
+  | { type: 'thinking'; text: string }
+  | { type: 'usage'; usage: unknown }
+  | { type: 'activity'; title: string }
   | { type: 'turn_end'; stopReason: string | null }
   | { type: 'error'; message: string }
   | { type: 'done' };
@@ -18,6 +21,8 @@ export interface SessionRequest {
   maxOutput?: number;
   /** 网关适配器偏好序（首个可用者胜出）；缺省时网关按 ['pi'] 处理。 */
   agents?: string[] | null;
+  /** 显式指定 agent（如 'pi' / 'cc' / 'acp:hermes'）；指定后忽略 agents 偏好序。 */
+  agent?: string | null;
 }
 
 /** 把 SSE 字节流按 \n\n 分块；返回已解析事件与未完成的尾部（下次拼接）。 */
@@ -49,7 +54,7 @@ export const keyStorage = {
 };
 
 /** 网关已注册适配器及其探活结果（/health 的 agents 字段）。 */
-export interface AgentStatus { id: string; available: boolean }
+export interface AgentStatus { id: string; name?: string; available: boolean }
 
 export interface HealthInfo {
   ok: boolean;

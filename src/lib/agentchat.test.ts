@@ -35,3 +35,18 @@ describe('probeHealth', () => {
     } finally { globalThis.fetch = original; }
   });
 });
+
+describe('new ACP event kinds', () => {
+  it('parses a thinking frame', () => {
+    const { events } = parseSSEChunk('data: {"type":"thinking","text":"hmm"}\n\n');
+    expect(events).toEqual([{ type: 'thinking', text: 'hmm' }]);
+  });
+  it('parses a usage frame', () => {
+    const { events } = parseSSEChunk('data: {"type":"usage","usage":{"used":10,"size":200000}}\n\n');
+    expect(events).toEqual([{ type: 'usage', usage: { used: 10, size: 200000 } }]);
+  });
+  it('parses an activity frame', () => {
+    const { events } = parseSSEChunk('data: {"type":"activity","title":"Read file"}\n\n');
+    expect(events).toEqual([{ type: 'activity', title: 'Read file' }]);
+  });
+});
