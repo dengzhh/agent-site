@@ -1,5 +1,5 @@
 {
-  "syncedAt": "2026-10-08T10:45:30.853Z",
+  "syncedAt": "2026-10-14T08:51:58.537Z",
   "source": "models.dev",
   "providers": [
     {
@@ -565,6 +565,15 @@
           "input": 0.75,
           "output": 3.75,
           "cacheRead": 0.075,
+          "cacheWrite": null
+        },
+        {
+          "id": "gemini-4-argon",
+          "label": "Gemini 4 Argon",
+          "context": 1048576,
+          "input": 2,
+          "output": 10,
+          "cacheRead": 0.1,
           "cacheWrite": null
         },
         {
