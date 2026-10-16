@@ -117,6 +117,10 @@ const fmtCtx = (n: number) =>
       <div><strong id="chat-model-name"></strong><div id="chat-provider-name" class="chat-sub"></div></div>
       <button id="chat-close" type="button" aria-label="Close chat">✕</button>
     </header>
+    <div class="chat-agent-row" id="chat-agent-row" hidden>
+      <label for="chat-agent">Agent</label>
+      <select id="chat-agent" class="chat-agent"></select>
+    </div>
     <div id="chat-install" class="chat-pane" hidden>
       <p>Chat runs through a tiny local service (your keys never leave your machine):</p>
       <pre class="chat-cmd"><code>npx agenttoolbox-agent@latest</code></pre>
@@ -176,6 +180,11 @@ const fmtCtx = (n: number) =>
   #chat-drawer.is-open { transform: translateX(0); }
   .chat-head { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 1px solid var(--line); padding-bottom: .6rem; }
   .chat-sub { font-size: .8rem; color: var(--ink-soft); }
+  .chat-agent-row { display: flex; align-items: center; gap: .5rem; margin-top: .6rem; font-size: .85rem; color: var(--ink-soft); }
+  .chat-agent { flex: 1; background: var(--surface); color: inherit; border: 1px solid var(--line-strong); border-radius: 6px; padding: .3rem .5rem; font-size: .85rem; }
+  .chat-msg--thinking { font-style: italic; color: var(--ink-soft); opacity: .85; font-size: .88rem; white-space: pre-wrap; }
+  .chat-msg--thinking.is-collapsed { max-height: 2.6em; overflow-y: auto; opacity: .6; }
+  .chat-msg--activity { color: var(--ink-soft); font-size: .82rem; }
   .chat-pane { display: flex; flex-direction: column; gap: .6rem; overflow-y: auto; flex: 1; }
   .chat-pane[hidden] { display: none; } /* display:flex 会盖过 UA 的 [hidden]，需显式还原 */
   #chat-main { min-height: 0; }
@@ -300,10 +309,20 @@ const fmtCtx = (n: number) =>
     provider: string; model: string; base: string; envKey: string;
     ctx: number; maxOut: number; name: string;
     agents: string[]; // 网关适配器偏好序，来自 data-agents（如 ['cc','pi'] 或 ['pi']）
+    agent: string | null; // 显式选择的 agent id（下拉）；null = 未选
     sessionId: string | null; streaming: boolean; probeTimer?: ReturnType<typeof setInterval>;
     streamAbort?: AbortController;
   };
   let chat: ChatState | null = null;
+  // /health.agents 的缓存：openChat 时探测一次，填下拉
+  let lastHealth: Awaited<ReturnType<typeof probeHealth>> = null;
+
+  const AGENT_LABELS: Record<string, string> = {
+    pi: 'pi', cc: 'Claude Code',
+    'acp:hermes': 'Hermes', 'acp:openclaw': 'OpenClaw', 'acp:opencode': 'OpenCode',
+    'acp:codex': 'Codex', 'acp:dsh': 'DeepSeek Harness',
+  };
+  const agentLabel = (id: string, name?: string) => AGENT_LABELS[id] ?? name ?? id;
 
   const showPane = (k: 'install' | 'cc' | 'key' | 'main') => {
     for (const [name, el] of Object.entries(panes)) el.hidden = name !== k;
@@ -327,7 +346,28 @@ const fmtCtx = (n: number) =>
       apiKey: keyStorage.get(c.provider),
       name: c.name, contextWindow: c.ctx, maxOutput: c.maxOut,
       agents: c.agents,
+      agent: c.agent,
     });
+  }
+
+  // Agent 下拉：把 /health.agents 里可用的项填进去。≤1 个可用时隐藏（无意义 UI）。
+  function fillAgentSelect(health: NonNullable<Awaited<ReturnType<typeof probeHealth>>>) {
+    const sel = $('chat-agent') as HTMLSelectElement;
+    const row = $('chat-agent-row');
+    const available = (health.agents ?? []).filter((a) => a.available);
+    sel.textContent = '';
+    for (const a of available) {
+      const o = document.createElement('option');
+      o.value = a.id;
+      o.textContent = agentLabel(a.id, a.name);
+      sel.append(o);
+    }
+    // 记住上次选择（仍可用时）
+    const saved = (() => { try { return localStorage.getItem('atbx:agent'); } catch { return null; } })();
+    if (saved && available.some((a) => a.id === saved)) sel.value = saved;
+    if (chat) chat.agent = sel.value || null;
+    // ≤1 个可用 → 隐藏下拉：无意义的 UI
+    row.hidden = available.length <= 1;
   }
 
   async function tryGoChat(): Promise<void> {
@@ -335,6 +375,8 @@ const fmtCtx = (n: number) =>
     const health = await probeHealth();
     if (!health) { showPane('install'); stopProbe(); c.probeTimer = setInterval(tryGoChat, 3000); return; }
     stopProbe();
+    lastHealth = health;
+    fillAgentSelect(health);
     // 该模型只能跑在 CC 上，而本机没装 CC：给安装引导（不轮询——安装要用户时间，装完重开即可）
     const needsCc = c.agents[0] === 'cc';
     const ccOk = health.agents?.find((a) => a.id === 'cc')?.available === true;
@@ -351,11 +393,14 @@ const fmtCtx = (n: number) =>
       envKey: a.dataset.envkey ?? '', ctx: Number(a.dataset.ctx), maxOut: Number(a.dataset.maxout),
       name: a.dataset.name ?? '',
       agents: (a.dataset.agents ?? 'pi').split(',').map((s) => s.trim()).filter(Boolean),
+      agent: null,
       sessionId: null, streaming: false,
     };
     $('chat-model-name').textContent = chat.name;
     $('chat-provider-name').textContent = `${chat.provider} · ${chat.model}`;
     chatLog.textContent = '';
+    // 上次缓存的 health 直接先填一次下拉（避免闪烁）；tryGoChat 成功后再刷新
+    if (lastHealth) fillAgentSelect(lastHealth);
     drawer.classList.add('is-open');
     drawer.setAttribute('aria-hidden', 'false');
     void tryGoChat();
@@ -383,6 +428,17 @@ const fmtCtx = (n: number) =>
     void tryGoChat();
   });
 
+  // 换 agent = 换会话（不同 agent 的上下文互不相通）。记住选择供下次预选。
+  $('chat-agent').addEventListener('change', (e) => {
+    const sel = e.target as HTMLSelectElement;
+    if (!chat) return;
+    try { localStorage.setItem('atbx:agent', sel.value); } catch { /* 隐身模式等 */ }
+    chat.agent = sel.value;
+    chat.sessionId = null;      // 旧会话属于上一个 agent
+    chatLog.textContent = '';
+    void tryGoChat();
+  });
+
   $('chat-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const c = chat;
@@ -392,12 +448,23 @@ const fmtCtx = (n: number) =>
     chatInput.value = '';
     chatMsg('user', text);
     const outDiv = chatMsg('assistant', '');
+    // 思维链/工具活动：弱化样式的独立元素，与正式回复分开
+    let thinkDiv: HTMLDivElement | null = null;
     c.streaming = true; sendBtn.disabled = true; abortBtn.hidden = false;
     c.streamAbort = new AbortController();
     abortBtn.onclick = () => { c.streamAbort?.abort(); void abortSession(c.sessionId!); };
     try {
       await streamMessage(c.sessionId, text, (ev: ChatEvent) => {
-        if (ev.type === 'delta') outDiv.textContent += ev.text;
+        if (ev.type === 'delta') {
+          // 首个正式回复到达时折叠思维链，让正文占据视觉主体
+          if (thinkDiv) { thinkDiv.classList.add('is-collapsed'); thinkDiv = null; }
+          outDiv.textContent += ev.text;
+        }
+        else if (ev.type === 'thinking') {
+          if (!thinkDiv) thinkDiv = chatMsg('thinking', '');
+          thinkDiv.textContent += ev.text;
+        }
+        else if (ev.type === 'activity') chatMsg('activity', `⚙ ${ev.title}`);
         else if (ev.type === 'error') outDiv.textContent += `\n[error] ${ev.message}`;
         chatLog.scrollTop = chatLog.scrollHeight;
       }, c.streamAbort.signal);

@@ -7,6 +7,8 @@ import { resolveModel } from './providers.mjs';
 import { createRegistry } from './adapters/registry.mjs';
 import { createPiAdapter } from './adapters/pi.mjs';
 import { createCcAdapter } from './adapters/cc.mjs';
+import { createAcpAdapter } from './adapters/acp.mjs';
+import { listAgentIds, getAgentDef } from './adapters/acp-agents.mjs';
 import { loadConfig } from './config.mjs';
 import { SessionStore } from './sessions.mjs';
 import { encodeSSE } from './sse.mjs';
@@ -42,10 +44,14 @@ async function readJson(req, cap = 1_000_000) {
 
 // SYSTEM_PROMPT / STREAM_TIMEOUT_MS / undici 长超时 dispatcher 都随 pi 适配器搬到了
 // adapters/pi.mjs（单一来源），本文件不再持有副本。
-export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOrigins = DEFAULT_ORIGINS, resolve = resolveModel, models, registry }) {
+export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOrigins = DEFAULT_ORIGINS, resolve = resolveModel, models, registry, acpProbe }) {
+  // ACP 适配器承接 hermes/openclaw/opencode/codex/dsh 五个子 agent。
+  // acpProbe 可注入：测试用它拿到确定性的可用性，避免 shell 出去跑 `which`。
+  const acpAdapter = createAcpAdapter(acpProbe ? { probe: acpProbe } : {});
   const reg = registry ?? createRegistry([
     createPiAdapter({ models, resolve }),
     createCcAdapter(),
+    acpAdapter,
   ]);
   const sessions = new SessionStore();
 
@@ -72,10 +78,21 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
 
     try {
       if (req.method === 'GET' && url.pathname === '/health') {
+        // 适配器级状态（pi/cc/acp）+ 每个 ACP 子 agent 一条（acp:<id>），
+        // 前端据此只列出本机真正可用的 agent。
+        const status = await reg.status();
+        const acpEntries = [];
+        for (const id of listAgentIds()) {
+          acpEntries.push({
+            id: `acp:${id}`,
+            name: getAgentDef(id).name,
+            available: await acpAdapter.availableFor(id),
+          });
+        }
         return json(200, {
           ok: true,
           version: VERSION,
-          agents: await reg.status(),
+          agents: [...status, ...acpEntries],
           grantedDirs: loadConfig().grantedDirs,
         });
       }
@@ -83,14 +100,22 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
       if (req.method === 'POST' && url.pathname === '/sessions') {
         const body = await readJson(req);
         if (body == null || typeof body !== 'object') return json(400, { error: 'JSON object body required' });
-        // 选适配器（异步探活，必须 await）。body.agents 是前端给的偏好序，
-        // 缺省 ['pi']；全部不可用时 pick 抛错 → 走统一错误出口（500）。
-        const adapter = await reg.pick(body.agents ?? ['pi']);
+        // 选适配器。两种方式：
+        //  ① body.agent = 'acp:<id>' → 直接指定某个 ACP 子 agent；
+        //  ② 否则按 body.agents 偏好序异步探活选一个（缺省 ['pi']）。
+        let adapter; let acpAgentId = null;
+        if (typeof body.agent === 'string' && body.agent.startsWith('acp:')) {
+          acpAgentId = body.agent.slice(4);
+          adapter = acpAdapter;
+        } else {
+          adapter = await reg.pick(body.agents ?? [body.agent ?? 'pi']);
+        }
         const id = randomUUID();
         // 不再预建 Agent：适配器在 /messages 时才构造运行时，会话只存运行所需输入。
         sessions.set({
           id,
           adapter,
+          acpAgentId,
           request: body,
           apiKey: body.apiKey ?? null,
           grantedDirs: loadConfig().grantedDirs,
@@ -140,6 +165,7 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
             // sessionId 是 pi 适配器跨轮缓存 Agent（= 多轮上下文）的键；前端每轮只发
             // { text }，历史只能由服务端持有。
             sessionId: session.id,
+            agentId: session.acpAgentId,   // acp 适配器用；其它适配器忽略
             messages: [{ role: 'user', content: text }],
             request: session.request,
             apiKey: session.apiKey,
@@ -152,6 +178,11 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
           })) {
             if (ev.sessionId) session.ccSessionId = ev.sessionId; // cc 续会话
             if (ev.type === 'delta') send('delta', { text: ev.text });
+            else if (ev.type === 'thinking') send('thinking', { text: ev.text });
+            else if (ev.type === 'usage') send('usage', { usage: ev.usage });
+            // activity（工具调用提示）目前前端不消费，但透传成本为零且保留信息；
+            // 未识别的 SSE 类型前端会安全忽略。
+            else if (ev.type === 'activity') send('activity', { title: ev.title });
             else if (ev.type === 'turn_end') send('turn_end', { stopReason: ev.stopReason ?? null });
             else if (ev.type === 'error') send('error', { message: ev.message });
           }
