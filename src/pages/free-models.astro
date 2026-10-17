@@ -121,6 +121,7 @@ const fmtCtx = (n: number) =>
       <label for="chat-agent">Agent</label>
       <select id="chat-agent" class="chat-agent"></select>
     </div>
+    <p id="chat-agent-hint" class="chat-agent-hint" hidden></p>
     <div id="chat-install" class="chat-pane" hidden>
       <p>Chat runs through a tiny local service (your keys never leave your machine):</p>
       <pre class="chat-cmd"><code>npx agenttoolbox-agent@latest</code></pre>
@@ -182,6 +183,7 @@ const fmtCtx = (n: number) =>
   .chat-sub { font-size: .8rem; color: var(--ink-soft); }
   .chat-agent-row { display: flex; align-items: center; gap: .5rem; margin-top: .6rem; font-size: .85rem; color: var(--ink-soft); }
   .chat-agent { flex: 1; background: var(--surface); color: inherit; border: 1px solid var(--line-strong); border-radius: 6px; padding: .3rem .5rem; font-size: .85rem; }
+  .chat-agent-hint { font-size: .8rem; color: #f5a524; margin: -.3rem 0 0; }
   .chat-msg--thinking { font-style: italic; color: var(--ink-soft); opacity: .85; font-size: .88rem; white-space: pre-wrap; }
   .chat-msg--thinking.is-collapsed { max-height: 2.6em; overflow-y: auto; opacity: .6; }
   .chat-msg--activity { color: var(--ink-soft); font-size: .82rem; }
@@ -369,6 +371,22 @@ const fmtCtx = (n: number) =>
     if (chat) chat.agent = sel.value || null;
     // ≤1 个可用 → 隐藏下拉：无意义的 UI
     row.hidden = available.length <= 1;
+    updateAgentHint();
+  }
+
+  // 被 provider gate 到 harness 的模型（openrouter 免费档）：选了非 cc 的 agent
+  // 时提前提示，避免用户发出必 403 的请求。
+  function updateAgentHint() {
+    const c = chat;
+    const sel = $('chat-agent') as HTMLSelectElement;
+    const hint = $('chat-agent-hint');
+    if (!c || !hint) return;
+    const needsCc = c.agents[0] === 'cc';
+    const gatedPick = needsCc && sel.value && sel.value !== 'cc';
+    hint.hidden = !gatedPick;
+    if (gatedPick) {
+      hint.textContent = 'This model is provider-gated to Claude Code — other agents will get a 403. Switch the Agent above to Claude Code.';
+    }
   }
 
   async function tryGoChat(): Promise<void> {
@@ -438,6 +456,7 @@ const fmtCtx = (n: number) =>
     chat.agent = sel.value;
     chat.sessionId = null;      // 旧会话属于上一个 agent
     chatLog.textContent = '';
+    updateAgentHint();
     void tryGoChat();
   });
 
