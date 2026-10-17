@@ -106,15 +106,19 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
       if (req.method === 'POST' && url.pathname === '/sessions') {
         const body = await readJson(req);
         if (body == null || typeof body !== 'object') return json(400, { error: 'JSON object body required' });
-        // 选适配器。两种方式：
-        //  ① body.agent = 'acp:<id>' → 直接指定某个 ACP 子 agent；
-        //  ② 否则按 body.agents 偏好序异步探活选一个（缺省 ['pi']）。
+        // 选适配器。优先级：显式 agent > agents 偏好序 > 默认 ['pi']。
+        //  ① body.agent = 'acp:<id>' → 指定某个 ACP 子 agent；
+        //  ② body.agent = 'pi'/'cc' → 用户在抽屉下拉里显式选择，必须尊重——
+        //     否则会被模型行的数据标注（如 openrouter 的 ['cc','pi']）覆盖掉用户选择；
+        //  ③ 缺省 → 按数据标注的偏好序探活。
         let adapter; let acpAgentId = null;
         if (typeof body.agent === 'string' && body.agent.startsWith('acp:')) {
           acpAgentId = body.agent.slice(4);
           adapter = acpAdapter;
+        } else if (typeof body.agent === 'string' && body.agent) {
+          adapter = await reg.pick([body.agent]);
         } else {
-          adapter = await reg.pick(body.agents ?? [body.agent ?? 'pi']);
+          adapter = await reg.pick(body.agents ?? ['pi']);
         }
         const id = randomUUID();
         // 不再预建 Agent：适配器在 /messages 时才构造运行时，会话只存运行所需输入。

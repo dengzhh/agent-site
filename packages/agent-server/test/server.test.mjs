@@ -244,3 +244,14 @@ test('acp agent availability reflects the injected probe', async (t) => {
   assert.equal(body.agents.find((a) => a.id === 'acp:hermes').available, true);
   assert.equal(body.agents.find((a) => a.id === 'acp:codex').available, false);
 });
+
+test('explicit agent overrides the data-layer preference order', async (t) => {
+  const { json } = await withFauxServer(t);
+  const r = await json('/sessions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ provider: 'faux', model: 'faux', agents: ['cc'], agent: 'pi' }),
+  });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.adapter, 'pi', '用户显式选择的 agent 必须赢过偏好序');
+});
