@@ -4,6 +4,10 @@
   "description": "Local agent bridge for AgentToolbox: pi-agent chat sessions for the free-models page, BYOK, loopback only",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dengzhh/agent-site"
+  },
   "engines": { "node": ">=22.12.0" },
   "bin": { "agenttoolbox-agent": "bin/agenttoolbox-agent.mjs" },
   "files": ["bin", "src", "README.md"],
