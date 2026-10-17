@@ -19,7 +19,12 @@ const GATED_PROVIDER_IDS = new Set(['openrouter']);
 // 静态目录里，需要 baseUrl 才能走动态回退（Chat 抽屉场景）
 export const PROVIDER_OVERRIDES = {
   zai: { anthropicApi: 'https://api.z.ai/api/anthropic' },
-  openrouter: { note: 'Free models are rate-limited: ~20 req/min with a $10 credit, 50 requests/day without.' },
+  // openrouter 的 Anthropic 兼容端点在 /api（非 /api/v1）：cc 适配器（Claude Code）
+  // 必须用它，否则拼出 /api/v1/v1/messages，被 gate 的免费模型会报"模型不存在"
+  openrouter: {
+    anthropicApi: 'https://openrouter.ai/api',
+    note: 'Free models are rate-limited: ~20 req/min with a $10 credit, 50 requests/day without.',
+  },
   opencode: { note: 'Free models on the Zen endpoint — requires a (free) OpenCode API key; get one at opencode.ai.' },
   groq: { api: 'https://api.groq.com/openai/v1' },
 };

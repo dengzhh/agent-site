@@ -62,7 +62,7 @@ const fmtCtx = (n: number) =>
                   <a href="#configure" class="pick" data-provider={p.id} data-model={m.id}>Configure →</a>
                   {p.id !== 'github-copilot' && (
                     <br /><a href="#chat" class="chat-pick" data-provider={p.id} data-model={m.id}
-                      data-base={p.api ?? ''} data-envkey={p.envKey} data-ctx={m.context} data-maxout={m.maxOutput}
+                      data-base={p.api ?? ''} data-anthropic={p.anthropicApi ?? ''} data-envkey={p.envKey} data-ctx={m.context} data-maxout={m.maxOutput}
                       data-agents={m.agents?.join(',') || 'pi'}
                       data-name={m.name}>Chat →</a>
                   )}
@@ -307,7 +307,7 @@ const fmtCtx = (n: number) =>
   const abortBtn = $('chat-abort') as HTMLButtonElement;
   type ChatState = {
     provider: string; model: string; base: string; envKey: string;
-    ctx: number; maxOut: number; name: string;
+    ctx: number; maxOut: number; name: string; anthropicApi: string;
     agents: string[]; // 网关适配器偏好序，来自 data-agents（如 ['cc','pi'] 或 ['pi']）
     agent: string | null; // 显式选择的 agent id（下拉）；null = 未选
     sessionId: string | null; streaming: boolean; probeTimer?: ReturnType<typeof setInterval>;
@@ -346,6 +346,7 @@ const fmtCtx = (n: number) =>
       apiKey: keyStorage.get(c.provider),
       name: c.name, contextWindow: c.ctx, maxOutput: c.maxOut,
       agents: c.agents,
+      anthropicApi: c.anthropicApi || null,
       agent: c.agent,
     });
   }
@@ -390,6 +391,7 @@ const fmtCtx = (n: number) =>
     stopProbe(); // 上一次会话（若在等本地服务）的轮询要停掉，否则旧 timer 会打到新 chat 上
     chat = {
       provider: a.dataset.provider!, model: a.dataset.model!, base: a.dataset.base ?? '',
+      anthropicApi: a.dataset.anthropic ?? '',
       envKey: a.dataset.envkey ?? '', ctx: Number(a.dataset.ctx), maxOut: Number(a.dataset.maxout),
       name: a.dataset.name ?? '',
       agents: (a.dataset.agents ?? 'pi').split(',').map((s) => s.trim()).filter(Boolean),

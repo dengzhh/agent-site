@@ -92,7 +92,7 @@ export function createCcAdapter({ cliPath = 'claude', env = {} } = {}) {
       const paths = (process.env.PATH ?? '').split(':');
       return paths.some((p) => p && existsSync(join(p, cliPath)));
     },
-    async *run({ messages, model, apiKey, baseUrl, cwd, allowedTools = [], resumeSessionId, signal }) {
+    async *run({ messages, model, apiKey, baseUrl, anthropicApi, cwd, allowedTools = [], resumeSessionId, signal }) {
       // 先在局部变量里建好隔离目录，finally 才能拿到引用清理——不能就地写进 env 里。
       const configDir = isolatedConfigDir();
       let child;
@@ -103,7 +103,8 @@ export function createCcAdapter({ cliPath = 'claude', env = {} } = {}) {
             ...process.env,
             ...env,
             CLAUDE_CONFIG_DIR: configDir,
-            ANTHROPIC_BASE_URL: baseUrl,
+            // Anthropic 兼容端点优先（openrouter 在 /api 而非 OpenAI 风格的 /api/v1）
+            ANTHROPIC_BASE_URL: anthropicApi || baseUrl,
             ANTHROPIC_AUTH_TOKEN: apiKey ?? '',
             ANTHROPIC_API_KEY: '',
             ANTHROPIC_MODEL: model,

@@ -14,6 +14,8 @@ export interface SessionRequest {
   provider: string;
   model: string;
   baseUrl?: string | null;
+  /** Anthropic 兼容端点（cc 适配器用；如 openrouter 的 https://openrouter.ai/api） */
+  anthropicApi?: string | null;
   apiKey?: string | null;
   envKey?: string | null;
   name?: string | null;

@@ -192,6 +192,7 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
             signal: ac.signal,
             model: session.request.model,
             baseUrl: session.request.baseUrl,
+            anthropicApi: session.request.anthropicApi,
             cwd,
             allowedTools,
             resumeSessionId: session.ccSessionId,
