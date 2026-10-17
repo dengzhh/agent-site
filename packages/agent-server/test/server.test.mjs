@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from '@earendil-works/pi-ai';
 import { createRegistry } from '../src/adapters/registry.mjs';
 import { createPiAdapter } from '../src/adapters/pi.mjs';
@@ -277,4 +278,88 @@ test('sessions accept and validate cwd + toolTier', async (t) => {
   const def = await mk({ provider: 'faux', model: 'faux' });
   assert.equal(def.body.toolTier, 'none');
   assert.equal(def.body.cwd, null);
+});
+
+test('pi session with cwd+read tier receives tools via the adapter', async (t) => {
+  // 用注入的 registry/pi 适配器捕获 run ctx：断言 server 把 toolTier/cwd 传进 run
+  const models = createModels();
+  const faux = fauxProvider();
+  models.setProvider(faux.provider);
+  const resolve = () => ({ model: faux.getModel(), providerId: faux.provider.id });
+  const captured = [];
+  const fakePi = {
+    id: 'pi',
+    available: async () => true,
+    run: async function* (ctx) {
+      captured.push(ctx);
+      yield { type: 'delta', text: 'ok' };
+    },
+  };
+  const registry = createRegistry([fakePi]);
+  const srv = await startServer({
+    port: 0, allowedOrigins: ['http://localhost:4321'], resolve, models,
+    registry,
+  });
+  t.after(() => srv.close());
+  const base = `http://127.0.0.1:${srv.port}`;
+  const j = async (path, opts) => {
+    const res = await fetch(base + path, opts);
+    return { status: res.status, body: res.headers.get('content-type')?.includes('json') ? await res.json() : await res.text() };
+  };
+
+  const create = await j('/sessions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ provider: 'faux', model: 'faux', cwd: '/tmp', toolTier: 'read' }),
+  });
+  assert.equal(create.status, 200);
+  const { sessionId } = create.body;
+  const res = await fetch(`${base}/sessions/${sessionId}/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ text: 'hi' }),
+  });
+  await res.text();
+  assert.equal(captured.length, 1, 'adapter.run called once');
+  assert.equal(captured[0].toolTier, 'read', 'toolTier threaded');
+  assert.equal(captured[0].cwd, '/tmp', 'cwd threaded');
+});
+
+test('cc read tier maps to read-only allowedTools', async (t) => {
+  // cc 适配器在 tier=read 时应收到只读 allowedTools（通过 echo 夹具断言 --allowedTools argv）
+  // 夹具：回显 argv 的假 claude
+  const echoPath = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'cc-echo-argv.sh');
+  const models = createModels();
+  const faux = fauxProvider();
+  models.setProvider(faux.provider);
+  const echoCc = {
+    id: 'cc',
+    available: async () => true,
+    run: async function* (ctx) {
+      // 捕获 allowedTools 语义由 cc.mjs 内部处理；这里直接断言 server 传入的 ctx
+      yield { type: 'activity', title: `allowedTools=${(ctx.allowedTools ?? []).join(',')}` };
+      yield { type: 'delta', text: 'done' };
+    },
+  };
+  const registry = createRegistry([echoCc]);
+  const srv = await startServer({ port: 0, allowedOrigins: ['http://localhost:4321'], resolve: () => ({}), models, registry });
+  t.after(() => srv.close());
+  const base = `http://127.0.0.1:${srv.port}`;
+  const j2 = async (path, opts) => {
+    const res = await fetch(base + path, opts);
+    return { status: res.status, body: res.headers.get('content-type')?.includes('json') ? await res.json() : await res.text() };
+  };
+  const create = await j2('/sessions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ provider: 'x', model: 'm', agent: 'cc', cwd: '/tmp', toolTier: 'read' }),
+  });
+  const { sessionId } = create.body;
+  const res = await fetch(`${base}/sessions/${sessionId}/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ text: 'hi' }),
+  });
+  const raw = await res.text();
+  assert.match(raw, /allowedTools=Read,Grep,Glob/);
 });

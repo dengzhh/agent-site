@@ -179,9 +179,10 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
         // 授权目录 → 只读工具 + cwd（只有 cc 适配器用得上：granted 目录是其可读范围，
         // 无授权时 allowedTools 为空 = 不给任何工具）。
         const isCc = session.adapter.id === 'cc';
-        const granted = session.grantedDirs ?? [];
-        const allowedTools = isCc && granted.length ? ['Read', 'Grep', 'Glob'] : [];
-        const cwd = isCc ? granted[0] : undefined;
+        // 工具分级（期 1）：none=不给工具；read=只读三件套；full 期 2 实现
+        const allowedTools = isCc && session.toolTier === 'read' ? ['Read', 'Grep', 'Glob'] : [];
+        // cwd 语义：cc 用授权目录（CLI 的工作目录）；pi/其他用会话 cwd（工具的路径边界）
+        const cwd = isCc ? (session.grantedDirs?.[0] ?? session.cwd ?? undefined) : (session.cwd ?? undefined);
         // 每轮一个 AbortController：客户端断开 → abort()，/abort 路由也经它取消
         // （abort 幂等，重复调用无害）。cancel 钩子挂在会话上供 /abort 调用。
         const ac = new AbortController();
@@ -212,6 +213,7 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
             model: session.request.model,
             baseUrl: session.request.baseUrl,
             anthropicApi: session.request.anthropicApi,
+            toolTier: session.toolTier,
             cwd,
             allowedTools,
             resumeSessionId: session.ccSessionId,
