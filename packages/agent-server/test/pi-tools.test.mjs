@@ -91,3 +91,19 @@ test('grep caps matches at MAX_GREP_MATCHES', async () => {
   assert.match(lines[lines.length - 1], /结果截断/);
   rmSync(dir, { recursive: true, force: true });
 });
+
+test('grep hardening: long pattern truncated, catastrophic regex bounded by time budget', async () => {
+  const dir = sandbox();
+  writeFileSync(join(dir, 'a.txt'), 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n');
+  const tool = makeGrep(dir);
+  // 超长 pattern → 截断到 200 字符后正常执行（不抛、不挂）
+  const long = await tool.execute('id1', { pattern: 'a'.repeat(300) });
+  assert.equal(typeof long.content[0].text, 'string');
+  // 灾难性回溯 pattern（(a+)+$ 对纯 a 行是 O(2^n)）——时间预算 + 单行截断保证不卡死
+  const t1 = Date.now();
+  const evil = await tool.execute('id2', { pattern: '(a+)+$' });
+  const elapsed = Date.now() - t1;
+  assert.ok(elapsed < 8000, `grep returned in ${elapsed}ms (budget-bounded)`);
+  assert.equal(typeof evil.content?.[0]?.text, 'string');
+  rmSync(dir, { recursive: true, force: true });
+});

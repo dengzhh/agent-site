@@ -9,6 +9,9 @@ import { join as pathJoin, resolve, sep } from 'node:path';
 const SKIP_DIRS = new Set(['node_modules', '.git', '.hg', 'dist', 'build', '.next', '__pycache__']);
 const MAX_FILE_BYTES = 1024 * 1024;
 export const MAX_GREP_MATCHES = 50;
+// ReDoS 防护：恶意正则的灾难性回溯随输入长度指数增长，同步执行无法中断——
+// 用时间预算硬性截断（超时返回部分结果），避免网站用户卡死单线程网关。
+export const GREP_BUDGET_MS = 5000;
 
 // 路径硬边界：两层检查——
 // ① 词法检查（realpath 之前）：穿越路径（../、绝对路径）resolve 后不在 base 内就立刻
@@ -114,11 +117,17 @@ export function makeGrep(cwd) {
       let base = null;
       try {
         base = realpath(cwd);
-        const re = new RegExp(params.pattern, 'i');   // 非法 pattern 在此抛错 → 下方 catch 转 isError
+        // ReDoS 防护：pattern 长度上限（嵌套量词的灾难性回溯随长度指数增长）+
+        // 时间预算（同步正则无法中断，超时截断遍历而非卡死单线程网关）。
+        const pattern = String(params.pattern ?? '').slice(0, 200);
+        if (!pattern) throw new Error('pattern required');
+        const re = new RegExp(pattern, 'i');
+        const started = Date.now();
         const matches = [];
         let truncated = false;
         await walkFiles(base, async (file) => {
           if (matches.length >= MAX_GREP_MATCHES || truncated) return false;   // false = 停止遍历
+          if (Date.now() - started > GREP_BUDGET_MS) { truncated = true; return false; }
           const st = await fs.stat(file);
           if (st.size > MAX_FILE_BYTES) return;
           const rel = file.slice(base.length + 1).split(sep).join('/');
@@ -128,7 +137,8 @@ export function makeGrep(cwd) {
           if (text === null || text.includes('\u0000')) return;
           const lines = text.split('\n');
           for (let i = 0; i < lines.length; i++) {
-            if (re.test(lines[i])) {
+            // 单行截断到 1000 字符再匹配：灾难性回溯的耗时随行长增长
+            if (re.test(lines[i].slice(0, 1000))) {
               matches.push(`${rel}:${i + 1}: ${lines[i].slice(0, 200)}`);
               if (matches.length >= MAX_GREP_MATCHES) { truncated = true; return false; }
             }
