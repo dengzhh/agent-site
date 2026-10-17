@@ -6,6 +6,7 @@
 // 一个 Agent 会让模型在第 2 轮只看到本轮那一句（回归已实测：见
 // test/server.test.mjs 的 multi-turn 用例）。
 import { Agent } from '@earendil-works/pi-agent-core';
+import { readOnlyTools } from './pi-tools.mjs';
 // 免费模型推理排队慢（OpenRouter 免费档高峰可等数分钟），OpenAI SDK 默认 10 分钟超时
 // 会被 undici 的 300s headersTimeout 先打断（"Request timed out"）。修法两层：
 // ① streamSimple 传大 timeoutMs（SDK 侧）；② 传 undici 包的 fetch + 长超时 dispatcher
@@ -30,9 +31,11 @@ function lastUserText(messages = []) {
   return '';
 }
 
-function defaultMakeAgent(models, model, sessionId, apiKey) {
+function defaultMakeAgent(models, model, sessionId, apiKey, tools) {
   return new Agent({
-    initialState: { systemPrompt: SYSTEM_PROMPT, model },
+    // tools（tier=read 时的只读三件套）会成为 Agent 的 leading system message，
+    // 属于 Agent 身份的一部分：tier/cwd 变更必须重建 Agent（见 cacheKey）。
+    initialState: { systemPrompt: SYSTEM_PROMPT, model, ...(tools ? { tools } : {}) },
     streamFn: (m, context, options) => models.streamSimple(m, context, {
       ...options,
       timeoutMs: STREAM_TIMEOUT_MS,
@@ -47,19 +50,22 @@ export function createPiAdapter({ models, resolve, makeAgent = defaultMakeAgent,
   // sessionId → { agent, cacheKey }。LRU 容量与 server 的 SessionStore 对齐（16），
   // 被淘汰的会话下一次发言会从空 transcript 重新开始（与「会话已被回收」同义）。
   const agents = new Map();
-  // 缓存键必须覆盖 agent 身份的两个维度：换模型换 key 都得换 Agent（否则会把
-  // 上一模型的上下文与凭据带过去）。只比较引用，不存 key 明文。
-  const cacheKey = (model, apiKey) => `${model.provider}/${model.id}\u0000${apiKey ?? ''}`;
+  // 缓存键必须覆盖 agent 身份的全部维度：换模型换 key 都得换 Agent（否则会把
+  // 上一模型的上下文与凭据带过去）；cwd/toolTier 变更意味着换工具集（工具闭包
+  // 绑定 cwd，tier 决定工具在不在），旧 Agent 的工具集已定型，必须重建。只比较
+  // 引用，不存 key 明文。
+  const cacheKey = (model, apiKey, cwd, toolTier) =>
+    `${model.provider}/${model.id}\u0000${apiKey ?? ''}\u0000${cwd ?? ''}\u0000${toolTier ?? ''}`;
 
-  function agentFor(model, sessionId, apiKey) {
-    const key = cacheKey(model, apiKey);
+  function agentFor(model, sessionId, apiKey, cwd, toolTier, tools) {
+    const key = cacheKey(model, apiKey, cwd, toolTier);
     const hit = agents.get(sessionId);
     if (hit && hit.cacheKey === key) {
       agents.delete(sessionId);      // 重新插入 → 刷新 LRU 序
       agents.set(sessionId, hit);
       return hit.agent;
     }
-    const agent = makeAgent(models, model, sessionId, apiKey);
+    const agent = makeAgent(models, model, sessionId, apiKey, tools);
     agents.delete(sessionId);
     agents.set(sessionId, { agent, cacheKey: key });
     while (agents.size > capacity) agents.delete(agents.keys().next().value);
@@ -71,11 +77,15 @@ export function createPiAdapter({ models, resolve, makeAgent = defaultMakeAgent,
     async available() { return true; },
     // cache=false → 本轮走一次性 Agent（不读也不写缓存），供不共享运行时状态的
     // 适配器进行 failover（例如 cc builder 失败后回落到 pi）。
-    async *run({ messages, request, apiKey = null, sessionId, signal, cache = true } = {}) {
+    async *run({ messages, request, apiKey = null, sessionId, signal, cache = true, toolTier, cwd } = {}) {
       const { model } = resolve(models, request);
+      // 只读工具按本轮 cwd 现场构建（闭包绑定 cwd，每次 run 全新数组）；cwd/tier
+      // 任一变更都体现在缓存键里 → 缓存未命中 → Agent 带新工具集重建。
+      // tier=read 但没有 cwd 时不给工具：没有硬边界就不启用。
+      const tools = toolTier === 'read' && cwd ? readOnlyTools(cwd) : undefined;
       const agent = cache && sessionId
-        ? agentFor(model, sessionId, apiKey)
-        : makeAgent(models, model, sessionId, apiKey);
+        ? agentFor(model, sessionId, apiKey, cwd, toolTier, tools)
+        : makeAgent(models, model, sessionId, apiKey, tools);
 
       // subscribe 回调 → 异步生成器：用队列 + 单次唤醒桥接。
       // 正确性要点（否则会挂起或丢事件）：
