@@ -52,3 +52,4 @@ const models = createModels();
 const srv = await startServer({ port, allowedOrigins, models });
 console.log(`agenttoolbox-agent v${VERSION} listening on http://127.0.0.1:${srv.port}`);
 console.log(`allowed origins: ${allowedOrigins.join(', ')}`);
+console.log(`logging requests/turns to this console${process.env.ATBX_VERBOSE === '1' ? ' (+ agent stderr, verbose)' : ' (set ATBX_VERBOSE=1 for agent stderr)'}`);

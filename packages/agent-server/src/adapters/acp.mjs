@@ -9,6 +9,7 @@
 //  - agent 的 stderr 噪声极大（hermes 会打插件注册日志），必须持续排空：
 //    不读会填满管道缓冲导致子进程阻塞；但内容绝不进事件流（可能回显凭证）。
 import { spawn } from 'node:child_process';
+import { createInterface } from 'node:readline';
 import { Readable, Writable } from 'node:stream';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -16,6 +17,7 @@ import { join } from 'node:path';
 import * as acp from '@agentclientprotocol/sdk';
 import { mapSessionUpdate } from './acp-stream.mjs';
 import { ACP_AGENTS } from './acp-agents.mjs';
+import { VERBOSE, logErr } from '../log.mjs';
 
 // 取最后一条 user 消息的文本作为本轮 prompt，与 pi/cc 适配器语义一致。
 function lastUserText(messages = []) {
@@ -75,7 +77,12 @@ export function createAcpAdapter({ agents = ACP_AGENTS, probe } = {}) {
       // Node 当作 unhandled 'error' 直接杀掉宿主进程——转成正常 error 事件。
       let spawnError = null;
       child.on('error', (err) => { spawnError = err; });
-      child.stderr.resume();
+      // stderr 同样必须排空（见 cc.mjs 注释）。VERBOSE 时逐行带 agent 名转发。
+      if (VERBOSE) {
+        createInterface({ input: child.stderr }).on('line', (l) => logErr(`acp:${agentId}`, l.slice(0, 200)));
+      } else {
+        child.stderr.resume();
+      }
 
       // abort → 立即杀子进程。监听器挂在 signal 上而非只靠 finally：生成器可能
       // 正挂在 yield 上等消费者取事件，此时 finally 不会执行，但 abort 必须生效。

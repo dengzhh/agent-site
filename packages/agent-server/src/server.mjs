@@ -13,6 +13,7 @@ import { loadConfig } from './config.mjs';
 import { SessionStore } from './sessions.mjs';
 import { encodeSSE } from './sse.mjs';
 import { VERSION } from './version.mjs';
+import { log, preview } from './log.mjs';
 
 const DEFAULT_ORIGINS = ['https://dengzhh.github.io'];
 
@@ -73,7 +74,12 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
     }
 
     const cors = origin === undefined ? {} : (corsHeaders(origin, allowedOrigins) ?? null);
-    if (cors === null) { res.writeHead(403, { 'content-type': 'application/json' }).end('{"error":"origin not allowed"}'); return; }
+    if (cors === null) {
+      log('http', `BLOCKED ${req.method} ${url.pathname} origin=${origin}`);
+      res.writeHead(403, { 'content-type': 'application/json' }).end('{"error":"origin not allowed"}'); return;
+    }
+    // 每个请求一行：方法 + 路径 + 来源（/health 探测是网站轮询的信号，保留）
+    log('http', `${req.method} ${url.pathname}${origin ? ` origin=${origin}` : ''}`);
     const json = (code, obj) => res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors }).end(JSON.stringify(obj));
 
     try {
@@ -123,13 +129,15 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
           lastUsed: Date.now(),
           streaming: false,
         });
+        log('session', `+ ${id.slice(0, 8)} via ${acpAgentId ? `acp:${acpAgentId}` : adapter.id}` +
+          ` provider=${body.provider} model=${body.model}`);
         return json(200, { sessionId: id, adapter: adapter.id, provider: body.provider, model: body.model });
       }
 
       const msgMatch = req.method === 'POST' && url.pathname.match(/^\/sessions\/([0-9a-f-]+)\/messages$/);
       if (msgMatch) {
         const session = sessions.get(msgMatch[1]);
-        if (!session) return json(404, { error: 'unknown session' });
+        if (!session) { log('turn', `${msgMatch[1].slice(0, 8)} ✗ unknown session`); return json(404, { error: 'unknown session' }); }
         if (session.streaming) return json(409, { error: 'already streaming' });
         // 先同步占位再读 body：否则两个并发请求都能通过检查（TOCTOU）
         session.streaming = true;
@@ -159,7 +167,19 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
         // （abort 幂等，重复调用无害）。cancel 钩子挂在会话上供 /abort 调用。
         const ac = new AbortController();
         session.cancel = () => ac.abort();
-        res.on('close', () => ac.abort());
+        const short = session.id.slice(0, 8);
+        const who = session.acpAgentId ? `acp:${session.acpAgentId}` : session.adapter.id;
+        log('turn', `${short} ← "${preview(text)}" (via ${who})`);
+        // 事件统计：逐条打 delta 会刷屏，聚合出「正文/思维链字符数 + 事件数」更有用
+        let deltaChars = 0, thinkChars = 0, toolCalls = 0;
+        let clientGone = false;
+        res.on('close', () => {
+          if (session.streaming) {
+            clientGone = true;
+            log('turn', `${short} ✂ client disconnected — aborting`);
+          }
+          ac.abort();
+        });
         try {
           for await (const ev of session.adapter.run({
             // sessionId 是 pi 适配器跨轮缓存 Agent（= 多轮上下文）的键；前端每轮只发
@@ -177,16 +197,18 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
             resumeSessionId: session.ccSessionId,
           })) {
             if (ev.sessionId) session.ccSessionId = ev.sessionId; // cc 续会话
-            if (ev.type === 'delta') send('delta', { text: ev.text });
-            else if (ev.type === 'thinking') send('thinking', { text: ev.text });
+            if (ev.type === 'delta') { deltaChars += ev.text?.length ?? 0; send('delta', { text: ev.text }); }
+            else if (ev.type === 'thinking') { thinkChars += ev.text?.length ?? 0; send('thinking', { text: ev.text }); }
             else if (ev.type === 'usage') send('usage', { usage: ev.usage });
             // activity（工具调用提示）目前前端不消费，但透传成本为零且保留信息；
             // 未识别的 SSE 类型前端会安全忽略。
-            else if (ev.type === 'activity') send('activity', { title: ev.title });
+            else if (ev.type === 'activity') { toolCalls += 1; send('activity', { title: ev.title }); }
             else if (ev.type === 'turn_end') send('turn_end', { stopReason: ev.stopReason ?? null });
             else if (ev.type === 'error') send('error', { message: ev.message });
           }
+          log('turn', `${short} ✓ end reply=${deltaChars}ch thinking=${thinkChars}ch tools=${toolCalls}`);
         } catch (err) {
+          log('turn', `${short} ✗ error: ${preview(err?.message ?? err, 120)}`);
           send('error', { message: String(err?.message ?? err) });
         } finally {
           session.streaming = false;
@@ -201,6 +223,7 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
       if (abortMatch) {
         const session = sessions.get(abortMatch[1]);
         if (!session) return json(404, { error: 'unknown session' });
+        log('turn', `${abortMatch[1].slice(0, 8)} ⏹ abort requested`);
         // 未在流式中的会话没有 cancel 钩子：no-op（与旧的 agent.abort() 同为幂等无害）
         session.cancel?.();
         return res.writeHead(204, cors).end();
