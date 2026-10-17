@@ -2,10 +2,12 @@
 // 关键安全点：CLAUDE_CONFIG_DIR 指向临时空目录，阻止 CLI 加载用户的
 // ~/.claude/settings.json（否则会用用户默认模型并执行其 hooks——已实测）。
 import { spawn } from 'node:child_process';
+import { createInterface } from 'node:readline';
 import { mkdtempSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseCcLine, isGateError } from './cc-stream.mjs';
+import { VERBOSE, logErr } from '../log.mjs';
 
 function isolatedConfigDir() {
   return mkdtempSync(join(tmpdir(), 'atbx-cc-'));
@@ -152,8 +154,12 @@ export function createCcAdapter({ cliPath = 'claude', env = {} } = {}) {
       // stderr 必须持续排空：'close' 要等全部 stdio 流关闭才触发。若 CLI 往
       // stderr 写满管道缓冲（>64KB）而我们不读，close 永不触发，下面的
       // 「缺终结事件」分支就会永久挂起。内容刻意不透出到事件里——避免任何
-      // 可能的凭证回显进入上层日志。
-      child.stderr.resume();
+      // 可能的凭证回显进入上层日志。ATBX_VERBOSE=1 时逐行转发到本地终端排障。
+      if (VERBOSE) {
+        createInterface({ input: child.stderr }).on('line', (l) => logErr('cc:stderr', l.slice(0, 200)));
+      } else {
+        child.stderr.resume();
+      }
       // 子进程可能在消费 stdin 之前就退出（例如未读取 stdin 的 CLI / 启动即失败），
       // 此时管道已关闭，写入会抛 EPIPE。这是「prompt 送不到」而非适配器故障，
       // 真正的结论由 stdout 上的终结事件或退出码给出，因此这里显式吞掉写入错误——
