@@ -26,7 +26,8 @@
           "agents": [
             "cc",
             "pi"
-          ]
+          ],
+          "detailUrl": "https://openrouter.ai/thinkingmachines/inkling-small:free"
         },
         {
           "id": "thinkingmachines/inkling:free",
@@ -41,7 +42,8 @@
           "agents": [
             "cc",
             "pi"
-          ]
+          ],
+          "detailUrl": "https://openrouter.ai/thinkingmachines/inkling:free"
         },
         {
           "id": "nvidia/nemotron-3.5-super-vl:free",
@@ -56,7 +58,8 @@
           "agents": [
             "cc",
             "pi"
-          ]
+          ],
+          "detailUrl": "https://openrouter.ai/nvidia/nemotron-3.5-super-vl:free"
         },
         {
           "id": "nvidia/nemotron-3-ultra-550b-a55b:free",
@@ -71,7 +74,8 @@
           "agents": [
             "cc",
             "pi"
-          ]
+          ],
+          "detailUrl": "https://openrouter.ai/nvidia/nemotron-3-ultra-550b-a55b:free"
         },
         {
           "id": "nvidia/nemotron-3.5-lightning:free",
@@ -86,7 +90,8 @@
           "agents": [
             "cc",
             "pi"
-          ]
+          ],
+          "detailUrl": "https://openrouter.ai/nvidia/nemotron-3.5-lightning:free"
         },
         {
           "id": "dots-studio/dots-3-note-preview:free",
@@ -101,7 +106,8 @@
           "agents": [
             "cc",
             "pi"
-          ]
+          ],
+          "detailUrl": "https://openrouter.ai/dots-studio/dots-3-note-preview:free"
         },
         {
           "id": "poolside/laguna-s-2.1:free",
@@ -116,7 +122,8 @@
           "agents": [
             "cc",
             "pi"
-          ]
+          ],
+          "detailUrl": "https://openrouter.ai/poolside/laguna-s-2.1:free"
         },
         {
           "id": "poolside/laguna-xs-2.1:free",
@@ -131,7 +138,8 @@
           "agents": [
             "cc",
             "pi"
-          ]
+          ],
+          "detailUrl": "https://openrouter.ai/poolside/laguna-xs-2.1:free"
         },
         {
           "id": "google/gemma-4-31b-it:free",
@@ -146,7 +154,8 @@
           "agents": [
             "cc",
             "pi"
-          ]
+          ],
+          "detailUrl": "https://openrouter.ai/google/gemma-4-31b-it:free"
         },
         {
           "id": "google/gemma-4-26b-a4b-it:free",
@@ -161,7 +170,8 @@
           "agents": [
             "cc",
             "pi"
-          ]
+          ],
+          "detailUrl": "https://openrouter.ai/google/gemma-4-26b-a4b-it:free"
         },
         {
           "id": "nvidia/nemotron-3-super-120b-a12b:free",
@@ -176,7 +186,8 @@
           "agents": [
             "cc",
             "pi"
-          ]
+          ],
+          "detailUrl": "https://openrouter.ai/nvidia/nemotron-3-super-120b-a12b:free"
         },
         {
           "id": "xingchen-agi/xing4.0-29b-a4b:free",
@@ -191,7 +202,8 @@
           "agents": [
             "cc",
             "pi"
-          ]
+          ],
+          "detailUrl": "https://openrouter.ai/xingchen-agi/xing4.0-29b-a4b:free"
         },
         {
           "id": "cohere/north-mini-code:free",
@@ -206,7 +218,8 @@
           "agents": [
             "cc",
             "pi"
-          ]
+          ],
+          "detailUrl": "https://openrouter.ai/cohere/north-mini-code:free"
         },
         {
           "id": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
@@ -221,7 +234,8 @@
           "agents": [
             "cc",
             "pi"
-          ]
+          ],
+          "detailUrl": "https://openrouter.ai/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
         },
         {
           "id": "nvidia/nemotron-3.5-content-safety:free",
@@ -236,7 +250,8 @@
           "agents": [
             "cc",
             "pi"
-          ]
+          ],
+          "detailUrl": "https://openrouter.ai/nvidia/nemotron-3.5-content-safety:free"
         },
         {
           "id": "liquid/lfm-2.5-2.6b:free",
@@ -251,9 +266,11 @@
           "agents": [
             "cc",
             "pi"
-          ]
+          ],
+          "detailUrl": "https://openrouter.ai/liquid/lfm-2.5-2.6b:free"
         }
-      ]
+      ],
+      "modelsUrl": "https://openrouter.ai/models"
     },
     {
       "id": "nvidia",
@@ -1707,7 +1724,8 @@
             "pi"
           ]
         }
-      ]
+      ],
+      "modelsUrl": "https://build.nvidia.com/models"
     },
     {
       "id": "groq",
@@ -1733,7 +1751,8 @@
             "pi"
           ]
         }
-      ]
+      ],
+      "modelsUrl": "https://console.groq.com/docs/models"
     },
     {
       "id": "mistral",
@@ -1773,7 +1792,8 @@
             "pi"
           ]
         }
-      ]
+      ],
+      "modelsUrl": "https://docs.mistral.ai/getting-started/models"
     },
     {
       "id": "zai",
@@ -1827,7 +1847,8 @@
             "pi"
           ]
         }
-      ]
+      ],
+      "modelsUrl": "https://docs.z.ai/guides/llm/overview"
     },
     {
       "id": "alibaba-token-plan",
@@ -2369,7 +2390,8 @@
             "pi"
           ]
         }
-      ]
+      ],
+      "modelsUrl": "https://opencode.ai/docs/models"
     }
   ]
 }

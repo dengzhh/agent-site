@@ -36,7 +36,7 @@ const fmtCtx = (n: number) =>
 
   {idx.providers.map((p) => (
     <section class="provider" data-provider={p.id}>
-      <h2>{p.name} <span class="count">{p.models.length} free</span></h2>
+      <h2>{p.modelsUrl ? <a href={p.modelsUrl} target="_blank" rel="noopener">{p.name}</a> : p.name} <span class="count">{p.models.length} free</span></h2>
       {p.note && <p class="muted-note">{p.note}</p>}
       <div class="tablewrap">
         <table>
@@ -53,7 +53,10 @@ const fmtCtx = (n: number) =>
                     m.attachment && 'vision', m.openWeights && 'open',
                     m.context >= 400000 && 'long',
                   ].filter(Boolean).join(' ')}>
-                <td>{m.name}<br /><code>{m.id}</code></td>
+                <td>
+                  {m.detailUrl ? <a href={m.detailUrl} target="_blank" rel="noopener" title="官方模型详情（介绍/定价）">{m.name}</a> : m.name}
+                  <br /><code>{m.id}</code>
+                </td>
                 <td class="num">{fmtCtx(m.context)}</td>
                 <td class="num">{fmtCtx(m.maxOutput)}</td>
                 <td>{caps(m).length ? caps(m).join(' · ') : '—'}</td>
