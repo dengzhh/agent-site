@@ -3,6 +3,7 @@
 // server 只负责 HTTP/SSE/CORS 与会话状态（键不落盘）。
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { statSync } from 'node:fs';
 import { resolveModel } from './providers.mjs';
 import { createRegistry } from './adapters/registry.mjs';
 import { createPiAdapter } from './adapters/pi.mjs';
@@ -106,6 +107,18 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
       if (req.method === 'POST' && url.pathname === '/sessions') {
         const body = await readJson(req);
         if (body == null || typeof body !== 'object') return json(400, { error: 'JSON object body required' });
+        // 工作目录：可选。给出时必须存在且是目录，否则 400（用户在网页粘贴路径，笔误常见，报错要明确）。
+        const cwd = typeof body.cwd === 'string' && body.cwd.trim() ? body.cwd.trim() : null;
+        if (cwd) {
+          try {
+            if (!statSync(cwd).isDirectory()) throw new Error('not a directory');
+          } catch {
+            return json(400, { error: 'invalid cwd', message: `working directory not accessible: ${cwd}` });
+          }
+        }
+        // 工具级别：none=纯对话（默认，与现状一致）| read=只读工具 | full=完整（期 2）。
+        // 未知值安全回落 none，绝不因误传升级权限。
+        const toolTier = ['none', 'read', 'full'].includes(body.toolTier) ? body.toolTier : 'none';
         // 选适配器。优先级：显式 agent > agents 偏好序 > 默认 ['pi']。
         //  ① body.agent = 'acp:<id>' → 指定某个 ACP 子 agent；
         //  ② body.agent = 'pi'/'cc' → 用户在抽屉下拉里显式选择，必须尊重——
@@ -129,13 +142,15 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
           request: body,
           apiKey: body.apiKey ?? null,
           grantedDirs: loadConfig().grantedDirs,
+          cwd,
+          toolTier,
           ccSessionId: null,
           lastUsed: Date.now(),
           streaming: false,
         });
         log('session', `+ ${id.slice(0, 8)} via ${acpAgentId ? `acp:${acpAgentId}` : adapter.id}` +
-          ` provider=${body.provider} model=${body.model}`);
-        return json(200, { sessionId: id, adapter: adapter.id, provider: body.provider, model: body.model });
+          ` provider=${body.provider} model=${body.model} cwd=${cwd ?? '-'} tier=${toolTier}`);
+        return json(200, { sessionId: id, adapter: adapter.id, provider: body.provider, model: body.model, cwd, toolTier });
       }
 
       const msgMatch = req.method === 'POST' && url.pathname.match(/^\/sessions\/([0-9a-f-]+)\/messages$/);

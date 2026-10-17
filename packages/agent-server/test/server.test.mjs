@@ -255,3 +255,26 @@ test('explicit agent overrides the data-layer preference order', async (t) => {
   assert.equal(r.status, 200);
   assert.equal(r.body.adapter, 'pi', '用户显式选择的 agent 必须赢过偏好序');
 });
+
+// 会话级 cwd + toolTier：cwd 必须真实存在（用户在网页粘贴路径，笔误常见 → 400 报错要明确），
+// toolTier 未知值安全回落 none（绝不因误传升级权限），缺省 cwd=null。
+test('sessions accept and validate cwd + toolTier', async (t) => {
+  const { json } = await withFauxServer(t);
+  const mk = (body) => json('/sessions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify(body),
+  });
+  const ok = await mk({ provider: 'faux', model: 'faux', cwd: '/tmp', toolTier: 'read' });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body.cwd, '/tmp');
+  assert.equal(ok.body.toolTier, 'read');
+
+  const bad = await mk({ provider: 'faux', model: 'faux', cwd: '/no/such/dir-xyz' });
+  assert.equal(bad.status, 400);
+  assert.equal(bad.body.error, 'invalid cwd');
+
+  const def = await mk({ provider: 'faux', model: 'faux' });
+  assert.equal(def.body.toolTier, 'none');
+  assert.equal(def.body.cwd, null);
+});
