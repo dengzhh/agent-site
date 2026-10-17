@@ -1,5 +1,5 @@
 {
-  "syncedAt": "2026-10-17T07:55:25.862Z",
+  "syncedAt": "2026-10-17T10:07:29.791Z",
   "source": "models.dev + openrouter/api/v1/models",
   "totalFree": 162,
   "providers": [
@@ -11,7 +11,7 @@
       "npm": "@openrouter/ai-sdk-provider",
       "doc": "https://openrouter.ai/models",
       "note": "Free models are rate-limited: ~20 req/min with a $10 credit, 50 requests/day without.",
-      "anthropicApi": null,
+      "anthropicApi": "https://openrouter.ai/api",
       "models": [
         {
           "id": "thinkingmachines/inkling-small:free",
