@@ -120,7 +120,13 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
           return json(502, { error: 'upstream unreachable', message: String(err?.message ?? err) });
         }
         if (!upstream.ok) return json(upstream.status, { error: 'upstream error' });
-        const data = (await upstream.json())?.data ?? {};
+        // 上游 200 + 坏 JSON：parse 抛错的 message 会内嵌上游响应体片段，不透出
+        let data;
+        try {
+          data = (await upstream.json())?.data ?? {};
+        } catch {
+          return json(502, { error: 'upstream error', message: 'invalid JSON from upstream' });
+        }
         return json(200, {
           usage: data.usage ?? null,
           limit: data.limit ?? null,
