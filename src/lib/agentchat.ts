@@ -80,15 +80,24 @@ export async function probeHealth(baseUrl = AGENT_URL, signal?: AbortSignal): Pr
   } catch { return null; }
 }
 
-export async function createSession(body: SessionRequest, baseUrl = AGENT_URL): Promise<string> {
+/** POST /sessions 的响应体：网关建会话后回显落库参数（cwd/toolTier 见 server.mjs）。 */
+export interface SessionResponse {
+  sessionId: string;
+  adapter: string;
+  provider: string;
+  model: string;
+  cwd: string | null;
+  toolTier: 'none' | 'read';
+}
+
+export async function createSession(body: SessionRequest, baseUrl = AGENT_URL): Promise<SessionResponse> {
   const res = await fetch(`${baseUrl}/sessions`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`session create failed: ${res.status} ${await res.text()}`);
-  const data = (await res.json()) as { sessionId: string };
-  return data.sessionId;
+  return (await res.json()) as SessionResponse;
 }
 
 /** 发一条消息并流式回调事件；返回时流已结束。signal 中止时 fetch 抛 AbortError。 */

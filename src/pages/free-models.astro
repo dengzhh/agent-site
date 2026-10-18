@@ -128,7 +128,7 @@ const fmtCtx = (n: number) =>
     <div class="chat-config-row" id="chat-config-row" hidden>
       <label for="chat-cwd">Work dir</label>
       <input id="chat-cwd" type="text" placeholder="/home/you/project" autocomplete="off" spellcheck="false" />
-      <select id="chat-tier" class="chat-tier">
+      <select id="chat-tier" class="chat-tier" aria-label="Tool tier">
         <option value="none">Chat only</option>
         <option value="read">+ Read files</option>
       </select>
@@ -206,6 +206,7 @@ const fmtCtx = (n: number) =>
   .chat-msg--thinking { font-style: italic; color: var(--ink-soft); opacity: .85; font-size: .88rem; white-space: pre-wrap; }
   .chat-msg--thinking.is-collapsed { max-height: 2.6em; overflow-y: auto; opacity: .6; }
   .chat-msg--activity { color: var(--ink-soft); font-size: .82rem; }
+  .chat-msg--hint { color: var(--ink-soft); font-size: .85rem; }
   .chat-pane { display: flex; flex-direction: column; gap: .6rem; overflow-y: auto; flex: 1; }
   .chat-pane[hidden] { display: none; } /* display:flex 会盖过 UA 的 [hidden]，需显式还原 */
   #chat-main { min-height: 0; }
@@ -223,7 +224,7 @@ const fmtCtx = (n: number) =>
 <script>
   import data from '../data/free-models.json';
   import { generateConfig, type ConfigTarget } from '../lib/freeconfig';
-  import { probeHealth, createSession, streamMessage, abortSession, fetchOpenRouterQuota, keyStorage, type ChatEvent } from '../lib/agentchat';
+  import { probeHealth, createSession, streamMessage, abortSession, fetchOpenRouterQuota, keyStorage, type ChatEvent, type OpenRouterQuota } from '../lib/agentchat';
 
   const idx = data;
   const $ = (id: string) => document.getElementById(id)!;
@@ -340,6 +341,13 @@ const fmtCtx = (n: number) =>
     streamAbort?: AbortController;
   };
   let chat: ChatState | null = null;
+  // 配置代数令牌：换 agent / 改 cwd / 改级别 / 换模型 / 关抽屉都自增。在途的
+  // 建会话与额度请求在每个 await 之后核对令牌，不一致即整体放弃——否则连改
+  // 两次配置，第二次的 UI 会配上第一次建出的会话（或额度行刷错模型）。
+  let configGen = 0;
+  // OpenRouter 额度行文案（建会话时刷一次）。usage 事件把每轮 token 用量追加
+  // 在它后面而不是整体替换，否则第一轮 ACP 用量就把额度行冲掉了。
+  let quotaText = '';
   // /health.agents 的缓存：openChat 时探测一次，填下拉
   let lastHealth: Awaited<ReturnType<typeof probeHealth>> = null;
 
@@ -353,7 +361,8 @@ const fmtCtx = (n: number) =>
   const showPane = (k: 'install' | 'cc' | 'key' | 'main') => {
     for (const [name, el] of Object.entries(panes)) el.hidden = name !== k;
   };
-  const chatMsg = (role: 'user' | 'assistant' | 'error', text: string) => {
+  // role 集合与实际调用点对齐（thinking/activity 由 SSE 分支传入，hint 为配置降级提示）
+  const chatMsg = (role: 'user' | 'assistant' | 'error' | 'thinking' | 'activity' | 'hint', text: string) => {
     const div = document.createElement('div');
     div.className = `chat-msg chat-msg--${role}`;
     div.textContent = text;
@@ -364,10 +373,42 @@ const fmtCtx = (n: number) =>
 
   function stopProbe() { if (chat?.probeTimer) { clearInterval(chat.probeTimer); chat.probeTimer = undefined; } }
 
+  // 把 DOM 里的 cwd / 级别读进会话状态（调用方需先清空日志，降级提示才留得住）。
+  // read 级别但目录为空：网关不会给它挂工具，与其静默建个无工具会话，不如强制
+  // 降回 none 并把下拉框拨回去（UI 状态 = 实际发送的参数），同时提示用户。
+  function readConfigFromUi(): void {
+    const c = chat!;
+    c.cwd = cwdInput.value.trim();
+    c.toolTier = tierSel.value === 'read' ? 'read' : 'none';
+    if (c.toolTier === 'read' && !c.cwd) {
+      c.toolTier = 'none';
+      tierSel.value = 'none';
+      chatMsg('hint', 'Read tools need a work dir — tier reset to "Chat only". Fill in the work dir above to enable file tools.');
+    }
+  }
+
+  // 配置重置唯一入口（换 agent / 改 cwd / 改级别都汇到这里）：作废旧会话并重建。
+  // 旧会话的在途流先中止，否则 send 卡在 disabled、Stop 按钮指向一个死会话。
+  function resetSession(): void {
+    const c = chat;
+    if (!c) return;
+    if (c.streaming && c.streamAbort) c.streamAbort.abort();
+    c.streaming = false;
+    sendBtn.disabled = false;
+    abortBtn.hidden = true;
+    c.sessionId = null;
+    configGen++; // 在途的建会话/额度结果因此作废（见各 await 后的核对）
+    usageEl.hidden = true;
+    usageEl.textContent = '';
+    quotaText = '';
+    void tryGoChat();
+  }
+
   async function ensureSession(): Promise<void> {
     const c = chat!;
     if (c.sessionId) return;
-    c.sessionId = await createSession({
+    const gen = configGen;
+    const res = await createSession({
       provider: c.provider, model: c.model, baseUrl: c.base || null,
       apiKey: keyStorage.get(c.provider),
       name: c.name, contextWindow: c.ctx, maxOutput: c.maxOut,
@@ -378,6 +419,9 @@ const fmtCtx = (n: number) =>
       cwd: c.toolTier === 'read' ? (c.cwd || null) : null,
       toolTier: c.toolTier === 'read' ? 'read' : 'none',
     });
+    // 建会话期间配置变了（连点两次/换模型）：迟到的 sessionId 属于旧配置，丢弃
+    if (gen !== configGen || chat !== c) return;
+    c.sessionId = res.sessionId;
   }
 
   // Agent 下拉：把 /health.agents 里可用的项填进去。≤1 个可用时隐藏（无意义 UI）。
@@ -416,11 +460,24 @@ const fmtCtx = (n: number) =>
     }
   }
 
+  // OpenRouter 额度行文案：有明确限额 → 已用/限额；无限额按是否免费档区分
+  const formatQuota = (q: OpenRouterQuota): string =>
+    q.limit != null
+      ? `已用 ${q.usage ?? 0} · 限额 ${q.limit} 请求/天`
+      : q.isFreeTier === true ? '免费档 50/天' : '不限';
+
   async function tryGoChat(): Promise<void> {
     const c = chat!;
+    const gen = configGen;
+    const stale = () => gen !== configGen || chat !== c;
     const health = await probeHealth();
-    if (!health) { showPane('install'); stopProbe(); c.probeTimer = setInterval(tryGoChat, 3000); return; }
+    if (!health) {
+      // 旧轮次别再切面板/重装轮播，新一轮自会处理；否则旧 timer 泄漏
+      if (stale()) return;
+      showPane('install'); stopProbe(); c.probeTimer = setInterval(tryGoChat, 3000); return;
+    }
     stopProbe();
+    if (stale()) return;
     lastHealth = health;
     fillAgentSelect(health);
     // 该模型只能跑在 CC 上，而本机没装 CC：给安装引导（不轮询——安装要用户时间，装完重开即可）
@@ -430,6 +487,7 @@ const fmtCtx = (n: number) =>
     if (!keyStorage.get(c.provider)) { showPane('key'); return; }
     try {
       await ensureSession();
+      if (stale()) return;
       showPane('main');
       chatInput.focus();
       // OpenRouter 额度展示：有 key 才查（经网关代理）；其他 provider 不显示。
@@ -439,22 +497,25 @@ const fmtCtx = (n: number) =>
         const key = keyStorage.get(c.provider);
         if (key) {
           const q = await fetchOpenRouterQuota(key);
-          if (q) {
+          // 查询失败（q 为 null）→ 额度行留空，不刷错误；期间配置变了也别写
+          if (q && !stale()) {
+            quotaText = formatQuota(q);
             usageEl.hidden = false;
-            usageEl.textContent = q.isFreeTier
-              ? `OpenRouter 免费额度：已用 ${q.usage ?? '?'} / ${q.limit ?? 50} 请求/天`
-              : `OpenRouter：已用 ${q.usage ?? 0} credits`;
+            usageEl.textContent = quotaText;
           }
         }
       }
     }
     // 建会话失败（典型：read 级别给了不存在的 cwd → 网关 400）留在主面板：
     // 错误进日志才看得见——跳 key 面板会把 chatLog 连同错误一起藏掉。
-    catch (e) { chatMsg('error', String((e as Error).message)); showPane('main'); }
+    // 配置已换则这轮的错误属于旧参数，不展示（新一轮自会报自己的）。
+    catch (e) { if (!stale()) { chatMsg('error', String((e as Error).message)); showPane('main'); } }
   }
 
   function openChat(a: HTMLAnchorElement) {
     stopProbe(); // 上一次会话（若在等本地服务）的轮询要停掉，否则旧 timer 会打到新 chat 上
+    chat?.streamAbort?.abort(); // 上一个会话还在流式：一并中止，别让旧流写进新对话
+    configGen++; // 上一个模型在途的建会话/额度结果一并作废
     chat = {
       provider: a.dataset.provider!, model: a.dataset.model!, base: a.dataset.base ?? '',
       anthropicApi: a.dataset.anthropic ?? '',
@@ -474,12 +535,12 @@ const fmtCtx = (n: number) =>
       cwdInput.value = localStorage.getItem('atbx:cwd') ?? '';
       tierSel.value = localStorage.getItem('atbx:tier') === 'read' ? 'read' : 'none';
     } catch { /* 隐身模式等 */ }
-    chat.cwd = cwdInput.value.trim();
-    chat.toolTier = tierSel.value === 'read' ? 'read' : 'none';
+    readConfigFromUi(); // 空目录 + read → 降级 none 并提示
     // 配置行随抽屉开合：开 = 显示（跨面板常驻，key/安装引导时也能先填好）
     $('chat-config-row').hidden = false;
     usageEl.hidden = true; // 上一个模型的额度别残留
     usageEl.textContent = '';
+    quotaText = '';
     // 上次缓存的 health 直接先填一次下拉（避免闪烁）；tryGoChat 成功后再刷新
     if (lastHealth) fillAgentSelect(lastHealth);
     drawer.classList.add('is-open');
@@ -495,6 +556,7 @@ const fmtCtx = (n: number) =>
     drawer.setAttribute('aria-hidden', 'true');
     stopProbe();
     chat?.streamAbort?.abort();
+    configGen++; // 抽屉关了 = 会话作废：在途的建会话/额度结果别再落 UI
     $('chat-config-row').hidden = true;
     usageEl.hidden = true;
   });
@@ -517,26 +579,22 @@ const fmtCtx = (n: number) =>
     if (!chat) return;
     try { localStorage.setItem('atbx:agent', sel.value); } catch { /* 隐身模式等 */ }
     chat.agent = sel.value;
-    chat.sessionId = null;      // 旧会话属于上一个 agent
-    chatLog.textContent = '';
     updateAgentHint();
-    void tryGoChat();
+    chatLog.textContent = ''; // 旧 agent 的对话随旧会话作废
+    resetSession();
   });
 
   // cwd / 级别变更 = 新会话（运行中的 agent 不能中途搬家：工具闭包绑定 cwd，
   // tier 决定工具在不在，网关侧按 cacheKey 重建）。与 Agent 下拉的变化叠加生效。
   const applyConfig = () => {
     if (!chat) return;
-    chat.cwd = cwdInput.value.trim();
-    chat.toolTier = tierSel.value === 'read' ? 'read' : 'none';
+    chatLog.textContent = ''; // 先清：readConfigFromUi 的降级提示要落在新对话开头
+    readConfigFromUi();
     try {
       localStorage.setItem('atbx:cwd', chat.cwd);
       localStorage.setItem('atbx:tier', chat.toolTier);
     } catch { /* 隐身模式等 */ }
-    chat.sessionId = null;
-    chatLog.textContent = '';
-    usageEl.hidden = true; // 新会话，per-turn 用量作废
-    void tryGoChat();
+    resetSession(); // 新会话，per-turn 用量与额度行作废（resetSession 内处理）
   };
   cwdInput.addEventListener('change', applyConfig);
   tierSel.addEventListener('change', applyConfig);
@@ -552,6 +610,7 @@ const fmtCtx = (n: number) =>
     const outDiv = chatMsg('assistant', '');
     // 思维链/工具活动：弱化样式的独立元素，与正式回复分开
     let thinkDiv: HTMLDivElement | null = null;
+    const gen = configGen; // 中途配置重置会让这轮流作废（abort），收尾时据此不碰 UI
     c.streaming = true; sendBtn.disabled = true; abortBtn.hidden = false;
     c.streamAbort = new AbortController();
     abortBtn.onclick = () => { c.streamAbort?.abort(); void abortSession(c.sessionId!); };
@@ -567,17 +626,22 @@ const fmtCtx = (n: number) =>
           thinkDiv.textContent += ev.text;
         }
         else if (ev.type === 'activity') chatMsg('activity', `⚙ ${ev.title}`);
-        // ACP 的 usage_update（{used,size,cost?}）；pi/cc 无此事件时保持隐藏
+        // ACP 的 usage_update（{used,size,cost?}）；pi/cc 无此事件时保持隐藏。
+        // 追加在额度行后而非替换，否则第一轮用量就把 OpenRouter 额度文案冲掉。
         else if (ev.type === 'usage' && ev.usage) {
           const u = ev.usage;
+          if (gen !== configGen || chat !== c) return; // 迟到事件别写新会话的用量行
+          const line = `上下文：${u.used ?? '?'}/${u.size ?? '?'} tokens`;
           usageEl.hidden = false;
-          usageEl.textContent = `上下文：${u.used ?? '?'}/${u.size ?? '?'} tokens`;
+          usageEl.textContent = quotaText ? `${quotaText} · ${line}` : line;
         }
         else if (ev.type === 'error') outDiv.textContent += `\n[error] ${ev.message}`;
         chatLog.scrollTop = chatLog.scrollHeight;
       }, c.streamAbort.signal);
     } catch { outDiv.textContent += '\n[connection closed]'; }
-    finally { c.streaming = false; sendBtn.disabled = false; abortBtn.hidden = true; }
+    // 配置已重置/换模型时不碰按钮：新一轮 resetSession 已复位过 UI，
+    // 迟到的收尾若再复位，会把新一轮正在跑的流误解锁
+    finally { if (gen === configGen && chat === c) { c.streaming = false; sendBtn.disabled = false; abortBtn.hidden = true; } }
   });
   chatInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ($('chat-form') as HTMLFormElement).requestSubmit(); }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseSSEChunk, keyFor, probeHealth, fetchOpenRouterQuota } from './agentchat';
+import { parseSSEChunk, keyFor, probeHealth, createSession, fetchOpenRouterQuota } from './agentchat';
 
 describe('parseSSEChunk', () => {
   it('parses complete blocks and keeps partial in rest', () => {
@@ -32,6 +32,23 @@ describe('probeHealth', () => {
     try {
       const h = await probeHealth('http://x');
       expect(h?.agents?.[0]).toEqual({ id: 'cc', available: false });
+    } finally { globalThis.fetch = original; }
+  });
+});
+
+describe('createSession', () => {
+  it('returns the whole SessionResponse body, not just the id', async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      sessionId: 's-1', adapter: 'pi', provider: 'openrouter', model: 'q/free',
+      cwd: '/tmp/proj', toolTier: 'read',
+    }), { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch;
+    try {
+      const s = await createSession({ provider: 'openrouter', model: 'q/free', cwd: '/tmp/proj', toolTier: 'read' }, 'http://x');
+      expect(s).toEqual({
+        sessionId: 's-1', adapter: 'pi', provider: 'openrouter', model: 'q/free',
+        cwd: '/tmp/proj', toolTier: 'read',
+      });
     } finally { globalThis.fetch = original; }
   });
 });
