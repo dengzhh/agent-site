@@ -387,6 +387,12 @@ const fmtCtx = (n: number) =>
     }
   }
 
+  // 流式按钮复位（换 agent/模型、关抽屉、流的正常收尾都要走）：Send 恢复可点、Stop 隐藏。
+  function resetStreamButtons(): void {
+    sendBtn.disabled = false;
+    abortBtn.hidden = true;
+  }
+
   // 配置重置唯一入口（换 agent / 改 cwd / 改级别都汇到这里）：作废旧会话并重建。
   // 旧会话的在途流先中止，否则 send 卡在 disabled、Stop 按钮指向一个死会话。
   function resetSession(): void {
@@ -394,8 +400,7 @@ const fmtCtx = (n: number) =>
     if (!c) return;
     if (c.streaming && c.streamAbort) c.streamAbort.abort();
     c.streaming = false;
-    sendBtn.disabled = false;
-    abortBtn.hidden = true;
+    resetStreamButtons();
     c.sessionId = null;
     configGen++; // 在途的建会话/额度结果因此作废（见各 await 后的核对）
     usageEl.hidden = true;
@@ -515,6 +520,9 @@ const fmtCtx = (n: number) =>
   function openChat(a: HTMLAnchorElement) {
     stopProbe(); // 上一次会话（若在等本地服务）的轮询要停掉，否则旧 timer 会打到新 chat 上
     chat?.streamAbort?.abort(); // 上一个会话还在流式：一并中止，别让旧流写进新对话
+    // 旧流的 finally 会因下面的 gen++ 跳过按钮复位，这里得自己复位，否则新对话
+    // 的 Send 停在 disabled、Stop 指向死会话
+    resetStreamButtons();
     configGen++; // 上一个模型在途的建会话/额度结果一并作废
     chat = {
       provider: a.dataset.provider!, model: a.dataset.model!, base: a.dataset.base ?? '',
@@ -556,6 +564,7 @@ const fmtCtx = (n: number) =>
     drawer.setAttribute('aria-hidden', 'true');
     stopProbe();
     chat?.streamAbort?.abort();
+    resetStreamButtons(); // 旧流的 finally 因 gen++ 会跳过复位，重开前的按钮先归位
     configGen++; // 抽屉关了 = 会话作废：在途的建会话/额度结果别再落 UI
     $('chat-config-row').hidden = true;
     usageEl.hidden = true;
@@ -622,10 +631,14 @@ const fmtCtx = (n: number) =>
           outDiv.textContent += ev.text;
         }
         else if (ev.type === 'thinking') {
+          if (gen !== configGen || chat !== c) return; // 迟到事件别写新对话的日志
           if (!thinkDiv) thinkDiv = chatMsg('thinking', '');
           thinkDiv.textContent += ev.text;
         }
-        else if (ev.type === 'activity') chatMsg('activity', `⚙ ${ev.title}`);
+        else if (ev.type === 'activity') {
+          if (gen !== configGen || chat !== c) return;
+          chatMsg('activity', `⚙ ${ev.title}`);
+        }
         // ACP 的 usage_update（{used,size,cost?}）；pi/cc 无此事件时保持隐藏。
         // 追加在额度行后而非替换，否则第一轮用量就把 OpenRouter 额度文案冲掉。
         else if (ev.type === 'usage' && ev.usage) {
