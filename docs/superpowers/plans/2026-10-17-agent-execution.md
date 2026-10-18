@@ -622,7 +622,7 @@ git commit -m "feat(agent-server): OpenRouter quota proxy endpoint"
 - Modify: `src/lib/agentchat.ts`
 - Modify: `src/pages/free-models.astro`
 
-- [ ] **Step 1: 类型扩展**（agentchat.ts）
+- [x] **Step 1: 类型扩展**（agentchat.ts）
 
 ```typescript
 export interface SessionRequest {
@@ -651,7 +651,7 @@ export async function fetchOpenRouterQuota(apiKey: string, baseUrl = AGENT_URL):
 ```
 （`createSession` 返回值如需 cwd/toolTier 回显，一并调整。）
 
-- [ ] **Step 2: 抽屉 UI**（free-models.astro）
+- [x] **Step 2: 抽屉 UI**（free-models.astro）
 
 chat-agent-row 之后加配置行（默认 hidden，health + key 就绪后显示）：
 
@@ -681,19 +681,19 @@ chat-agent-row 之后加配置行（默认 hidden，health + key 就绪后显示
 - 每次 turn_end 后如有 usage 事件 → 追加 `上下文 used/size`
 - tier 值与 cwd 存 `localStorage['atbx:tier'/'atbx:cwd']` 供下次预填（可选）
 
-- [ ] **Step 3: 验证**
+- [x] **Step 3: 验证**
 
 Run: `npm test && npx tsc --noEmit && npm run build`
 Expected: 全绿；11 页
 
-- [ ] **Step 4: 浏览器验证**
+- [x] **Step 4: 浏览器验证**
 
 网关起 31415 → 打开页面 → 点 Chat：
 1. 配置行出现；输入无效路径 → 错误提示；输入 `/tmp` → 会话创建
 2. 选 read 级别 → 对话后 agent 能引用 cwd 内文件内容（真实 pi 工具实测：`grep` 一个项目里的关键字）
 3. 截图存档
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src/lib/agentchat.ts src/pages/free-models.astro
