@@ -30,3 +30,26 @@
 - **codex**：`CODEX_API_KEY` / `OPENAI_API_KEY` 环境变量认证；无法用自定义 baseURL
   （`wire_api` 仅支持 responses 协议）。
 - **dsh**：`DSH_HOME` 隔离配置（0.2.0-rc.2，API 可能变动）。
+
+## 期 1 端到端实测（2026-10-18，工作目录 + 工具分级）
+
+环境：网关 31415（本包源码直启）+ astro dev + 真实 `claude` / `hermes` CLI，
+浏览器实测 Chat 抽屉。截图存档：`/tmp/atbx-e2e-screens/agent-execution-task7-e2e-drawer.png`（未入库）。
+
+| 验证点 | 结果 |
+|---|---|
+| 配置行渲染 + 持久化 | ✅ 抽屉出现 Work dir 输入框与 Chat only / + Read files 下拉；cwd+tier 写入 localStorage，重开抽屉后恢复 |
+| 无效 cwd（`/no/such/dir-xyz-e2e`）+ read | ✅ 网关 400 → 聊天日志显示错误行，抽屉停留在主面板；网关日志确认 `POST /sessions` **未创建会话** |
+| 空 cwd + read | ✅ 客户端把 tier 强制归一为 `none`（下拉同步归一 + hint 提示行）；网关日志确认以 `tier=none cwd=-` 建会话 |
+| 有效 cwd（`/tmp/atbx-e2e`）+ read | ✅ 建会话成功；网关日志 `cwd=/tmp/atbx-e2e tier=read`；claude 子进程带 `--allowedTools Read,Grep,Glob` 启动（分级在进程级落地） |
+| 流式状态机 | ✅ 回合中 Send 禁用 + Stop 显示；Stop → 网关 `/abort` → claude 子进程被杀 → `[connection closed]` 行 → Send 恢复 |
+| OpenRouter 额度查询 | ✅ 每次建会话后触发 `POST /quota/openrouter`；占位 key → 上游 401 → 用量行保持空白（优雅降级） |
+
+**已知阻塞（如实记录）**：本轮环境里「agent grep 文件并引用内容」的完整回合
+**未跑通** —— cc 适配器把目录里的模型 id（`thinkingmachines/inkling-small:free`）
+原样传给 claude CLI，CLI 警告 `[claude-code:unrecognized_model]` 后回合挂在
+所配置的上游（测试环境里由 Claude Code 注入的 `ANTHROPIC_BASE_URL` 代理）。
+这是模型目录 / cc 适配器的集成问题，不在 Task 7/8 范围内；`acp:hermes` 路径
+同样卡在其自身上游。服务端工具管线（tier/cwd/allowedTools 断言）已由自动化
+测试套件覆盖。
+
