@@ -176,8 +176,7 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
           ...cors,
         });
         const send = (type, payload) => res.write(encodeSSE(type, payload));
-        // 授权目录 → 只读工具 + cwd（只有 cc 适配器用得上：granted 目录是其可读范围，
-        // 无授权时 allowedTools 为空 = 不给任何工具）。
+        // 工具分级（期 1）：none=不给工具；read=只读三件套；full 期 2 实现
         const isCc = session.adapter.id === 'cc';
         // 工具分级（期 1）：none=不给工具；read=只读三件套；full 期 2 实现
         const allowedTools = isCc && session.toolTier === 'read' ? ['Read', 'Grep', 'Glob'] : [];

@@ -8,6 +8,7 @@ import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from '@ear
 import { createRegistry } from '../src/adapters/registry.mjs';
 import { createPiAdapter } from '../src/adapters/pi.mjs';
 
+
 // /health 的 grantedDirs 来自网关配置文件。重定向到临时路径，断言才不依赖开发者本机
 // 是否已 grant 过目录；DEFAULT_CONFIG_PATH 在 config.mjs 被 import 时求值，因此
 // server.mjs（→ config.mjs）必须动态 import，让这次重定向先生效。
@@ -326,9 +327,6 @@ test('pi session with cwd+read tier receives tools via the adapter', async (t) =
 });
 
 test('cc read tier maps to read-only allowedTools', async (t) => {
-  // cc 适配器在 tier=read 时应收到只读 allowedTools（通过 echo 夹具断言 --allowedTools argv）
-  // 夹具：回显 argv 的假 claude
-  const echoPath = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'cc-echo-argv.sh');
   const models = createModels();
   const faux = fauxProvider();
   models.setProvider(faux.provider);
