@@ -49,7 +49,7 @@ export function createAcpAdapter({ agents = ACP_AGENTS, probe } = {}) {
       return await commandExists(agents[agentId].cmd);
     },
 
-    async *run({ agentId, messages, cwd = process.cwd(), signal } = {}) {
+    async *run({ agentId, messages, cwd = process.cwd(), toolTier, signal } = {}) {
       if (!Object.hasOwn(agents, agentId)) {
         yield { type: 'error', message: `unknown acp agent: ${agentId}` };
         return;
@@ -112,10 +112,16 @@ export function createAcpAdapter({ agents = ACP_AGENTS, probe } = {}) {
         async sessionUpdate(params) {
           for (const ev of mapSessionUpdate(params)) push(ev);
         },
-        // 无头环境不能等用户点确认：自动放行一次性权限。
-        // 真正的安全边界在上层（grant 机制 / 只读工具白名单）。
-        async requestPermission() {
-          return { outcome: { outcome: 'selected', optionId: 'allow_once' } };
+        // 无头环境不能等用户点确认：期 1 启发式——read 级别放行只读类工具
+        // （title/kind 命中只读词表），其余（写/执行/未知，或 tier none）拒绝。
+        // 期 2 替换为转发抽屉确认（见 spec 期 2）。
+        async requestPermission(req) {
+          const call = req?.toolCall ?? {};
+          const title = String(call.title ?? call.name ?? '');
+          const kind = String(call.kind ?? '');
+          const readonly = /read|view|grep|glob|search|list|find|inspect|ls/i.test(`${title} ${kind}`);
+          const allow = toolTier === 'read' && readonly;
+          return { outcome: { outcome: 'selected', optionId: allow ? 'allow_once' : 'reject_once' } };
         },
         async readTextFile() { throw new Error('fs not supported'); },
         async writeTextFile() { throw new Error('fs not supported'); },
