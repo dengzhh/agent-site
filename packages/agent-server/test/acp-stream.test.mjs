@@ -63,22 +63,67 @@ test('describePermission caps the summary at 160 chars', () => {
   assert.ok(summary.endsWith('...'));
 });
 
-test('resolveOutcomeOptionIds reads the request options, not hardcoded ids', () => {
-  const req = { options: [
+// 应答 optionId 解析决策表（fail-closed）：
+//  - 只认 *_once 的 kind：once = 每次都问，永不让 agent「记住」（选 *_always 等
+//    于替用户点「允许并记住」，后续同类操作永久绕过抽屉）
+//  - 家族内没有 once 项（只给了 *_always）→ null（适配器应答 cancelled）
+//  - options 缺失 / 空 / kind 缺失或违规 → null
+//  - 只按 kind 解析；name 不可信，绝不做关键词兜底
+test('resolveOutcomeOptionIds prefers the *_once option within each family regardless of order', () => {
+  const options = [
     { optionId: 'yes_once', name: 'Sure', kind: 'allow_once' },
     { optionId: 'no_way', name: 'Nah', kind: 'reject_once' },
-  ] };
-  assert.deepEqual(resolveOutcomeOptionIds(req.options), { allowId: 'yes_once', rejectId: 'no_way' });
-  // 标准 id 照常解析；allow_always/reject_always 同样命中语义前缀
+  ];
+  assert.deepEqual(resolveOutcomeOptionIds(options), { allowId: 'yes_once', rejectId: 'no_way' });
+  // 审查回归：agent 把 allow_always 排在最前，也不得选它
+  const ordered = [
+    { optionId: 'always-a', name: 'Always allow', kind: 'allow_always' },
+    { optionId: 'once-a', name: 'Allow', kind: 'allow_once' },
+    { optionId: 'always-r', name: 'Always reject', kind: 'reject_always' },
+    { optionId: 'once-r', name: 'Reject', kind: 'reject_once' },
+  ];
+  assert.deepEqual(resolveOutcomeOptionIds(ordered), { allowId: 'once-a', rejectId: 'once-r' });
+  assert.deepEqual(resolveOutcomeOptionIds([...ordered].reverse()), { allowId: 'once-a', rejectId: 'once-r' });
+});
+
+test('resolveOutcomeOptionIds returns null for a family that only offers *_always', () => {
+  // 只有 allow_always：选它 = 自动放行未来 → 应答 cancelled（agent 视为未选择）
   assert.deepEqual(
-    resolveOutcomeOptionIds([{ optionId: 'a', name: 'A', kind: 'allow_always' }, { optionId: 'r', name: 'R', kind: 'reject_always' }]),
-    { allowId: 'a', rejectId: 'r' },
+    resolveOutcomeOptionIds([
+      { optionId: 'remember', name: 'Always allow', kind: 'allow_always' },
+      { optionId: 'no', name: 'Reject', kind: 'reject_once' },
+    ]),
+    { allowId: null, rejectId: 'no' },
   );
-  // kind 缺失时退回 name 关键词，最后回退标准字面量
+  // 对称：reject 家族只有 *_always 同样取消（「永远拒绝」也不是用户点过的承诺）
+  assert.deepEqual(
+    resolveOutcomeOptionIds([
+      { optionId: 'yes', name: 'Allow', kind: 'allow_once' },
+      { optionId: 'never', name: 'Always reject', kind: 'reject_always' },
+    ]),
+    { allowId: 'yes', rejectId: null },
+  );
+});
+
+test('resolveOutcomeOptionIds returns null when options are absent or unrecognized', () => {
+  assert.deepEqual(resolveOutcomeOptionIds([]), { allowId: null, rejectId: null });
+  assert.deepEqual(resolveOutcomeOptionIds(undefined), { allowId: null, rejectId: null });
+  assert.deepEqual(resolveOutcomeOptionIds('junk'), { allowId: null, rejectId: null });
+});
+
+test('resolveOutcomeOptionIds resolves strictly by kind, never by option name', () => {
+  // deny 决策不靠名字：旧 name 兜底的 /no/i 会命中 "Notify me and proceed"，
+  // 把拒绝答到放行项上（fail-open）
+  assert.deepEqual(
+    resolveOutcomeOptionIds([
+      { optionId: 'notify', name: 'Notify me and proceed', kind: 'allow_once' },
+      { optionId: 'decline', name: 'Proceed without me', kind: 'reject_once' },
+    ]),
+    { allowId: 'notify', rejectId: 'decline' },
+  );
+  // kind 缺失（违规 agent，schema 必填）→ 取消，绝不按名字猜
   assert.deepEqual(
     resolveOutcomeOptionIds([{ optionId: 'ok', name: 'Approve it' }, { optionId: 'stop', name: 'Deny it' }]),
-    { allowId: 'ok', rejectId: 'stop' },
+    { allowId: null, rejectId: null },
   );
-  assert.deepEqual(resolveOutcomeOptionIds([]), { allowId: 'allow_once', rejectId: 'reject_once' });
-  assert.deepEqual(resolveOutcomeOptionIds(undefined), { allowId: 'allow_once', rejectId: 'reject_once' });
 });

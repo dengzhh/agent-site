@@ -160,3 +160,69 @@ test('acp resolves custom option ids from the request itself', async () => {
   const denied = await run(false);
   assert.ok(denied.some((e) => e.type === 'delta' && /PERM: no_way/.test(e.text)), 'deny resolves custom reject optionId');
 });
+
+// ── 审查修正：once 优先 + cancelled 兜底（绝不替用户「记住」）─────────────────
+
+test('acp full tier answers the once-option even when always is offered first', async () => {
+  const options = JSON.stringify([
+    { optionId: 'remember', name: 'Always allow', kind: 'allow_always' },
+    { optionId: 'allow-once', name: 'Allow', kind: 'allow_once' },
+    { optionId: 'never-again', name: 'Always reject', kind: 'reject_always' },
+    { optionId: 'deny-once', name: 'Reject', kind: 'reject_once' },
+  ]);
+  const acp = createAcpAdapter({ agents: { fake: fakeWithPerm('Write file src/a.ts', '--perm-kind', 'edit', '--perm-options', options) } });
+  const run = (allow) => collect(acp.run({
+    agentId: 'fake', messages: [{ role: 'user', content: 'hi' }], cwd: '/tmp', toolTier: 'full',
+    requestApproval: gate(allow),
+  }));
+  const allowed = await run(true);
+  assert.ok(allowed.some((e) => e.type === 'delta' && /PERM: allow-once/.test(e.text)), 'allow picks the once option');
+  assert.ok(!allowed.some((e) => e.type === 'delta' && /PERM: remember/.test(e.text)), 'must never answer allow_always');
+  const denied = await run(false);
+  assert.ok(denied.some((e) => e.type === 'delta' && /PERM: deny-once/.test(e.text)), 'deny picks the once option');
+  assert.ok(!denied.some((e) => e.type === 'delta' && /PERM: never-again/.test(e.text)), 'must never answer reject_always');
+});
+
+test('acp full tier answers cancelled when only allow_always is offered (no auto-remember)', async () => {
+  const options = JSON.stringify([
+    { optionId: 'remember', name: 'Always allow', kind: 'allow_always' },
+    { optionId: 'deny', name: 'Reject', kind: 'reject_once' },
+  ]);
+  const acp = createAcpAdapter({ agents: { fake: fakeWithPerm('Write file src/a.ts', '--perm-kind', 'edit', '--perm-options', options) } });
+  const events = await collect(acp.run({
+    agentId: 'fake', messages: [{ role: 'user', content: 'hi' }], cwd: '/tmp', toolTier: 'full',
+    requestApproval: gate(true),
+  }));
+  assert.ok(events.some((e) => e.type === 'delta' && /PERM: cancelled/.test(e.text)), 'always-only allow → cancelled outcome');
+  assert.ok(!events.some((e) => e.type === 'delta' && /PERM: remember/.test(e.text)), 'must not select the always option');
+  assert.equal(events.at(-1).type, 'turn_end');
+  assert.equal(events.at(-1).stopReason, 'end_turn');
+});
+
+test('acp full tier answers cancelled when the request offers no options', async () => {
+  const acp = createAcpAdapter({ agents: { fake: fakeWithPerm('Write file src/a.ts', '--perm-kind', 'edit', '--perm-options', '[]') } });
+  const events = await collect(acp.run({
+    agentId: 'fake', messages: [{ role: 'user', content: 'hi' }], cwd: '/tmp', toolTier: 'full',
+    requestApproval: gate(true),
+  }));
+  assert.ok(events.some((e) => e.type === 'delta' && /PERM: cancelled/.test(e.text)), 'no options → cancelled outcome');
+  assert.ok(!events.some((e) => e.type === 'delta' && /PERM: .*allow|remember/i.test(e.text)), 'never auto-allows without options');
+  assert.equal(events.at(-1).stopReason, 'end_turn');
+});
+
+test('acp full tier never answers the allow option on a deny decision, whatever its name', async () => {
+  // 旧 name 兜底：deny 决策在没有任何 reject_* kind 选项时，/no/i 会命中
+  // "Notify me and proceed"——把放行项答给拒绝决策（fail-open）。
+  // 新逻辑：kind 是唯一依据，缺失 → cancelled。
+  const options = JSON.stringify([
+    { optionId: 'notify', name: 'Notify me and proceed', kind: 'allow_once' },
+  ]);
+  const acp = createAcpAdapter({ agents: { fake: fakeWithPerm('Write file src/a.ts', '--perm-kind', 'edit', '--perm-options', options) } });
+  const events = await collect(acp.run({
+    agentId: 'fake', messages: [{ role: 'user', content: 'hi' }], cwd: '/tmp', toolTier: 'full',
+    requestApproval: gate(false),
+  }));
+  assert.ok(events.some((e) => e.type === 'delta' && /PERM: cancelled/.test(e.text)), 'deny without a reject-kind option → cancelled');
+  assert.ok(!events.some((e) => e.type === 'delta' && /PERM: notify/.test(e.text)), 'name keywords must never cross-pick the allow option');
+  assert.equal(events.at(-1).stopReason, 'end_turn');
+});

@@ -35,9 +35,10 @@ rl.on('line', (line) => {
   const { id, method, params } = msg;
 
   // 客户端对 id 99 的应答（response 没有 method，必须先于兜底分支判断）：
-  // 回显所选 optionId，再收尾挂起的 prompt。
+  // 回显所选 optionId（cancelled 应答则原样回显 "cancelled"），再收尾挂起的 prompt。
   if (id === 99 && method === undefined) {
-    const optionId = msg.result?.outcome?.optionId ?? 'unknown';
+    const outcome = msg.result?.outcome ?? {};
+    const optionId = outcome.outcome === 'selected' ? outcome.optionId : (outcome.outcome ?? 'unknown');
     send({ jsonrpc: '2.0', method: 'session/update',
       params: { sessionId: sid, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `PERM: ${optionId}` } } } });
     if (pendingPromptId !== undefined) {

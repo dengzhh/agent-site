@@ -123,10 +123,18 @@ export function createAcpAdapter({ agents = ACP_AGENTS, probe } = {}) {
         // 10/11 同一约定），绝不 throw——rejection 会让 SDK 的 RPC 层视为应答失败，
         // agent 侧回合悬死。
         // outcome 的 optionId 按请求自带 options 解析（各 agent 命名不一致，见
-        // resolveOutcomeOptionIds），不硬编码。
+        // resolveOutcomeOptionIds），不硬编码；解析不到可安全应答的 *_once 项
+        // （无 options / 家族里只有 *_always / kind 违规）→ 应答 cancelled，agent
+        // 视为「用户未选择」：本轮不放行、也不记住任何授权，永不替用户点「允许
+        // 并记住」。read 级别启发式同样经 answer() 解析（期 1 Task 5 硬编码的
+        // allow_once/reject_once 字面量与标准 options 下等价；非标准 options 下
+        // 改答 cancelled，更 fail-closed）。
         async requestPermission(req) {
           const { allowId, rejectId } = resolveOutcomeOptionIds(req?.options);
-          const answer = (allow) => ({ outcome: { outcome: 'selected', optionId: allow ? allowId : rejectId } });
+          const answer = (allow) => {
+            const optionId = allow ? allowId : rejectId;
+            return { outcome: optionId === null ? { outcome: 'cancelled' } : { outcome: 'selected', optionId } };
+          };
           if (toolTier !== 'full') {
             const call = req?.toolCall ?? {};
             const title = String(call.title ?? call.name ?? '');
