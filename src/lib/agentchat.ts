@@ -1,10 +1,13 @@
 // AgentToolbox 本地智能体桥客户端：SSE 解析为纯函数可测；网络函数薄封装。
 export const AGENT_URL = 'http://127.0.0.1:31415';
 
+/** ACP 的 usage_update 转换结果（pi/cc 无此事件时 usage 为缺省）。 */
+export interface UsageInfo { used?: number; size?: number; cost?: number }
+
 export type ChatEvent =
   | { type: 'delta'; text: string }
   | { type: 'thinking'; text: string }
-  | { type: 'usage'; usage: unknown }
+  | { type: 'usage'; usage: UsageInfo | null }
   | { type: 'activity'; title: string }
   | { type: 'turn_end'; stopReason: string | null }
   | { type: 'error'; message: string }
@@ -25,6 +28,10 @@ export interface SessionRequest {
   agents?: string[] | null;
   /** 显式指定 agent（如 'pi' / 'cc' / 'acp:hermes'）；指定后忽略 agents 偏好序。 */
   agent?: string | null;
+  /** 会话工作目录；网关校验存在且是目录，否则 400。null = 用网关进程 cwd。 */
+  cwd?: string | null;
+  /** 工具级别：none=纯对话（默认）| read=只读工具（需 cwd，否则网关不挂工具）。 */
+  toolTier?: 'none' | 'read';
 }
 
 /** 把 SSE 字节流按 \n\n 分块；返回已解析事件与未完成的尾部（下次拼接）。 */
@@ -119,4 +126,24 @@ export async function streamMessage(
 
 export async function abortSession(sessionId: string, baseUrl = AGENT_URL): Promise<void> {
   await fetch(`${baseUrl}/sessions/${sessionId}/abort`, { method: 'POST' }).catch(() => {});
+}
+
+/** OpenRouter 账号额度（经网关代理查询，key 不进 URL/日志）。查询失败返回 null。 */
+export interface OpenRouterQuota {
+  usage: number | null;
+  limit: number | null;
+  isFreeTier: boolean | null;
+  rateLimit: unknown;
+}
+
+export async function fetchOpenRouterQuota(apiKey: string, baseUrl = AGENT_URL): Promise<OpenRouterQuota | null> {
+  try {
+    const res = await fetch(`${baseUrl}/quota/openrouter`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ apiKey }),
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as OpenRouterQuota;
+  } catch { return null; }
 }

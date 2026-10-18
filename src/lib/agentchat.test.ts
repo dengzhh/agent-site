@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseSSEChunk, keyFor, probeHealth } from './agentchat';
+import { parseSSEChunk, keyFor, probeHealth, fetchOpenRouterQuota } from './agentchat';
 
 describe('parseSSEChunk', () => {
   it('parses complete blocks and keeps partial in rest', () => {
@@ -33,6 +33,33 @@ describe('probeHealth', () => {
       const h = await probeHealth('http://x');
       expect(h?.agents?.[0]).toEqual({ id: 'cc', available: false });
     } finally { globalThis.fetch = original; }
+  });
+});
+
+describe('fetchOpenRouterQuota', () => {
+  it('posts the key in the body and returns the quota shape', async () => {
+    const original = globalThis.fetch;
+    let captured: RequestInfo | undefined;
+    globalThis.fetch = (async (input: RequestInfo) => {
+      captured = input;
+      return new Response(JSON.stringify({
+        usage: 3, limit: 50, isFreeTier: true, rateLimit: { requests: '50' },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    try {
+      const q = await fetchOpenRouterQuota('sk-or-x', 'http://x');
+      expect(q).toEqual({ usage: 3, limit: 50, isFreeTier: true, rateLimit: { requests: '50' } });
+      expect(String(captured)).toBe('http://x/quota/openrouter');
+    } finally { globalThis.fetch = original; }
+  });
+  it('returns null on non-2xx and on network failure', async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = (async () => new Response('{"error":"upstream error"}', { status: 502 })) as typeof fetch;
+    try { expect(await fetchOpenRouterQuota('k', 'http://x')).toBeNull(); }
+    finally { globalThis.fetch = original; }
+    globalThis.fetch = (async () => { throw new Error('down'); }) as typeof fetch;
+    try { expect(await fetchOpenRouterQuota('k', 'http://x')).toBeNull(); }
+    finally { globalThis.fetch = original; }
   });
 });
 

@@ -125,6 +125,15 @@ const fmtCtx = (n: number) =>
       <select id="chat-agent" class="chat-agent"></select>
     </div>
     <p id="chat-agent-hint" class="chat-agent-hint" hidden></p>
+    <div class="chat-config-row" id="chat-config-row" hidden>
+      <label for="chat-cwd">Work dir</label>
+      <input id="chat-cwd" type="text" placeholder="/home/you/project" autocomplete="off" spellcheck="false" />
+      <select id="chat-tier" class="chat-tier">
+        <option value="none">Chat only</option>
+        <option value="read">+ Read files</option>
+      </select>
+    </div>
+    <div id="chat-usage" class="chat-usage" hidden></div>
     <div id="chat-install" class="chat-pane" hidden>
       <p>Chat runs through a tiny local service (your keys never leave your machine):</p>
       <pre class="chat-cmd"><code>npx agenttoolbox-agent@latest</code></pre>
@@ -187,6 +196,13 @@ const fmtCtx = (n: number) =>
   .chat-agent-row { display: flex; align-items: center; gap: .5rem; margin-top: .6rem; font-size: .85rem; color: var(--ink-soft); }
   .chat-agent { flex: 1; background: var(--surface); color: inherit; border: 1px solid var(--line-strong); border-radius: 6px; padding: .3rem .5rem; font-size: .85rem; }
   .chat-agent-hint { font-size: .8rem; color: #f5a524; margin: -.3rem 0 0; }
+  .chat-config-row { display: flex; align-items: center; gap: .5rem; margin-top: .6rem; font-size: .85rem; }
+  .chat-config-row label { color: var(--ink-soft); }
+  /* global.css 给 input/select 设了 width:100% + margin-bottom:1.1rem：
+     width:100% 会成为 flex 基准把目录输入框挤没，必须在这里覆写 */
+  .chat-config-row input#chat-cwd { flex: 1; width: auto; min-width: 0; margin: 0; background: var(--surface); color: inherit; border: 1px solid var(--line-strong); border-radius: 6px; padding: .3rem .5rem; font-size: .85rem; }
+  .chat-tier { flex: 0 0 auto; width: auto; margin: 0; background: var(--surface); color: inherit; border: 1px solid var(--line-strong); border-radius: 6px; padding: .3rem .4rem; font-size: .85rem; }
+  .chat-usage { font-size: .8rem; color: var(--ink-soft); margin-top: .4rem; }
   .chat-msg--thinking { font-style: italic; color: var(--ink-soft); opacity: .85; font-size: .88rem; white-space: pre-wrap; }
   .chat-msg--thinking.is-collapsed { max-height: 2.6em; overflow-y: auto; opacity: .6; }
   .chat-msg--activity { color: var(--ink-soft); font-size: .82rem; }
@@ -207,7 +223,7 @@ const fmtCtx = (n: number) =>
 <script>
   import data from '../data/free-models.json';
   import { generateConfig, type ConfigTarget } from '../lib/freeconfig';
-  import { probeHealth, createSession, streamMessage, abortSession, keyStorage, type ChatEvent } from '../lib/agentchat';
+  import { probeHealth, createSession, streamMessage, abortSession, fetchOpenRouterQuota, keyStorage, type ChatEvent } from '../lib/agentchat';
 
   const idx = data;
   const $ = (id: string) => document.getElementById(id)!;
@@ -310,11 +326,16 @@ const fmtCtx = (n: number) =>
   const chatInput = $('chat-input') as HTMLTextAreaElement;
   const sendBtn = $('chat-send') as HTMLButtonElement;
   const abortBtn = $('chat-abort') as HTMLButtonElement;
+  const cwdInput = $('chat-cwd') as HTMLInputElement;
+  const tierSel = $('chat-tier') as HTMLSelectElement;
+  const usageEl = $('chat-usage');
   type ChatState = {
     provider: string; model: string; base: string; envKey: string;
     ctx: number; maxOut: number; name: string; anthropicApi: string;
     agents: string[]; // 网关适配器偏好序，来自 data-agents（如 ['cc','pi'] 或 ['pi']）
     agent: string | null; // 显式选择的 agent id（下拉）；null = 未选
+    cwd: string; // 会话工作目录（read 级别才生效；'' = 用网关默认）
+    toolTier: 'none' | 'read'; // 工具级别
     sessionId: string | null; streaming: boolean; probeTimer?: ReturnType<typeof setInterval>;
     streamAbort?: AbortController;
   };
@@ -353,6 +374,9 @@ const fmtCtx = (n: number) =>
       agents: c.agents,
       anthropicApi: c.anthropicApi || null,
       agent: c.agent,
+      // read 级别才带 cwd；级别/目录任一变化都建新会话（见 applyConfig）
+      cwd: c.toolTier === 'read' ? (c.cwd || null) : null,
+      toolTier: c.toolTier === 'read' ? 'read' : 'none',
     });
   }
 
@@ -404,8 +428,29 @@ const fmtCtx = (n: number) =>
     const ccOk = health.agents?.find((a) => a.id === 'cc')?.available === true;
     if (needsCc && !ccOk) { showPane('cc'); return; }
     if (!keyStorage.get(c.provider)) { showPane('key'); return; }
-    try { await ensureSession(); showPane('main'); chatInput.focus(); }
-    catch (e) { chatMsg('error', String((e as Error).message)); showPane('key'); }
+    try {
+      await ensureSession();
+      showPane('main');
+      chatInput.focus();
+      // OpenRouter 额度展示：有 key 才查（经网关代理）；其他 provider 不显示。
+      // 放在 showPane('main') 后异步刷，不阻塞输入框聚焦。
+      usageEl.hidden = true;
+      if (c.provider === 'openrouter') {
+        const key = keyStorage.get(c.provider);
+        if (key) {
+          const q = await fetchOpenRouterQuota(key);
+          if (q) {
+            usageEl.hidden = false;
+            usageEl.textContent = q.isFreeTier
+              ? `OpenRouter 免费额度：已用 ${q.usage ?? '?'} / ${q.limit ?? 50} 请求/天`
+              : `OpenRouter：已用 ${q.usage ?? 0} credits`;
+          }
+        }
+      }
+    }
+    // 建会话失败（典型：read 级别给了不存在的 cwd → 网关 400）留在主面板：
+    // 错误进日志才看得见——跳 key 面板会把 chatLog 连同错误一起藏掉。
+    catch (e) { chatMsg('error', String((e as Error).message)); showPane('main'); }
   }
 
   function openChat(a: HTMLAnchorElement) {
@@ -417,11 +462,24 @@ const fmtCtx = (n: number) =>
       name: a.dataset.name ?? '',
       agents: (a.dataset.agents ?? 'pi').split(',').map((s) => s.trim()).filter(Boolean),
       agent: null,
+      cwd: '', toolTier: 'none',
       sessionId: null, streaming: false,
     };
     $('chat-model-name').textContent = chat.name;
     $('chat-provider-name').textContent = `${chat.provider} · ${chat.model}`;
     chatLog.textContent = '';
+    // 恢复上次的 cwd/级别（localStorage 可选）。输入框是唯一事实来源：
+    // 先回填 DOM，再同步进 chat 状态，保证 UI 与实际建会话的参数一致。
+    try {
+      cwdInput.value = localStorage.getItem('atbx:cwd') ?? '';
+      tierSel.value = localStorage.getItem('atbx:tier') === 'read' ? 'read' : 'none';
+    } catch { /* 隐身模式等 */ }
+    chat.cwd = cwdInput.value.trim();
+    chat.toolTier = tierSel.value === 'read' ? 'read' : 'none';
+    // 配置行随抽屉开合：开 = 显示（跨面板常驻，key/安装引导时也能先填好）
+    $('chat-config-row').hidden = false;
+    usageEl.hidden = true; // 上一个模型的额度别残留
+    usageEl.textContent = '';
     // 上次缓存的 health 直接先填一次下拉（避免闪烁）；tryGoChat 成功后再刷新
     if (lastHealth) fillAgentSelect(lastHealth);
     drawer.classList.add('is-open');
@@ -437,6 +495,8 @@ const fmtCtx = (n: number) =>
     drawer.setAttribute('aria-hidden', 'true');
     stopProbe();
     chat?.streamAbort?.abort();
+    $('chat-config-row').hidden = true;
+    usageEl.hidden = true;
   });
   $('chat-copy-cmd').addEventListener('click', async () => {
     try { await navigator.clipboard.writeText('npx agenttoolbox-agent@latest'); } catch { /* 手选 */ }
@@ -462,6 +522,24 @@ const fmtCtx = (n: number) =>
     updateAgentHint();
     void tryGoChat();
   });
+
+  // cwd / 级别变更 = 新会话（运行中的 agent 不能中途搬家：工具闭包绑定 cwd，
+  // tier 决定工具在不在，网关侧按 cacheKey 重建）。与 Agent 下拉的变化叠加生效。
+  const applyConfig = () => {
+    if (!chat) return;
+    chat.cwd = cwdInput.value.trim();
+    chat.toolTier = tierSel.value === 'read' ? 'read' : 'none';
+    try {
+      localStorage.setItem('atbx:cwd', chat.cwd);
+      localStorage.setItem('atbx:tier', chat.toolTier);
+    } catch { /* 隐身模式等 */ }
+    chat.sessionId = null;
+    chatLog.textContent = '';
+    usageEl.hidden = true; // 新会话，per-turn 用量作废
+    void tryGoChat();
+  };
+  cwdInput.addEventListener('change', applyConfig);
+  tierSel.addEventListener('change', applyConfig);
 
   $('chat-form').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -489,6 +567,12 @@ const fmtCtx = (n: number) =>
           thinkDiv.textContent += ev.text;
         }
         else if (ev.type === 'activity') chatMsg('activity', `⚙ ${ev.title}`);
+        // ACP 的 usage_update（{used,size,cost?}）；pi/cc 无此事件时保持隐藏
+        else if (ev.type === 'usage' && ev.usage) {
+          const u = ev.usage;
+          usageEl.hidden = false;
+          usageEl.textContent = `上下文：${u.used ?? '?'}/${u.size ?? '?'} tokens`;
+        }
         else if (ev.type === 'error') outDiv.textContent += `\n[error] ${ev.message}`;
         chatLog.scrollTop = chatLog.scrollHeight;
       }, c.streamAbort.signal);
