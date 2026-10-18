@@ -30,8 +30,8 @@ export interface SessionRequest {
   agent?: string | null;
   /** 会话工作目录；网关校验存在且是目录，否则 400。null = 用网关进程 cwd。 */
   cwd?: string | null;
-  /** 工具级别：none=纯对话（默认）| read=只读工具（需 cwd，否则网关不挂工具）。 */
-  toolTier?: 'none' | 'read';
+  /** 工具级别：none=纯对话（默认）| read=只读工具（需 cwd）| full=读+写/执行（需 cwd，动作逐个确认）。 */
+  toolTier?: 'none' | 'read' | 'full';
 }
 
 /** 把 SSE 字节流按 \n\n 分块；返回已解析事件与未完成的尾部（下次拼接）。 */
@@ -87,7 +87,7 @@ export interface SessionResponse {
   provider: string;
   model: string;
   cwd: string | null;
-  toolTier: 'none' | 'read';
+  toolTier: 'none' | 'read' | 'full';
 }
 
 export async function createSession(body: SessionRequest, baseUrl = AGENT_URL): Promise<SessionResponse> {

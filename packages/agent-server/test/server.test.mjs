@@ -584,6 +584,202 @@ test('pending permission auto-denies after the injected timeout', async (t) => {
   assert.equal((await next()).type, 'done');
 });
 
+test('sessions accept toolTier full (write/execute tier)', async (t) => {
+  const { json } = await withFauxServer(t);
+  const mk = (toolTier) => json('/sessions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ provider: 'faux', model: 'faux', cwd: '/tmp', toolTier }),
+  });
+  const full = await mk('full');
+  assert.equal(full.status, 200);
+  assert.equal(full.body.toolTier, 'full');
+  const unknown = await mk('sudo');   // 未知值仍安全回落 none，绝不因误传升级权限
+  assert.equal(unknown.body.toolTier, 'none');
+});
+
+test('full-tier session threads requestApproval through the run ctx', async (t) => {
+  const models = createModels();
+  const faux = fauxProvider();
+  models.setProvider(faux.provider);
+  const resolve = () => ({ model: faux.getModel(), providerId: faux.provider.id });
+  const captured = [];
+  const fakePi = {
+    id: 'pi',
+    available: async () => true,
+    run: async function* (ctx) {
+      captured.push(ctx);
+      yield { type: 'delta', text: 'ok' };
+    },
+  };
+  const registry = createRegistry([fakePi]);
+  const srv = await startServer({
+    port: 0, allowedOrigins: ['http://localhost:4321'], resolve, models, registry,
+    acpProbe: async () => false,
+  });
+  t.after(() => srv.close());
+  const base = `http://127.0.0.1:${srv.port}`;
+  const create = await fetch(`${base}/sessions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ provider: 'faux', model: 'faux', cwd: '/tmp', toolTier: 'full' }),
+  });
+  const { sessionId } = await create.json();
+  const res = await fetch(`${base}/sessions/${sessionId}/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ text: 'hi' }),
+  });
+  await res.text();
+  assert.equal(captured.length, 1);
+  assert.equal(captured[0].toolTier, 'full', 'full tier threaded');
+  assert.equal(typeof captured[0].requestApproval, 'function', 'approval gate injected for full tier');
+});
+
+// ── 权限中枢复审补充：并发审批 / 逐出收敛 / abort 信号即时收敛 ──────────────────
+
+// 并发审批 stub：一轮里同时挂起两个审批（bash + write），按各自应答拼 delta。
+// 验证两张权限卡相互独立：不同 reqId、应答互不串扰。
+function dualPermStubAdapter() {
+  return {
+    id: 'pi',
+    available: async () => true,
+    run: async function* (ctx) {
+      const [a, b] = await Promise.all([
+        ctx.requestApproval('bash', 'first command'),
+        ctx.requestApproval('write', 'second file'),
+      ]);
+      yield { type: 'delta', text: `first=${a ? 'allow' : 'deny'} second=${b ? 'allow' : 'deny'}` };
+      yield { type: 'turn_end', stopReason: null };
+    },
+  };
+}
+
+async function withStubServer(t, stub, opts = {}) {
+  const models = createModels();
+  const faux = fauxProvider();
+  models.setProvider(faux.provider);
+  const registry = createRegistry([stub]);
+  const srv = await startServer({
+    port: 0, allowedOrigins: ['http://localhost:4321'],
+    resolve: () => ({ model: faux.getModel(), providerId: faux.provider.id }),
+    models, registry, acpProbe: async () => false,
+    ...(opts.approvalTimeoutMs === undefined ? {} : { approvalTimeoutMs: opts.approvalTimeoutMs }),
+  });
+  t.after(() => srv.close());
+  const base = `http://127.0.0.1:${srv.port}`;
+  const post = async (path, body, headers = { 'content-type': 'application/json', Origin: 'http://localhost:4321' }) => {
+    const res = await fetch(base + path, { method: 'POST', headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    return { status: res.status, body: res.headers.get('content-type')?.includes('json') ? await res.json() : await res.text() };
+  };
+  const createSession = async () => {
+    const r = await post('/sessions', { provider: 'stub', model: 'stub' });
+    assert.equal(r.status, 200);
+    return r.body.sessionId;
+  };
+  const openStream = async (sessionId) => {
+    const res = await fetch(`${base}/sessions/${sessionId}/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+      body: JSON.stringify({ text: 'hi' }),
+    });
+    assert.equal(res.status, 200);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    const next = async () => {
+      for (;;) {
+        const idx = buf.indexOf('\n\n');
+        if (idx !== -1) {
+          const block = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          if (!block.startsWith('data: ')) continue;
+          return JSON.parse(block.slice(6));
+        }
+        const { done, value } = await reader.read();
+        if (done) return null;
+        buf += decoder.decode(value, { stream: true });
+      }
+    };
+    return { next };
+  };
+  return { srv, base, post, createSession, openStream };
+}
+
+test('concurrent approvals: two independent reqIds, answers route independently', async (t) => {
+  const { srv, post, createSession, openStream } = await withStubServer(t, dualPermStubAdapter());
+  const sessionId = await createSession();
+  const { next } = await openStream(sessionId);
+
+  const first = await next();
+  const second = await next();
+  assert.equal(first.type, 'permission_request');
+  assert.equal(second.type, 'permission_request');
+  assert.notEqual(first.reqId, second.reqId, 'two cards, two reqIds');
+  assert.equal(first.action, 'bash');
+  assert.equal(second.action, 'write');
+
+  // 只答第一张：第二张必须仍挂起（答 A 不 resolve B）
+  const denyFirst = await post(`/sessions/${sessionId}/permission`, { reqId: first.reqId, decision: 'deny' });
+  assert.equal(denyFirst.status, 200);
+  assert.equal(srv.sessions.peek(sessionId).pendingPerms.size, 1, 'second approval still pending');
+
+  // 再答第二张：两个答案各自路由到对应的 promise
+  const allowSecond = await post(`/sessions/${sessionId}/permission`, { reqId: second.reqId, decision: 'allow' });
+  assert.equal(allowSecond.status, 200);
+  assert.deepEqual(await next(), { type: 'delta', text: 'first=deny second=allow' });
+  assert.equal((await next()).type, 'turn_end');
+  assert.equal((await next()).type, 'done');
+  assert.equal(srv.sessions.peek(sessionId).pendingPerms.size, 0, 'both cards drained');
+
+  // 已收敛的 reqId 重放按 404（幂等）
+  const replay = await post(`/sessions/${sessionId}/permission`, { reqId: first.reqId, decision: 'allow' });
+  assert.equal(replay.status, 404);
+});
+
+test('session eviction mid-approval denies the pending approval', async (t) => {
+  const { srv, post, createSession, openStream } = await withStubServer(t, permStubAdapter());
+  const sessionId = await createSession();
+  const { next } = await openStream(sessionId);
+  assert.equal((await next()).type, 'permission_request');
+
+  // 灌满会话存储（容量 16）：被审批挂起的会话成了 LRU 最老项，被逐出。
+  // dispose → 挂起审批按拒绝收敛 → stub 收到 false 正常收尾，无悬挂/未处理 rejection。
+  for (let i = 0; i < 16; i++) {
+    const r = await post('/sessions', { provider: 'stub', model: 'stub' });
+    assert.equal(r.status, 200);
+  }
+  assert.equal(srv.sessions.peek(sessionId), undefined, 'session evicted');
+
+  assert.deepEqual(await next(), { type: 'delta', text: 'denied' }, 'pending approval resolved false');
+  assert.equal((await next()).type, 'turn_end');
+  assert.equal((await next()).type, 'done', 'turn finishes sanely after eviction');
+});
+
+test('aborting the turn signal resolves a pending approval immediately', async (t) => {
+  const { srv, post, createSession, openStream } = await withStubServer(t, permStubAdapter());
+  const sessionId = await createSession();
+  const { next } = await openStream(sessionId);
+  assert.equal((await next()).type, 'permission_request');
+
+  try {
+    // 直接触发回合的 AbortController（session.cancel 即 /abort 挂的钩子）：
+    // 收敛只能来自挂在 ac.signal 上的监听——解析要即时，且挂起表要清空。
+    srv.sessions.peek(sessionId).cancel();
+    const ev = await Promise.race([
+      next(),
+      new Promise((r) => setTimeout(() => r({ type: 'still-pending' }), 2000)),
+    ]);
+    assert.deepEqual(ev, { type: 'delta', text: 'denied' }, 'abort resolves the approval right away');
+    assert.equal((await next()).type, 'turn_end');
+    assert.equal((await next()).type, 'done');
+    assert.equal(srv.sessions.peek(sessionId).pendingPerms.size, 0, 'pending map cleared on signal abort');
+  } finally {
+    // 失败路径兜底：收敛可能仍挂起的审批并结束流，服务器才能关闭（不让测试拖到 120s 超时）
+    await post(`/sessions/${sessionId}/abort`).catch(() => {});
+  }
+});
+
 test('abort resolves pending permissions as denied and the session stays usable', async (t) => {
   const { srv, json, createSession, openStream, post } = await withPermServer(t);
   const sessionId = await createSession();

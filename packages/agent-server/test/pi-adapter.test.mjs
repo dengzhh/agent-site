@@ -1,5 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from '@earendil-works/pi-ai';
 import { createPiAdapter } from '../src/adapters/pi.mjs';
 
@@ -143,3 +146,96 @@ test('pi adapter terminates when prompt settles with no events', async () => {
   ]);
   assert.ok(Array.isArray(events));
 });
+
+// ── 期 2：full 级别 = 只读三件套 + write_file + bash，审批闸经 run ctx 注入 ─────
+
+test('pi adapter attaches five tools when tier is full', async () => {
+  const { models, faux } = fauxSetup();
+  let seenTools;
+  const pi = createPiAdapter({
+    models,
+    resolve: () => ({ model: faux.getModel(), providerId: faux.provider.id }),
+    makeAgent: (_m, _model, _sid, _key, tools) => { seenTools = tools; return stubAgent(); },
+  });
+  await collect(pi.run({
+    messages: [{ role: 'user', content: 'hi' }],
+    request: { provider: 'faux', model: 'faux' },
+    apiKey: null, toolTier: 'full', cwd: '/tmp',
+    requestApproval: async () => true,
+  }));
+  assert.deepEqual(
+    seenTools.map((tool) => tool.name),
+    ['read_file', 'list_dir', 'grep', 'write_file', 'bash'],
+    'read trio plus write/bash at full tier',
+  );
+});
+
+test('pi adapter gives no tools at full tier without cwd', async () => {
+  const { models, faux } = fauxSetup();
+  let seenTools = 'not-called';
+  const pi = createPiAdapter({
+    models,
+    resolve: () => ({ model: faux.getModel(), providerId: faux.provider.id }),
+    makeAgent: (_m, _model, _sid, _key, tools) => { seenTools = tools; return stubAgent(); },
+  });
+  await collect(pi.run({
+    messages: [{ role: 'user', content: 'hi' }],
+    request: { provider: 'faux', model: 'faux' },
+    apiKey: null, toolTier: 'full',
+    requestApproval: async () => true,
+  }));
+  assert.equal(seenTools, undefined, 'no cwd means no path boundary means no tools');
+});
+
+test('pi adapter fails closed at full tier when no approval fn is provided', async () => {
+  const { models, faux } = fauxSetup();
+  let seenTools;
+  const pi = createPiAdapter({
+    models,
+    resolve: () => ({ model: faux.getModel(), providerId: faux.provider.id }),
+    makeAgent: (_m, _model, _sid, _key, tools) => { seenTools = tools; return stubAgent(); },
+  });
+  await collect(pi.run({
+    messages: [{ role: 'user', content: 'hi' }],
+    request: { provider: 'faux', model: 'faux' },
+    apiKey: null, toolTier: 'full', cwd: tmpSandbox(),
+  }));
+  const write = seenTools.find((tool) => tool.name === 'write_file');
+  const r = await write.execute('id1', { path: 'x.txt', content: 'y' });
+  assert.equal(r.isError, true);
+  assert.equal(r.content[0].text, 'denied by user', 'missing gate must deny, never write');
+});
+
+// 缓存的 Agent 跨轮持有同一批工具，而 server 注入的 requestApproval 闭包绑定「当轮」
+// 的 SSE 响应。工具必须经可变引用取当轮的审批函数——否则第 2 轮的权限帧会写进
+// 第 1 轮已结束的响应，审批永远无人应答。
+test('full tier routes tool approvals to the latest run ctx (cached agent)', async () => {
+  const { models, faux } = fauxSetup();
+  const dir = tmpSandbox();
+  let seenTools;
+  const pi = createPiAdapter({
+    models,
+    resolve: () => ({ model: faux.getModel(), providerId: faux.provider.id }),
+    makeAgent: (_m, _model, _sid, _key, tools) => { seenTools = tools; return stubAgent(); },
+  });
+  const run = (over) => collect(pi.run({
+    messages: [{ role: 'user', content: 'hi' }],
+    request: { provider: 'faux', model: 'faux' },
+    apiKey: null, sessionId: 's-full', toolTier: 'full', cwd: dir,
+    ...over,
+  }));
+  const calls = [];
+  await run({ requestApproval: async (...a) => { calls.push(['first', ...a]); return false; } });
+  await run({ requestApproval: async (...a) => { calls.push(['second', ...a]); return true; } });
+  assert.ok(seenTools.length === 5, 'same cached agent reused across turns');
+
+  const write = seenTools.find((tool) => tool.name === 'write_file');
+  const r = await write.execute('id1', { path: 'note.txt', content: 'hi' });
+  assert.deepEqual(calls, [['second', 'write', 'write_file note.txt (2 bytes)']], 'routed to the second turn gate');
+  assert.equal(r.isError, undefined);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+function tmpSandbox() {
+  return mkdtempSync(join(tmpdir(), 'pi-full-'));
+}

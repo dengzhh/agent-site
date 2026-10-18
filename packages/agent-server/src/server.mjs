@@ -263,20 +263,24 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
             allowedTools,
             resumeSessionId: session.ccSessionId,
             // 权限中枢：适配器要执行敏感操作前挂起等用户点头。发 SSE permission_request
-            // 进前端抽屉；POST /sessions/:id/permission 或 120s 超时（approvalTimeoutMs）
-            // 收敛；/abort、断连、会话逐出时按拒绝收敛，promise 不悬挂。
+            // 进前端抽屉；POST /sessions/:id/permission、120s 超时（approvalTimeoutMs）
+            // 或回合取消（ac.signal /abort、断连）三条路径收敛；会话逐出走 dispose 的
+            // denyPendingPerms。settle 幂等，promise 不悬挂、不重复清算。
             requestApproval: (action, summary) => new Promise((resolve) => {
               const reqId = randomUUID();
               let timer = null;
-              session.pendingPerms.set(reqId, (allow) => {
+              const settle = (allow) => {
                 session.pendingPerms.delete(reqId);
                 if (timer) clearTimeout(timer);
+                ac.signal.removeEventListener('abort', onAbort);
                 resolve(allow);
-              });
+              };
+              const onAbort = () => settle(false);
+              if (ac.signal.aborted) { resolve(false); return; }   // 死回合不再发权限帧
+              session.pendingPerms.set(reqId, settle);
+              ac.signal.addEventListener('abort', onAbort, { once: true });
               send('permission_request', { reqId, action, summary });
-              timer = setTimeout(() => {
-                if (session.pendingPerms.delete(reqId)) resolve(false);
-              }, approvalTimeoutMs);
+              timer = setTimeout(() => settle(false), approvalTimeoutMs);
               timer.unref?.();
             }),
           })) {

@@ -6,7 +6,7 @@
 // 一个 Agent 会让模型在第 2 轮只看到本轮那一句（回归已实测：见
 // test/server.test.mjs 的 multi-turn 用例）。
 import { Agent } from '@earendil-works/pi-agent-core';
-import { readOnlyTools } from './pi-tools.mjs';
+import { readOnlyTools, fullTools } from './pi-tools.mjs';
 // 免费模型推理排队慢（OpenRouter 免费档高峰可等数分钟），OpenAI SDK 默认 10 分钟超时
 // 会被 undici 的 300s headersTimeout 先打断（"Request timed out"）。修法两层：
 // ① streamSimple 传大 timeoutMs（SDK 侧）；② 传 undici 包的 fetch + 长超时 dispatcher
@@ -57,7 +57,10 @@ export function createPiAdapter({ models, resolve, makeAgent = defaultMakeAgent,
   const cacheKey = (model, apiKey, cwd, toolTier) =>
     `${model.provider}/${model.id}\u0000${apiKey ?? ''}\u0000${cwd ?? ''}\u0000${toolTier ?? ''}`;
 
-  function agentFor(model, sessionId, apiKey, cwd, toolTier, tools) {
+  // 缓存条目：{ agent, cacheKey, approvals }。approvals 是可变审批引用（见 run 内
+  // 注释）：full 级别的工具闭包经它间接调用「当轮」的审批函数，Agent 跨轮缓存时
+  // 每轮只换 current，工具数组本身不重建。
+  function agentFor(model, sessionId, apiKey, cwd, toolTier, tools, approvals) {
     const key = cacheKey(model, apiKey, cwd, toolTier);
     const hit = agents.get(sessionId);
     if (hit && hit.cacheKey === key) {
@@ -67,7 +70,7 @@ export function createPiAdapter({ models, resolve, makeAgent = defaultMakeAgent,
     }
     const agent = makeAgent(models, model, sessionId, apiKey, tools);
     agents.delete(sessionId);
-    agents.set(sessionId, { agent, cacheKey: key });
+    agents.set(sessionId, { agent, cacheKey: key, approvals });
     while (agents.size > capacity) agents.delete(agents.keys().next().value);
     return agent;
   }
@@ -77,15 +80,32 @@ export function createPiAdapter({ models, resolve, makeAgent = defaultMakeAgent,
     async available() { return true; },
     // cache=false → 本轮走一次性 Agent（不读也不写缓存），供不共享运行时状态的
     // 适配器进行 failover（例如 cc builder 失败后回落到 pi）。
-    async *run({ messages, request, apiKey = null, sessionId, signal, cache = true, toolTier, cwd } = {}) {
+    async *run({ messages, request, apiKey = null, sessionId, signal, cache = true, toolTier, cwd, requestApproval } = {}) {
       const { model } = resolve(models, request);
-      // 只读工具按本轮 cwd 现场构建（闭包绑定 cwd，每次 run 全新数组）；cwd/tier
-      // 任一变更都体现在缓存键里 → 缓存未命中 → Agent 带新工具集重建。
-      // tier=read 但没有 cwd 时不给工具：没有硬边界就不启用。
-      const tools = toolTier === 'read' && cwd ? readOnlyTools(cwd) : undefined;
+      // 工具按本轮 cwd/tier 现场解析（闭包绑定 cwd）；cwd/tier 任一变更都体现在
+      // 缓存键里 → 缓存未命中 → Agent 带新工具集重建。tier 给了但没有 cwd 时不给
+      // 工具：没有硬边界就不启用。
+      // full 级别的审批闸经可变引用间接调用：server 注入的 requestApproval 闭包
+      // 绑定「当轮」的 SSE 响应，而 Agent（连同其工具）跨轮缓存——直接烘焙进工具
+      // 闭包会让第 2 轮的权限帧写进第 1 轮已结束的响应，审批永远无人应答。缓存
+      // 命中时复用旧引用（工具闭包持的就是它），每轮开始只刷新 current。两个会话
+      // 并发时各有自己的缓存条目与引用，互不串扰。无注入 → 恒拒绝（fail closed）。
+      const key = cacheKey(model, apiKey, cwd, toolTier);
+      const hit = cache && sessionId ? agents.get(sessionId) : null;
+      const cached = hit && hit.cacheKey === key ? hit : null;
+      const approvals = cached?.approvals ?? { current: null };
+      const ask = (action, summary) => {
+        const fn = approvals.current;
+        return fn ? fn(action, summary) : Promise.resolve(false);
+      };
+      const tools =
+        toolTier === 'full' && cwd ? fullTools(cwd, ask)
+        : toolTier === 'read' && cwd ? readOnlyTools(cwd)
+        : undefined;
       const agent = cache && sessionId
-        ? agentFor(model, sessionId, apiKey, cwd, toolTier, tools)
+        ? agentFor(model, sessionId, apiKey, cwd, toolTier, tools, approvals)
         : makeAgent(models, model, sessionId, apiKey, tools);
+      approvals.current = typeof requestApproval === 'function' ? requestApproval : null;
 
       // subscribe 回调 → 异步生成器：用队列 + 单次唤醒桥接。
       // 正确性要点（否则会挂起或丢事件）：

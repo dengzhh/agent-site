@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, symlinkSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { confine, makeReadFile, makeListDir, makeGrep, MAX_GREP_MATCHES } from '../src/adapters/pi-tools.mjs';
+import { confine, confineForWrite, makeReadFile, makeListDir, makeGrep, makeWriteFile, makeBash, fullTools, MAX_GREP_MATCHES } from '../src/adapters/pi-tools.mjs';
 
 function sandbox() {
   const dir = mkdtempSync(join(tmpdir(), 'pi-tools-'));
@@ -105,5 +105,146 @@ test('grep hardening: long pattern truncated, catastrophic regex bounded by time
   const elapsed = Date.now() - t1;
   assert.ok(elapsed < 8000, `grep returned in ${elapsed}ms (budget-bounded)`);
   assert.equal(typeof evil.content?.[0]?.text, 'string');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// ── 期 2：写/执行工具（write_file / bash）——每个动作先过 requestApproval 审批闸 ──
+
+// 记录型审批函数：push({action, summary}) 后返回 allow
+const recorder = (allow, log = []) => async (action, summary) => { log.push({ action, summary }); return allow; };
+
+test('confineForWrite allows new files but blocks traversal and symlink escapes', () => {
+  const dir = sandbox();
+  symlinkSync('/etc/hosts', join(dir, 'evil-link'));       // 目标是外指符号链接
+  mkdirSync(join(dir, 'outer'));
+  symlinkSync('/etc', join(dir, 'outer-dir-link'));        // 父目录链上有外指链接
+
+  assert.equal(confineForWrite(dir, 'src/new.txt'), join(dir, 'src', 'new.txt'), 'new file in existing dir');
+  assert.throws(() => confineForWrite(dir, '../outside.txt'), /escapes working directory/);
+  assert.throws(() => confineForWrite(dir, '/etc/hosts'), /escapes working directory/);
+  assert.throws(() => confineForWrite(dir, 'evil-link'), /escapes working directory/, 'write would follow the link out');
+  assert.throws(() => confineForWrite(dir, 'outer-dir-link/x'), /escapes working directory/, 'symlinked parent blocked');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('write_file creates a file when approved, preview carries path and size', async () => {
+  const dir = sandbox();
+  const log = [];
+  const tool = makeWriteFile(dir, recorder(true, log));
+  const r = await tool.execute('id1', { path: 'src/new.txt', content: 'hello write\n' });
+  assert.equal(r.isError, undefined);
+  assert.match(r.content[0].text, /wrote src\/new\.txt/);
+  assert.equal(readFileSync(join(dir, 'src', 'new.txt'), 'utf8'), 'hello write\n');
+  assert.deepEqual(log, [{ action: 'write', summary: 'write_file src/new.txt (12 bytes)' }]);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('write_file deny returns isError "denied by user" and leaves the file untouched', async () => {
+  const dir = sandbox();
+  const tool = makeWriteFile(dir, recorder(false));
+  const r = await tool.execute('id1', { path: 'README.md', content: 'overwritten!' });
+  assert.equal(r.isError, true);
+  assert.equal(r.content[0].text, 'denied by user');
+  assert.equal(readFileSync(join(dir, 'README.md'), 'utf8'), '# hello\nworld\n', 'existing file untouched');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('write_file refuses payloads over 1MB before prompting', async () => {
+  const dir = sandbox();
+  const log = [];
+  const tool = makeWriteFile(dir, recorder(true, log));
+  const r = await tool.execute('id1', { path: 'big.txt', content: 'x'.repeat(1024 * 1024 + 1) });
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /too large/);
+  assert.equal(log.length, 0, 'oversized writes never reach the approval drawer');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('write_file blocks traversal without prompting the user', async () => {
+  const dir = sandbox();
+  const log = [];
+  const tool = makeWriteFile(dir, recorder(true, log));
+  const r = await tool.execute('id1', { path: '../escape.txt', content: 'nope' });
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /escapes working directory/);
+  assert.equal(log.length, 0, 'invalid paths must not open the drawer');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('bash runs an approved command and captures stdout', async () => {
+  const dir = sandbox();
+  const log = [];
+  const tool = makeBash(dir, recorder(true, log));
+  const r = await tool.execute('id1', { command: `node -e "process.stdout.write('ok')"` });
+  assert.equal(r.isError, undefined);
+  assert.equal(r.content[0].text, 'ok');
+  assert.deepEqual(log, [{ action: 'bash', summary: `node -e "process.stdout.write('ok')"` }]);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('bash deny returns isError "denied by user" and never executes', async () => {
+  const dir = sandbox();
+  const tool = makeBash(dir, recorder(false));
+  const r = await tool.execute('id1', { command: 'echo hi > created-by-bash.txt' });
+  assert.equal(r.isError, true);
+  assert.equal(r.content[0].text, 'denied by user');
+  assert.equal(existsSync(join(dir, 'created-by-bash.txt')), false, 'denied command must not run');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('bash combines stderr and reports non-zero exit codes in text', async () => {
+  const dir = sandbox();
+  const tool = makeBash(dir, recorder(true));
+  const r = await tool.execute('id1', { command: 'echo out; echo err >&2; exit 3' });
+  // 非零退出码是命令自身的领域输出（不是工具故障）：正常结果 + exit 前缀，与只读
+  // 工具把 fs 错误转 isError 的语义区分开（bash 不存在/超时这类环境故障才 isError）。
+  assert.equal(r.isError, undefined);
+  assert.match(r.content[0].text, /^exit 3\n/);
+  assert.match(r.content[0].text, /out/);
+  assert.match(r.content[0].text, /err/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('bash output is truncated to 8KB', async () => {
+  const dir = sandbox();
+  const tool = makeBash(dir, recorder(true));
+  const r = await tool.execute('id1', { command: `node -e "process.stdout.write('x'.repeat(20000))"` });
+  assert.equal(r.isError, undefined);
+  assert.ok(r.content[0].text.length < 9000, `got ${r.content[0].text.length} chars`);
+  assert.match(r.content[0].text, /截断/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('bash commands that overrun the timeout come back as tool errors', async () => {
+  const dir = sandbox();
+  const tool = makeBash(dir, recorder(true), { timeoutMs: 250 });
+  const t0 = Date.now();
+  const r = await tool.execute('id1', { command: 'while :; do :; done' });   // 纯 builtin 忙循环，无孤儿进程
+  const elapsed = Date.now() - t0;
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /timed out/);
+  assert.ok(elapsed < 5000, `killed promptly (${elapsed}ms)`);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('bash rejects empty commands without prompting', async () => {
+  const dir = sandbox();
+  const log = [];
+  const tool = makeBash(dir, recorder(true, log));
+  const r = await tool.execute('id1', { command: '   ' });
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /command required/);
+  assert.equal(log.length, 0);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('fullTools = read trio + write_file + bash, approval wired into both', async () => {
+  const dir = sandbox();
+  const tools = fullTools(dir, recorder(true));
+  assert.deepEqual(tools.map((tool) => tool.name), ['read_file', 'list_dir', 'grep', 'write_file', 'bash']);
+  const write = tools.find((tool) => tool.name === 'write_file');
+  const r = await write.execute('id1', { path: 'via-full.txt', content: 'y' });
+  assert.equal(r.isError, undefined);
+  assert.equal(readFileSync(join(dir, 'via-full.txt'), 'utf8'), 'y');
   rmSync(dir, { recursive: true, force: true });
 });
