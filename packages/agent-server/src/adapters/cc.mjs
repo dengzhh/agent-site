@@ -6,18 +6,46 @@ import { createInterface } from 'node:readline';
 import { mkdtempSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseCcLine, isGateError } from './cc-stream.mjs';
+import { parseCcLine, isGateError, summarizeToolInput, buildControlResponse } from './cc-stream.mjs';
 import { VERBOSE, logErr } from '../log.mjs';
 
 function isolatedConfigDir() {
   return mkdtempSync(join(tmpdir(), 'atbx-cc-'));
 }
 
-function buildArgs({ allowedTools = [], resumeSessionId }) {
+function buildArgs({ allowedTools = [], resumeSessionId, streamInput = false }) {
   const args = ['-p', '--output-format=stream-json', '--include-partial-messages', '--verbose'];
   if (resumeSessionId) args.push('--resume', resumeSessionId);
   args.push('--allowedTools', allowedTools.join(','));
+  // full 级别（Task 11）：工具调用逐个经抽屉审批。--permission-prompt-tool 是 CLI 唯一的
+  // 权限路由槽位，取值字面量 'stdio'（stream-json 控制通道）或某个 MCP 工具名，二者互斥
+  // （CLI/SDK 同时配置直接报错；官方 SDK 的 canUseTool 正是用 stdio 实现的）。这里取
+  // 进程内的控制通道，MCP 桥方案暂缓（见 plan Task 11 决策记录）。
+  if (streamInput) args.push('--input-format', 'stream-json', '--permission-prompt-tool', 'stdio');
   return args;
+}
+
+// 权限转发：对每个 control_request(can_use_tool) 独立询问审批闸并回写 control_response。
+// 刻意不阻塞 stdout 读取循环——等用户点卡期间 CLI 可能继续产出行，串行 await 会造成
+// 队头阻塞（事件流冻结）。审批闸缺失（绕过 server 直调 run()）→ fail-closed 拒绝，
+// 与 pi 写/执行工具的缺省拒绝同一约定（Task 10）。
+function answerPermissionRequest(stdin, ev, ask) {
+  const finish = (allow, message) => {
+    const line = JSON.stringify(
+      buildControlResponse(ev.requestId, { allow, input: ev.input, message, toolUseId: ev.toolUseId }),
+    ) + '\n';
+    // stdin 已关（CLI 已退出）时写入会 EPIPE：由全局的 stdin 'error' 吞掉，此处再兜一层。
+    try { stdin.write(line); } catch { /* 进程已退出，无需应答 */ }
+  };
+  if (typeof ask !== 'function') {
+    finish(false, 'approval gate unavailable');
+    return;
+  }
+  Promise.resolve()
+    .then(() => ask(ev.toolName, summarizeToolInput(ev.toolName, ev.input)))
+    .then((allow) => finish(Boolean(allow)))
+    // 审批闸自身抛错同样按拒绝收敛，绝不让未处理的 rejection 冒泡杀掉宿主进程。
+    .catch(() => finish(false, 'approval gate errored'));
 }
 
 function lastUserText(messages) {
@@ -92,12 +120,15 @@ export function createCcAdapter({ cliPath = 'claude', env = {} } = {}) {
       const paths = (process.env.PATH ?? '').split(':');
       return paths.some((p) => p && existsSync(join(p, cliPath)));
     },
-    async *run({ messages, model, apiKey, baseUrl, anthropicApi, cwd, allowedTools = [], resumeSessionId, signal }) {
+    async *run({ messages, model, apiKey, baseUrl, anthropicApi, cwd, allowedTools = [], resumeSessionId, signal, toolTier, requestApproval }) {
+      // full 级别 = 双向 stream-json：回合提示经 stdin 的 user 消息驱动，权限提示经
+      // 控制通道往返（--permission-prompt-tool stdio）。其余级别与旧行为完全一致。
+      const interactive = toolTier === 'full';
       // 先在局部变量里建好隔离目录，finally 才能拿到引用清理——不能就地写进 env 里。
       const configDir = isolatedConfigDir();
       let child;
       try {
-        child = spawn(cliPath, buildArgs({ allowedTools, resumeSessionId }), {
+        child = spawn(cliPath, buildArgs({ allowedTools, resumeSessionId, streamInput: interactive }), {
           cwd: cwd || process.cwd(),
           env: {
             ...process.env,
@@ -167,8 +198,19 @@ export function createCcAdapter({ cliPath = 'claude', env = {} } = {}) {
       // 否则 unhandled 'error' 会直接炸掉测试进程。
       child.stdin.on('error', () => {});
       try {
-        child.stdin.write(lastUserText(messages));
-        child.stdin.end();
+        if (interactive) {
+          // stream-json 输入：回合提示是 stdin 上的一行 user 消息（形状对齐官方 SDK）。
+          // stdin 刻意不 end()——控制通道的 control_response 要在同一管道上回写。
+          child.stdin.write(JSON.stringify({
+            type: 'user',
+            session_id: '',
+            message: { role: 'user', content: [{ type: 'text', text: lastUserText(messages) }] },
+            parent_tool_use_id: null,
+          }) + '\n');
+        } else {
+          child.stdin.write(lastUserText(messages));
+          child.stdin.end();
+        }
       } catch {
         // 同步 EPIPE（socket 已销毁）同样忽略，语义与上面的异步分支一致。
       }
@@ -183,6 +225,12 @@ export function createCcAdapter({ cliPath = 'claude', env = {} } = {}) {
           for (const line of lines) {
             const ev = parseCcLine(line.trim());
             if (!ev) continue;
+            // 权限帧在本适配器内部闭环（询问抽屉 → 回写控制通道），不进事件流——
+            // 前端看到的将是网关的 permission_request SSE 帧（Task 9 契约）。
+            if (ev.type === 'control_request') {
+              answerPermissionRequest(child.stdin, ev, requestApproval);
+              continue;
+            }
             if (ev.type === 'error' && isGateError(ev.message)) ev.gate = true;
             if (ev.type === 'turn_end' || ev.type === 'error') sawTerminal = true;
             yield ev;
@@ -211,6 +259,11 @@ export function createCcAdapter({ cliPath = 'claude', env = {} } = {}) {
         // killTree 会因 exitCode 非空直接返回（幂等）。目录同此一次性回收。
         if (escalate) clearTimeout(escalate);
         if (signal) signal.removeEventListener('abort', onAbort);
+        // interactive 模式 stdin 一直开着（控制通道）：收尾时补一个 EOF，
+        // 让还活着的 CLI 的 stdin 读取端自然结束，而不是干等到被 SIGTERM。
+        if (interactive) {
+          try { child.stdin.end(); } catch { /* 已销毁，忽略 */ }
+        }
         // 不在这里 delete(liveChildren)：交给 'close' 回调，避免「已发信号但未死透」
         // 期间从进程退出兜底钩子的视野里消失（见上面 close 监听）。
         terminate(child); // SIGTERM + 宽限后 SIGKILL，保证最终一定死

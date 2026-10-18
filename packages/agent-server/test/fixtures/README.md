@@ -7,6 +7,8 @@
 | `fake-acp-agent.mjs` | 最小 ACP 服务端：应答 initialize/session/new/prompt，推送 thought→message→usage 通知再回 end_turn。`FAKE_ACP_MODE=error` 回 error stopReason |
 | `fake-claude.sh` / `fake-claude-hang.sh` | cc 适配器夹具 |
 | `cc-turn-holder.mjs` | cc 孤儿进程测试用（扮演持有一轮 turn 的网关） |
+| `cc-echo-argv.sh` | cc 适配器 argv 回显：每个参数回显为 `ARG=<值>` delta，断言 tier → 命令行参数映射 |
+| `fake-claude-perm.mjs` | cc 权限回合夹具（Task 11）：回合中点发 `control_request(can_use_tool)`，等 stdin 的 `control_response`，按 behavior 回 `RESP=<原始应答行>` + `allowed`/`denied` delta。`FAKE_PERM_ID/TOOL/INPUT` 控制请求内容；15s 无应答或 stdin 提前关闭回 error result |
 
 ## 各 agent ACP 实测记录（2026-10-07 / 10-09）
 

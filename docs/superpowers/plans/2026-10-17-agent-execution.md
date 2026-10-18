@@ -844,7 +844,22 @@ git commit -m "feat(agent-server): permission broker with drawer approval"
 
 **测试**：桥进程起 → 模拟 CC 调 tools/call → 断言 permission 卡流程（stub 抽屉应答）→ allow/deny 两路径。
 
-- [ ] 实现与测试 → `npm test` 全绿 → 提交 `feat(agent-server): MCP permission bridge for cc`
+- [x] **实现与测试 → `npm test` 全绿 → 提交**（2026-10-18 完成）。**机制选型决策（实测依据）**：CLI 的
+  `--permission-prompt-tool` 是唯一的权限路由槽位——取值字面量 `stdio`（stream-json 控制通道，
+  `control_request`/`control_response` 双向帧）或某个 `--mcp-config` 里的 MCP 工具名，**二者互斥**：
+  claude 2.1.302 二进制与官方 SDK（@anthropic-ai/claude-agent-sdk 0.3.232）对同时配置直接报错
+  `canUseTool callback cannot be used with permissionPromptToolName. Please use one or the other.`，
+  且 SDK 的 canUseTool 回调正是用 `--permission-prompt-tool stdio` 实现的——控制通道即第一方机制。
+  故**只实现控制通道路径**（进程内、零额外进程/临时 MCP 配置/共享密钥/新网关端点），MCP 桥
+  （`cc-perm-bridge.mjs`）为同一槽位的冗余第二实现，**暂缓不做**（留此记录；若未来要在多机
+  部署中把审批转发到远端网关再评估）。落地：`cc.mjs` full 级别加 `--input-format stream-json +
+  --permission-prompt-tool stdio`，stdin 以 stream-json user 消息驱动回合且不关闭（供应答回写）；
+  解析 `control_request(can_use_tool)` → `ctx.requestApproval(tool_name, summarizeToolInput(input))`
+  → 回写 `{type:'control_response',response:{subtype:'success',request_id,response:{behavior:
+  'allow',updatedInput}|{behavior:'deny',message},toolUseID}}`（形状对齐官方 SDK）；审批闸缺失
+  fail-closed 拒绝；server.mjs 零改动（Task 9 的 requestApproval/toolTier/allowedTools 已全量注入）。
+  测试：`test/cc-perm.test.mjs`（适配器 allow/deny/fail-closed + argv 回归 + 网关 SSE 往返）+
+  `cc-stream.test.mjs`（帧解析/摘要/应答形状），夹具 `fake-claude-perm.mjs`、`cc-echo-argv.sh`。
 
 ---
 
@@ -887,7 +902,7 @@ git commit -m "feat(agent-server): permission broker with drawer approval"
 
 **已知实现风险**（实现时验证，非占位符）：
 1. pi-ai `Tool.parameters` 对裸 JSON Schema 的接受度——Task 2 已内置冒烟验证要求
-2. cc `--permission-prompt-tool` 的 MCP 协议细节——Task 11 用假 CC 驱动验证
+2. cc `--permission-prompt-tool` 的 MCP 协议细节——Task 11 用假 CC 驱动验证（已解决：路由槽位唯一且互斥，选 stdio 控制通道，MCP 桥暂缓——见 Task 11 决策记录）
 3. acp 各 agent 的 `request_permission` options 形状差异——Task 5 夹具 + Task 12 真机验证
 
 **类型一致性**：`toolTier`/`cwd`/`agent` 字段在 server/pi/cc/acp/前端间一致；`requestApproval(action, summary)` 签名统一。
