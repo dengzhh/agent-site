@@ -77,9 +77,12 @@ unlock file access, both scoped to a single session:
 - `cwd` — a path on the machine running the gateway. It is validated at session
   creation (must exist and be a directory, else `400 invalid cwd`) and becomes
   the working directory / path boundary for every tool the agent gets.
-- `toolTier` — `'none'` (default) or `'read'`. `'full'` is a reserved value that
-  grants nothing yet; anything unrecognized falls back to `'none'`, so a typo
-  can never escalate privileges.
+- `toolTier` — `'none'` (default) or `'read'`. `'full'` additionally attaches
+  the write/execute tools for `pi` (`write_file`/`bash`, each gated by an
+  approval drawer); anything unrecognized falls back to `'none'`, so a typo
+  can never escalate privileges. Note that `bash` runs with the gateway's own
+  environment (`-lc` also sources login profiles), so approved commands can
+  read the gateway process's environment variables.
 
 What `read` means per adapter:
 

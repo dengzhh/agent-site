@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, symlinkSync, readFileSync, existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, symlinkSync, readFileSync, existsSync, lstatSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { confine, confineForWrite, makeReadFile, makeListDir, makeGrep, makeWriteFile, makeBash, fullTools, MAX_GREP_MATCHES } from '../src/adapters/pi-tools.mjs';
@@ -235,6 +236,135 @@ test('bash rejects empty commands without prompting', async () => {
   assert.equal(r.isError, true);
   assert.match(r.content[0].text, /command required/);
   assert.equal(log.length, 0);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// ── 复审修复：悬空符号链接逃逸 / 进程组清理 / maxBuffer / 预览截断 / 必填校验 ──
+
+// pgrep/pkill 助手：用唯一标记（如不常见的 sleep 时长）定位测试拉起的进程，
+// 断言无孤儿 + 失败路径上也清理干净（绝不给宿主机留下 30s 的 sleep）
+function pgrepCount(pattern) {
+  try {
+    const out = execFileSync('pgrep', ['-f', pattern], { encoding: 'utf8' });
+    return out.split('\n').filter(Boolean).length;
+  } catch {
+    return 0;   // pgrep 退出码 1 = 无匹配
+  }
+}
+function pkillPattern(pattern) {
+  try { execFileSync('pkill', ['-f', pattern]); } catch { /* 无匹配即目标状态 */ }
+}
+
+test('write_file blocks dangling symlinks pointing outside cwd (end-to-end escape)', async () => {
+  const dir = sandbox();
+  // 目标父目录存在、目标文件不存在：dangling link 的 realpath 抛 ENOENT，与
+  // 「真正的新文件」不可区分——旧实现据此放行，fs.writeFile 跟随链接在 cwd 外落盘。
+  const outsideDir = join(tmpdir(), `pi-tools-outside-${process.pid}`);
+  mkdirSync(outsideDir, { recursive: true });
+  const outsideTarget = join(outsideDir, 'pwned.txt');
+  try {
+    symlinkSync(outsideTarget, join(dir, 'dangler'));
+    const log = [];
+    const tool = makeWriteFile(dir, recorder(true, log));
+    const r = await tool.execute('id1', { path: 'dangler', content: 'pwned' });
+    assert.equal(r.isError, true, 'dangling symlink write must be rejected');
+    assert.match(r.content[0].text, /escapes working directory/);
+    assert.equal(log.length, 0, 'escape attempts must not open the approval drawer');
+    assert.equal(existsSync(outsideTarget), false, 'nothing may be written outside cwd');
+    // existsSync 会跟随链接（dangling 恒 false），断言链接本体要 lstat
+    assert.equal(lstatSync(join(dir, 'dangler')).isSymbolicLink(), true, 'the symlink itself is left alone');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(outsideDir, { recursive: true, force: true });
+  }
+});
+
+test('confineForWrite rejects symlink loops instead of surfacing raw ELOOP', () => {
+  const dir = sandbox();
+  symlinkSync('loop', join(dir, 'loop'));
+  assert.throws(() => confineForWrite(dir, 'loop'), /escapes working directory/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('write_file still writes genuinely new files and existing regular files', async () => {
+  const dir = sandbox();
+  const tool = makeWriteFile(dir, recorder(true));
+  const fresh = await tool.execute('id1', { path: 'brand-new.txt', content: 'a' });
+  assert.equal(fresh.isError, undefined);
+  assert.equal(readFileSync(join(dir, 'brand-new.txt'), 'utf8'), 'a');
+  const overwrite = await tool.execute('id2', { path: 'brand-new.txt', content: 'b' });
+  assert.equal(overwrite.isError, undefined, 'existing regular file stays writable');
+  assert.equal(readFileSync(join(dir, 'brand-new.txt'), 'utf8'), 'b');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('write_file rejects a missing content without prompting', async () => {
+  const dir = sandbox();
+  const log = [];
+  const tool = makeWriteFile(dir, recorder(true, log));
+  const r = await tool.execute('id1', { path: 'no-content.txt' });
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /content required/);
+  assert.equal(log.length, 0, 'invalid requests must not open the drawer');
+  assert.equal(existsSync(join(dir, 'no-content.txt')), false);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('bash timeout kills the whole process group (no orphaned grandchildren)', async () => {
+  const dir = sandbox();
+  const marker = 'sleep 30.371';   // 唯一时长做 pgrep 标记，不误伤无关进程
+  try {
+    const tool = makeBash(dir, recorder(true), { timeoutMs: 300 });
+    const r = await tool.execute('id1', { command: `${marker} & echo spawned; wait` });
+    assert.equal(r.isError, true);
+    assert.match(r.content[0].text, /timed out/);
+    // SIGKILL 生效有毫秒级延迟：轮询最多 ~2s，确认后台 sleep 已随进程组一起死
+    let orphans = -1;
+    for (let i = 0; i < 20; i++) {
+      orphans = pgrepCount(marker);
+      if (orphans === 0) break;
+      await new Promise((res) => setTimeout(res, 100));
+    }
+    assert.equal(orphans, 0, 'backgrounded sleep must die with the process group');
+  } finally {
+    pkillPattern(marker);   // 断言失败也不能留下孤儿
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('bash timeout SIGKILLs the group so SIGTERM-immune commands cannot hang the tool', async () => {
+  const dir = sandbox();
+  const tool = makeBash(dir, recorder(true), { timeoutMs: 300 });
+  const t0 = Date.now();
+  const r = await tool.execute('id1', { command: `trap '' TERM; while :; do :; done` });
+  const elapsed = Date.now() - t0;
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /timed out/);
+  assert.ok(elapsed < 2000, `SIGKILL escalation returned in ${elapsed}ms (no hang)`);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('bash returns partial output as a normal result when stdout exceeds the 1MB cap', async () => {
+  const dir = sandbox();
+  const tool = makeBash(dir, recorder(true));
+  const r = await tool.execute('id1', { command: `node -e "process.stdout.write('x'.repeat(2*1024*1024))"` });
+  assert.equal(r.isError, undefined, 'buffer overrun is domain output, not a tool failure');
+  assert.match(r.content[0].text, /x{100,}/, 'partial stdout is preserved');
+  assert.match(r.content[0].text, /超限/);
+  assert.match(r.content[0].text, /1MB/);
+  assert.ok(r.content[0].text.length < 9000, `still truncated to 8KB (got ${r.content[0].text.length})`);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('bash approval preview appends "(+N chars)" when truncated', async () => {
+  const dir = sandbox();
+  const log = [];
+  const tool = makeBash(dir, recorder(true, log));
+  const cmd = `echo ${'a'.repeat(300)}`;   // 305 字符
+  const r = await tool.execute('id1', { command: cmd });
+  assert.equal(r.isError, undefined);
+  assert.equal(log.length, 1);
+  assert.equal(log[0].summary, `${cmd.slice(0, 200)}… (+105 chars)`, 'preview keeps 200 chars plus a truncation marker');
   rmSync(dir, { recursive: true, force: true });
 });
 

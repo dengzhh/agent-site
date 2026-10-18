@@ -220,9 +220,10 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
           ...cors,
         });
         const send = (type, payload) => res.write(encodeSSE(type, payload));
-        // 工具分级（期 1）：none=不给工具；read=只读三件套；full 期 2 实现
+        // 工具分级：none=不给工具；read=只读三件套；full=完整工具集（含写/执行）。
+        // 这里只管 cc 的 --allowedTools（read 给只读三件套，none/full 不给 cc 工具）；
+        // pi 的分级在 pi.mjs 里按 toolTier 挂 readOnlyTools/fullTools。
         const isCc = session.adapter.id === 'cc';
-        // 工具分级（期 1）：none=不给工具；read=只读三件套；full 期 2 实现
         const allowedTools = isCc && session.toolTier === 'read' ? ['Read', 'Grep', 'Glob'] : [];
         // cwd 语义：cc 用授权目录（CLI 的工作目录）；pi/其他用会话 cwd（工具的路径边界）
         const cwd = isCc ? (session.grantedDirs?.[0] ?? session.cwd ?? undefined) : (session.cwd ?? undefined);

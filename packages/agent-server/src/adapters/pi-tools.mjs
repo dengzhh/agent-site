@@ -5,9 +5,8 @@
 // 绝对路径。
 // 写/执行工具（write_file / bash）每次执行前先过 requestApproval 审批闸（抽屉权限卡），
 // 拒绝 → isError 结果 'denied by user'，绝不落盘/执行。
-import { promises as fs, realpathSync } from 'node:fs';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { promises as fs, lstatSync, realpathSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { dirname, join as pathJoin, resolve, sep } from 'node:path';
 
 const SKIP_DIRS = new Set(['node_modules', '.git', '.hg', 'dist', 'build', '.next', '__pycache__']);
@@ -16,8 +15,8 @@ export const MAX_GREP_MATCHES = 50;
 // ReDoS 防护：恶意正则的灾难性回溯随输入长度指数增长，同步执行无法中断——
 // 用时间预算硬性截断（超时返回部分结果），避免网站用户卡死单线程网关。
 export const GREP_BUDGET_MS = 5000;
-// bash：单条命令 60s 超时；输出（stdout+stderr 合并）截断到 8KB；
-// 权限卡摘要里的命令预览截到 200 字符。
+// bash：单条命令 60s 超时；输出（stdout+stderr 合并）截断到 8KB；单流
+// buffer 上限 1MB；权限卡摘要里的命令预览截到 200 字符（截断时附剩余字数）。
 export const BASH_TIMEOUT_MS = 60_000;
 export const MAX_BASH_OUTPUT_CHARS = 8192;
 const BASH_PREVIEW_CHARS = 200;
@@ -173,11 +172,36 @@ export function readOnlyTools(cwd) {
 //    一环是外指符号链接都在这里被拦下，也不会替用户凭空建目录）；
 // ② 目标已存在时对其本体做 realpath 检查：写会跟随符号链接，指向外部文件的
 //    链接（期 1 只读工具管不到的硬链接/链接场景）必须在校验真实落点后才放行。
+// 关键顺序：先 lstat 再判定「新文件」。悬空符号链接（指向尚不存在的外部文件）的
+// realpath 同样抛 ENOENT，与真正的新文件不可区分——只看 realpath 会放行
+// 「writeFile 跟随悬空链接在 cwd 外建文件」的逃逸。现在 lstat 命中 symlink 一律
+// 拒绝；存在但 realpath 失败（ELOOP 链环等罕见情形）也拒绝（fail closed），
+// 写永远不会跟随任何符号链接出 cwd。
 // 返回的是词法路径（写入用），非 realpath。
+// 已知局限（与 confine 的读侧注释同款）：指向 cwd 外文件的硬链接无法用 realpath
+// 识别——经由 cwd 内的硬链接写入会改到外部的真身。本工具不做 inode 级防护。
+// TOCTOU：校验与写入不是原子的——校验后本机竞争者仍可把目标换成外指符号链接。
+// 单用户本地工具，这个窗口已知且接受；进程级隔离属于宿主（sandbox/容器）的职责。
 export function confineForWrite(cwd, relPath) {
   const baseReal = realpath(cwd);
   const abs = resolve(baseReal, String(relPath ?? ''));
   if (abs !== baseReal && !abs.startsWith(baseReal + sep)) {
+    throw new Error(`path escapes working directory: ${relPath}`);
+  }
+  let st;
+  try {
+    st = lstatSync(abs);
+  } catch (err) {
+    if (err?.code !== 'ENOENT') throw err;
+    // 真正的新文件：本体无链接可逃，但父目录仍须在 cwd 内（防外指链接目录）
+    const parentReal = realpath(dirname(abs));
+    if (parentReal !== baseReal && !parentReal.startsWith(baseReal + sep)) {
+      throw new Error(`path escapes working directory: ${relPath}`);
+    }
+    return abs;
+  }
+  if (st.isSymbolicLink()) {
+    // 写会跟随链接：悬空链接、外指链接、链环——只要本体是符号链接就不放行
     throw new Error(`path escapes working directory: ${relPath}`);
   }
   const parentReal = realpath(dirname(abs));
@@ -187,9 +211,9 @@ export function confineForWrite(cwd, relPath) {
   let targetReal;
   try {
     targetReal = realpath(abs);
-  } catch (err) {
-    if (err?.code === 'ENOENT') return abs;   // 新文件：无链接可逃
-    throw err;
+  } catch {
+    // 存在且不是符号链接，但 realpath 失败（父链上的 ELOOP 等）→ fail closed
+    throw new Error(`path escapes working directory: ${relPath}`);
   }
   if (targetReal !== baseReal && !targetReal.startsWith(baseReal + sep)) {
     throw new Error(`path escapes working directory: ${relPath}`);
@@ -219,6 +243,9 @@ export function makeWriteFile(cwd, requestApproval = async () => false) {
       let base = null;
       try {
         base = realpath(cwd);   // confine 抛错时 errText 也能去绝对路径（同 read_file）
+        // content 在 schema 里已标 required，但执行层显式再校验（模型/客户端可能
+        // 绕过 schema 省略它）——校验失败不弹审批卡，同「路径越界先于审批」的顺序
+        if (params.content == null) throw new Error('content required');
         const relPath = String(params.path ?? '');
         const abs = confineForWrite(cwd, relPath);
         const content = String(params.content ?? '');
@@ -244,17 +271,70 @@ function truncateOutput(text, max = MAX_BASH_OUTPUT_CHARS) {
   return `${text.slice(0, max)}\n(输出截断，共 ${text.length} 字符)`;
 }
 
-// bash：execFile('bash', ['-lc', cmd]) 在 cwd 内执行。
+// 审批卡预览截断：截到 max 字符，截断时附「… (+N chars)」——用户得知道预览
+// 后面还藏着多少命令，才不至于批准一段被静默剪断的内容
+function truncatePreview(text, max) {
+  if (text.length <= max) return text;
+  return `${text.slice(0, max)}… (+${text.length - max} chars)`;
+}
+
+// bash：spawn('bash', ['-lc', cmd]) 在 cwd 内执行，detached 起独立进程组。
 // 语义约定（与只读工具的 isError 约定对齐后刻意分流）：
 //  - 非零退出码 = 命令自身的领域输出，正常结果返回 'exit <code>\n<输出>'
 //    （不是 isError——对 agent 这是可用信息，和主流 agent harness 一致）；
 //  - 超时 / bash 不可用等环境故障 → isError（工具没干成它承诺的事）；
-//  - 输出超 maxBuffer（1MB，防子进程刷爆内存）被杀 → 已捕获部分按截断结果返回；
+//  - 单流输出超 maxBuffer（1MB，防子进程刷爆内存）→ 杀掉整个进程组，已捕获的
+//    部分按截断结果正常返回（不是 isError——部分输出往往已够用）。不依赖
+//    execFile 的错误码：maxBuffer 超限的错误码随 Node 版本变（ENOBUFS →
+//    ERR_CHILD_PROCESS_STDIO_MAXBUFFER，按码匹配必成死分支），自己数着字节最稳；
 //  - stdout 在前 stderr 在后合并，整体截断到 8KB；
-//  - 执行前 requestApproval('bash', 命令前 200 字符)，拒绝 → isError 'denied by user'。
+//  - 执行前 requestApproval('bash', 命令预览)，拒绝 → isError 'denied by user'。
+
+// 跑一条 bash 命令（独立进程组），收集输出直到进程组整体退出。超时与超 buffer
+// 都直接对进程组 SIGKILL：execFile 的 timeout 只 SIGTERM bash 本身——后台孙子
+// 进程变孤儿继续跑（sleep 30 & 之类），而 trap '' TERM 的命令连 bash 都杀不死、
+// 调用方永远挂起。组级 SIGKILL 一并解决（SIGKILL 无法被 trap）。
+function runBashGroup(command, cwd, timeoutMs, maxBuffer = 1024 * 1024) {
+  return new Promise((done) => {
+    const child = spawn('bash', ['-lc', command], { cwd, detached: true });
+    let stdout = '';
+    let stderr = '';
+    let outBytes = 0;
+    let errBytes = 0;
+    let capped = false;     // 某一流超 maxBuffer（execFile 语义：按流各算 1MB）
+    let timedOut = false;
+    let settled = false;
+
+    const killGroup = () => {
+      // detached ⇒ bash 是进程组长：负 pid 对整组发信号，后台孙子一起死。
+      // 组已退出时 kill 抛 ESRCH，忽略；child.kill 兜底（防御性双保险）。
+      try { process.kill(-child.pid, 'SIGKILL'); } catch { /* 进程组已退出 */ }
+      try { child.kill('SIGKILL'); } catch { /* 进程已退出 */ }
+    };
+    const timer = setTimeout(() => { timedOut = true; killGroup(); }, timeoutMs);
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      done(result);
+    };
+    const onChunk = (isOut) => (chunk) => {
+      if (capped) return;   // 已超限：尾包丢弃（进程组正在被杀）
+      if (isOut) { outBytes += Buffer.byteLength(chunk); stdout += chunk; }
+      else { errBytes += Buffer.byteLength(chunk); stderr += chunk; }
+      if ((isOut ? outBytes : errBytes) > maxBuffer) { capped = true; killGroup(); }
+    };
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', onChunk(true));
+    child.stderr.on('data', onChunk(false));
+    child.on('error', (err) => finish({ error: err }));   // bash 缺失等 spawn 失败
+    child.on('close', (code) => finish({ code, stdout, stderr, timedOut, capped }));
+  });
+}
+
 export function makeBash(cwd, requestApproval = async () => false, opts = {}) {
   const timeoutMs = opts.timeoutMs ?? BASH_TIMEOUT_MS;
-  const execFileP = promisify(execFile);
   return {
     name: 'bash',
     label: 'Run shell command',
@@ -272,40 +352,23 @@ export function makeBash(cwd, requestApproval = async () => false, opts = {}) {
         base = realpath(cwd);
         const command = String(params.command ?? '').trim();
         if (!command) throw new Error('command required');
-        const ok = await requestApproval('bash', command.slice(0, BASH_PREVIEW_CHARS));
+        const ok = await requestApproval('bash', truncatePreview(command, BASH_PREVIEW_CHARS));
         if (!ok) return { content: [{ type: 'text', text: 'denied by user' }], details: {}, isError: true };
-        let stdout = '';
-        let stderr = '';
-        let code = 0;
-        try {
-          const r = await execFileP('bash', ['-lc', command], {
-            cwd: base,
-            timeout: timeoutMs,
-            maxBuffer: 1024 * 1024,
-          });
-          stdout = String(r.stdout ?? '');
-          stderr = String(r.stderr ?? '');
-        } catch (err) {
-          if (err?.code === 'ENOBUFS') {
-            // 输出超 maxBuffer 被杀：部分输出照常返回（截 8KB），不算工具故障
-            const text = `${truncateOutput(`${String(err.stdout ?? '')}${String(err.stderr ?? '')}`)}\n(输出超限中止)`;
-            return { content: [{ type: 'text', text }], details: { exitCode: null, truncated: true } };
-          }
-          if (err?.killed) throw new Error(`command timed out after ${timeoutMs}ms`);
-          if (typeof err?.code === 'number') {
-            // 非零退出：promisify 的 rejection 里带着已捕获的输出
-            code = err.code;
-            stdout = String(err.stdout ?? '');
-            stderr = String(err.stderr ?? '');
-          } else {
-            throw err;   // bash 缺失等环境错误 → 外层 isError
-          }
+        const r = await runBashGroup(command, base, timeoutMs);
+        if (r.error) throw r.error;   // bash 缺失等环境错误 → 外层 isError
+        if (r.timedOut) throw new Error(`command timed out after ${timeoutMs}ms`);
+        if (r.capped) {
+          // 输出超 maxBuffer：进程组已中止，已捕获部分照常返回（截 8KB）——
+          // 对 agent 这是领域输出不是工具故障（exit 行注明被 buffer 上限截停）
+          const text = `exit ${r.code ?? 'null'} (output exceeded the 1MB buffer cap, process group killed)\n`
+            + `${truncateOutput(r.stdout + r.stderr)}\n(输出超限中止)`;
+          return { content: [{ type: 'text', text }], details: { exitCode: r.code ?? null, truncated: true } };
         }
-        const output = truncateOutput(stdout + stderr);
-        const text = code === 0
+        const output = truncateOutput(r.stdout + r.stderr);
+        const text = r.code === 0
           ? (output || '(no output)')
-          : `exit ${code}\n${output}`;
-        return { content: [{ type: 'text', text }], details: { exitCode: code } };
+          : `exit ${r.code}\n${output}`;
+        return { content: [{ type: 'text', text }], details: { exitCode: r.code } };
       } catch (err) {
         return { content: [{ type: 'text', text: errText(err, base) }], details: {}, isError: true };
       }
