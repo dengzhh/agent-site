@@ -11,7 +11,7 @@
 // 见 plan Task 11 的决策记录。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,6 +34,26 @@ const withTimeout = (promise, ms, label) => {
 const respDelta = (events) => {
   const ev = events.find((e) => e.type === 'delta' && e.text?.startsWith('RESP='));
   return ev ? JSON.parse(ev.text.slice(5)) : null;
+};
+// SSE 逐帧读取器：返回 data: 块里的 JSON；流结束返回 null。
+const sseReader = (res) => {
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  return async () => {
+    for (;;) {
+      const idx = buf.indexOf('\n\n');
+      if (idx !== -1) {
+        const block = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        if (!block.startsWith('data: ')) continue;
+        return JSON.parse(block.slice(6));
+      }
+      const { done, value } = await reader.read();
+      if (done) return null;
+      buf += decoder.decode(value, { stream: true });
+    }
+  };
 };
 const baseRun = (over = {}) => ({
   messages: [{ role: 'user', content: 'clean up' }], model: 'm', apiKey: 'k',
@@ -123,7 +143,7 @@ test('full tier argv enables stream-json input and the stdio prompt tool', async
   assert.equal(args[pt + 1], 'ARG=stdio');
   const at = args.indexOf('ARG=--allowedTools');
   assert.ok(at !== -1);
-  assert.equal(args[at + 1], 'ARG=', 'no tool is pre-allowed at full tier — every call goes through the drawer');
+  assert.equal(args[at + 1], 'ARG=', 'no tool is pre-allowed at full tier — tool calls that CC\'s policy doesn\'t auto-allow go through the drawer');
 });
 
 // 网关级往返：真实 server（Task 9 权限中枢）+ 真实 cc 适配器 + 假 CC 夹具。
@@ -196,4 +216,88 @@ test('gateway roundtrip: drawer approval answers the cc control channel', async 
   assert.equal((await next()).type, 'turn_end');
   assert.equal((await next()).type, 'done');
   assert.equal(srv.sessions.peek(sessionId).pendingPerms.size, 0, 'approval drained');
+});
+
+// 回归（真实 CLI 2.1.302 实测）：真 CLI 发完 result 后并不退出，而是握着 stdin 继续存活
+// 直到 stdin EOF（现有夹具的立即 process.exit 掩盖了这一点）。交互模式若拖到生成器
+// finally 才 end stdin，stdout 的 for-await 就永不结束 → run() 挂死 → SSE 没有 done 帧
+// → 会话永久 streaming，后续 /messages 全部 409。夹具用 FAKE_CLAUDE_STAY=1 复刻该行为，
+// 并要求回合在 2s 内走到 done（夹具收尾开销 ~400ms），然后同一会话可立即再开一回合。
+test('gateway roundtrip: stay-alive CLI still reaches done and frees the session', async (t) => {
+  // 与 server.test.mjs 相同的配置重定向（config.mjs 在 import 时求值默认路径）；
+  // 测试自建的配置目录随手回收，不在 /tmp 留垃圾。
+  const configDir = mkdtempSync(join(tmpdir(), 'atbx-cc-stay-'));
+  process.env.ATBX_CONFIG_PATH = join(configDir, 'config.json');
+  const { startServer } = await import('../src/server.mjs');
+  const { createRegistry } = await import('../src/adapters/registry.mjs');
+
+  const registry = createRegistry([createCcAdapter({ cliPath: PERM_FIXTURE, env: { FAKE_CLAUDE_STAY: '1' } })]);
+  const srv = await startServer({
+    port: 0, allowedOrigins: ['http://localhost:4321'], registry, acpProbe: async () => false,
+  });
+  const base = `http://127.0.0.1:${srv.port}`;
+  const post = async (path, body) => {
+    const res = await fetch(base + path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    return { status: res.status, body: res.headers.get('content-type')?.includes('json') ? await res.json() : await res.text(), res };
+  };
+  let sessionId = null;
+  // 先 abort 再 close：红相位（挂死回归）时回合还悬着，不 abort 则 server.close()
+  // 会等这条 SSE 永远等下去；绿相位里 abort 已是幂等无害的 no-op。
+  t.after(async () => {
+    if (sessionId) await post(`/sessions/${sessionId}/abort`).catch(() => {});
+    await srv.close();
+    rmSync(configDir, { recursive: true, force: true });
+  });
+
+  const create = await post('/sessions', { provider: 'x', model: 'm', agent: 'cc', cwd: '/tmp', toolTier: 'full' });
+  assert.equal(create.status, 200);
+  sessionId = create.body.sessionId;
+
+  const res = await fetch(`${base}/sessions/${sessionId}/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ text: 'clean up' }),
+  });
+  const next = sseReader(res);
+
+  const consume = (async () => {
+    const req = await next();
+    assert.equal(req.type, 'permission_request');
+    assert.match(req.reqId, /^[0-9a-f-]{36}$/);
+    const ans = await post(`/sessions/${sessionId}/permission`, { reqId: req.reqId, decision: 'allow' });
+    assert.equal(ans.status, 200);
+    const echo = await next();
+    assert.equal(echo.type, 'delta');
+    assert.match(echo.text, /^RESP=/);
+    assert.deepEqual(await next(), { type: 'delta', text: 'allowed' });
+    // turn_end 必须先于 done
+    assert.equal((await next()).type, 'turn_end');
+    assert.equal((await next()).type, 'done');
+  })();
+  try {
+    // 有界时间护栏：挂死回归（result 后等不到 done）在这里 ~2s 失败，而不是拖死套件
+    await withTimeout(consume, 2000, 'stay-alive turn never reached done (stdin not ended at result?)');
+  } catch (err) {
+    consume.catch(() => {}); // 超时后 consume 仍悬在 next() 上：其后续失败不再二次上报
+    throw err;
+  }
+
+  // done 已到 → session.streaming 必须已复位：同一会话立即再开一回合，不得 409。
+  const second = await fetch(`${base}/sessions/${sessionId}/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ text: 'again' }),
+  });
+  assert.equal(second.status, 200, `second turn must not 409 after done (streaming stuck): ${JSON.stringify(second.headers)}`);
+  assert.match(second.headers.get('content-type') ?? '', /text\/event-stream/);
+  // 第二回合的权限请求无人应答：立即中止（别等夹具 15s 超时），等 streaming 复位收尾。
+  assert.equal((await post(`/sessions/${sessionId}/abort`)).status, 204);
+  for (let i = 0; i < 100 && srv.sessions.peek(sessionId)?.streaming; i++) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  assert.equal(srv.sessions.peek(sessionId).streaming, false, 'second turn aborted cleanly');
 });

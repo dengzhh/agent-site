@@ -197,6 +197,8 @@ export function createCcAdapter({ cliPath = 'claude', env = {} } = {}) {
       // 真正的结论由 stdout 上的终结事件或退出码给出，因此这里显式吞掉写入错误——
       // 否则 unhandled 'error' 会直接炸掉测试进程。
       child.stdin.on('error', () => {});
+      // stdin.end 幂等（end 后再 end 是无害 no-op）：result 行处提前关 + finally 兜底共用。
+      const endStdin = () => { try { child.stdin.end(); } catch { /* 流已销毁，忽略 */ } };
       try {
         if (interactive) {
           // stream-json 输入：回合提示是 stdin 上的一行 user 消息（形状对齐官方 SDK）。
@@ -232,14 +234,26 @@ export function createCcAdapter({ cliPath = 'claude', env = {} } = {}) {
               continue;
             }
             if (ev.type === 'error' && isGateError(ev.message)) ev.gate = true;
-            if (ev.type === 'turn_end' || ev.type === 'error') sawTerminal = true;
+            if (ev.type === 'turn_end' || ev.type === 'error') {
+              sawTerminal = true;
+              // 回合的 result 行已到（成功 → turn_end；is_error → error）：交互模式在此
+              // 立即 end stdin。真实 CLI（2.1.302 实测）发完 result 后握着 stdin 不退，
+              // 等控制通道的下一回合——拖到 finally 才 end 的话，stdout 的 for-await
+              // 永不结束 → run() 挂死 → SSE 没有 done 帧 → 会话永久 streaming，后续
+              // /messages 全部 409。官方 SDK 同款（收到首个 result 即 closing stdin）。
+              // 迟到才结算的审批回写会 EPIPE：由上面的 stdin 'error' 监听 + try/catch 吞掉。
+              if (interactive) endStdin();
+            }
             yield ev;
           }
         }
         const tail = parseCcLine(buffer.trim());
         if (tail) {
           if (tail.type === 'error' && isGateError(tail.message)) tail.gate = true;
-          if (tail.type === 'turn_end' || tail.type === 'error') sawTerminal = true;
+          if (tail.type === 'turn_end' || tail.type === 'error') {
+            sawTerminal = true;
+            if (interactive) endStdin(); // 与循环内同款：result 行已到即关 stdin（幂等）
+          }
           yield tail;
         }
         if (!sawTerminal) {
@@ -259,11 +273,10 @@ export function createCcAdapter({ cliPath = 'claude', env = {} } = {}) {
         // killTree 会因 exitCode 非空直接返回（幂等）。目录同此一次性回收。
         if (escalate) clearTimeout(escalate);
         if (signal) signal.removeEventListener('abort', onAbort);
-        // interactive 模式 stdin 一直开着（控制通道）：收尾时补一个 EOF，
-        // 让还活着的 CLI 的 stdin 读取端自然结束，而不是干等到被 SIGTERM。
-        if (interactive) {
-          try { child.stdin.end(); } catch { /* 已销毁，忽略 */ }
-        }
+        // interactive 模式 stdin 一直开着（控制通道）：收尾时补一个 EOF（幂等——
+        // 正常路径已在 result 行处 end 过），让还活着的 CLI 的 stdin 读取端自然
+        // 结束，而不是干等到被 SIGTERM。
+        if (interactive) endStdin();
         // 不在这里 delete(liveChildren)：交给 'close' 回调，避免「已发信号但未死透」
         // 期间从进程退出兜底钩子的视野里消失（见上面 close 监听）。
         terminate(child); // SIGTERM + 宽限后 SIGKILL，保证最终一定死
