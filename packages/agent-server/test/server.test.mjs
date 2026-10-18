@@ -361,3 +361,84 @@ test('cc read tier maps to read-only allowedTools', async (t) => {
   const raw = await res.text();
   assert.match(raw, /allowedTools=Read,Grep,Glob/);
 });
+
+// ── /quota/openrouter：用户 key 查自己账号的免费额度 ───────────────────────────
+// 网关只做代理：key 在请求体（不进 URL/日志），上游失败只镜像状态码不透传响应体。
+
+test('quota/openrouter proxies the key endpoint without logging the key', async (t) => {
+  const calls = [];
+  const origFetch = globalThis.fetch;
+  // 只拦截发往 openrouter.ai 的上游调用；客户端 → 测试服务器的请求放行给真 fetch，
+  // 否则 mock 会短路掉整个往返，路由根本没被执行。
+  globalThis.fetch = async (url, opts) => {
+    if (!String(url).includes('openrouter.ai')) return origFetch(url, opts);
+    calls.push({ url: String(url), auth: opts?.headers?.authorization });
+    return new Response(JSON.stringify({ data: {
+      usage: 3, limit: 50, is_free_tier: true, rate_limit: { requests: 20, interval: '10s' },
+    } }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    const { json } = await withFauxServer(t);
+    const r = await json('/quota/openrouter', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+      body: JSON.stringify({ apiKey: 'sk-or-test' }),
+    });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.usage, 3);
+    assert.equal(r.body.limit, 50);
+    assert.equal(r.body.isFreeTier, true);
+    assert.deepEqual(r.body.rateLimit, { requests: 20, interval: '10s' });
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].url, /openrouter\.ai\/api\/v1\/key/);
+    assert.equal(calls[0].auth, 'Bearer sk-or-test', 'key forwarded as Bearer to upstream');
+  } finally { globalThis.fetch = origFetch; }
+});
+
+test('quota/openrouter without key returns 400', async (t) => {
+  const { json } = await withFauxServer(t);
+  const r = await json('/quota/openrouter', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({}),
+  });
+  assert.equal(r.status, 400);
+});
+
+test('quota/openrouter mirrors upstream failure status without detail', async (t) => {
+  const origFetch = globalThis.fetch;
+  // 同上：只拦上游，客户端请求放行（否则 429 假响应直接喂给断言，路由未被覆盖）。
+  globalThis.fetch = async (url, opts) => {
+    if (!String(url).includes('openrouter.ai')) return origFetch(url, opts);
+    return new Response('{"error":"Rate limit exceeded"}', { status: 429, headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    const { json } = await withFauxServer(t);
+    const r = await json('/quota/openrouter', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+      body: JSON.stringify({ apiKey: 'sk-or-test' }),
+    });
+    assert.equal(r.status, 429);
+    assert.equal(r.body.error, 'upstream error');
+    assert.equal(r.body.detail, undefined, 'upstream body must not leak');
+  } finally { globalThis.fetch = origFetch; }
+});
+
+test('quota/openrouter returns 502 when upstream is unreachable', async (t) => {
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    if (!String(url).includes('openrouter.ai')) return origFetch(url, opts);
+    throw new Error('connect ECONNREFUSED');
+  };
+  try {
+    const { json } = await withFauxServer(t);
+    const r = await json('/quota/openrouter', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+      body: JSON.stringify({ apiKey: 'sk-or-test' }),
+    });
+    assert.equal(r.status, 502);
+    assert.equal(r.body.error, 'upstream unreachable');
+  } finally { globalThis.fetch = origFetch; }
+});

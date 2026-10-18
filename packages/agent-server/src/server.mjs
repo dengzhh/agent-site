@@ -104,6 +104,31 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
         });
       }
 
+      // OpenRouter 免费额度查询：用户 key 查自己的账号，天然安全。
+      // key 走请求体，不进 URL/日志；上游失败只镜像状态码，不透传响应体。
+      if (req.method === 'POST' && url.pathname === '/quota/openrouter') {
+        const body = await readJson(req);
+        const key = typeof body?.apiKey === 'string' ? body.apiKey : '';
+        if (!key) return json(400, { error: 'apiKey required' });
+        let upstream;
+        try {
+          upstream = await fetch('https://openrouter.ai/api/v1/key', {
+            headers: { authorization: `Bearer ${key}` },
+            signal: AbortSignal.timeout(10_000),
+          });
+        } catch (err) {
+          return json(502, { error: 'upstream unreachable', message: String(err?.message ?? err) });
+        }
+        if (!upstream.ok) return json(upstream.status, { error: 'upstream error' });
+        const data = (await upstream.json())?.data ?? {};
+        return json(200, {
+          usage: data.usage ?? null,
+          limit: data.limit ?? null,
+          isFreeTier: data.is_free_tier ?? null,
+          rateLimit: data.rate_limit ?? null,
+        });
+      }
+
       if (req.method === 'POST' && url.pathname === '/sessions') {
         const body = await readJson(req);
         if (body == null || typeof body !== 'object') return json(400, { error: 'JSON object body required' });
