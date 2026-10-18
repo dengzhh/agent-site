@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mapSessionUpdate } from '../src/adapters/acp-stream.mjs';
+import { mapSessionUpdate, describePermission, resolveOutcomeOptionIds } from '../src/adapters/acp-stream.mjs';
 
 test('agent_message_chunk becomes a delta', () => {
   const p = { sessionId: 's', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'PONG' } } };
@@ -37,4 +37,48 @@ test('unknown update kinds yield no events', () => {
 test('empty or missing text is skipped', () => {
   assert.deepEqual(mapSessionUpdate({ update: { sessionUpdate: 'agent_message_chunk', content: { text: '' } } }), []);
   assert.deepEqual(mapSessionUpdate({ update: { sessionUpdate: 'agent_message_chunk' } }), []);
+});
+
+// ── request_permission 转发映射（Task 12）────────────────────────────────────
+
+test('describePermission prefers kind for the action and keeps a one-line summary', () => {
+  assert.deepEqual(
+    describePermission({ toolCallId: 't', title: 'Write pkg.json', kind: 'edit' }),
+    { action: 'edit', summary: 'Write pkg.json (edit)' },
+  );
+  // title 已含 kind 词时不重复（'search' 命中 title 内的词）
+  assert.deepEqual(
+    describePermission({ title: 'Search code for TODO', kind: 'search' }),
+    { action: 'search', summary: 'Search code for TODO' },
+  );
+  // 缺 kind → action 退回 title；缺 title → 退回 kind；两者皆缺 → 'tool'
+  assert.deepEqual(describePermission({ title: 'Run tests' }), { action: 'Run tests', summary: 'Run tests' });
+  assert.deepEqual(describePermission({ kind: 'execute' }), { action: 'execute', summary: 'execute' });
+  assert.deepEqual(describePermission(null), { action: 'tool', summary: 'tool' });
+});
+
+test('describePermission caps the summary at 160 chars', () => {
+  const { summary } = describePermission({ title: 'x'.repeat(300), kind: 'write' });
+  assert.ok(summary.length <= 160, `summary length ${summary.length}`);
+  assert.ok(summary.endsWith('...'));
+});
+
+test('resolveOutcomeOptionIds reads the request options, not hardcoded ids', () => {
+  const req = { options: [
+    { optionId: 'yes_once', name: 'Sure', kind: 'allow_once' },
+    { optionId: 'no_way', name: 'Nah', kind: 'reject_once' },
+  ] };
+  assert.deepEqual(resolveOutcomeOptionIds(req.options), { allowId: 'yes_once', rejectId: 'no_way' });
+  // 标准 id 照常解析；allow_always/reject_always 同样命中语义前缀
+  assert.deepEqual(
+    resolveOutcomeOptionIds([{ optionId: 'a', name: 'A', kind: 'allow_always' }, { optionId: 'r', name: 'R', kind: 'reject_always' }]),
+    { allowId: 'a', rejectId: 'r' },
+  );
+  // kind 缺失时退回 name 关键词，最后回退标准字面量
+  assert.deepEqual(
+    resolveOutcomeOptionIds([{ optionId: 'ok', name: 'Approve it' }, { optionId: 'stop', name: 'Deny it' }]),
+    { allowId: 'ok', rejectId: 'stop' },
+  );
+  assert.deepEqual(resolveOutcomeOptionIds([]), { allowId: 'allow_once', rejectId: 'reject_once' });
+  assert.deepEqual(resolveOutcomeOptionIds(undefined), { allowId: 'allow_once', rejectId: 'reject_once' });
 });

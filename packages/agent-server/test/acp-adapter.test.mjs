@@ -76,3 +76,87 @@ test('acp tier none denies everything', async () => {
   const events = await collect(acp.run({ agentId: 'fake', messages: [{ role: 'user', content: 'hi' }], cwd: '/tmp', toolTier: 'none' }));
   assert.ok(events.some((e) => e.type === 'delta' && /deny|reject/i.test(e.text)), 'tier none denies');
 });
+
+// ── full 级别：request_permission 转发抽屉（Task 12，期 2）────────────────────
+// kind 用 'edit' 而非 'write'：ACP 的 ToolKind 词表是
+// read|edit|delete|move|search|execute|think|fetch|switch_mode|other——SDK 会对
+// 入参做 schema 校验，非法 kind 到不了 client 的 requestPermission。
+const fakeWithPerm = (...extra) => ({
+  name: 'F',
+  cmd: process.execPath,
+  args: [FIXTURE, '--perm-req', ...extra],
+  isolateEnv: (d) => ({ FAKE_HOME: d }),
+});
+const gate = (allow, calls = []) => (action, summary) => { calls.push({ action, summary }); return Promise.resolve(allow); };
+
+test('acp full tier forwards edit-kind request to the approval gate and allows', async () => {
+  const calls = [];
+  const acp = createAcpAdapter({ agents: { fake: fakeWithPerm('Write file src/a.ts', '--perm-kind', 'edit') } });
+  const events = await collect(acp.run({
+    agentId: 'fake', messages: [{ role: 'user', content: 'hi' }], cwd: '/tmp', toolTier: 'full',
+    requestApproval: gate(true, calls),
+  }));
+  assert.ok(events.some((e) => e.type === 'delta' && /allow_once/i.test(e.text)), 'drawer allow → outcome allow_once');
+  assert.equal(events.at(-1).type, 'turn_end');
+  assert.equal(events.at(-1).stopReason, 'end_turn');
+  assert.equal(calls.length, 1, 'gate consulted exactly once');
+  assert.equal(calls[0].action, 'edit');
+  assert.match(calls[0].summary, /Write file src\/a\.ts/);
+  assert.ok(calls[0].summary.length <= 160, 'summary capped at 160');
+});
+
+test('acp full tier drawer denial answers reject', async () => {
+  const acp = createAcpAdapter({ agents: { fake: fakeWithPerm('Write file src/a.ts', '--perm-kind', 'edit') } });
+  const events = await collect(acp.run({
+    agentId: 'fake', messages: [{ role: 'user', content: 'hi' }], cwd: '/tmp', toolTier: 'full',
+    requestApproval: gate(false),
+  }));
+  assert.ok(events.some((e) => e.type === 'delta' && /reject_once/i.test(e.text)), 'drawer deny → outcome reject_once');
+  assert.equal(events.at(-1).type, 'turn_end');
+  assert.equal(events.at(-1).stopReason, 'end_turn');
+});
+
+test('acp full tier without an approval gate fails closed (deny, no throw)', async () => {
+  const acp = createAcpAdapter({ agents: { fake: fakeWithPerm('Write file src/a.ts', '--perm-kind', 'edit') } });
+  const events = await collect(acp.run({ agentId: 'fake', messages: [{ role: 'user', content: 'hi' }], cwd: '/tmp', toolTier: 'full' }));
+  assert.ok(events.some((e) => e.type === 'delta' && /reject_once/i.test(e.text)), 'missing gate → deny');
+  assert.equal(events.at(-1).type, 'turn_end');
+  assert.equal(events.at(-1).stopReason, 'end_turn');
+  assert.ok(!events.some((e) => e.type === 'error'), 'fail-closed is not an error event');
+});
+
+test('acp full tier gate rejection (thrown) still answers deny', async () => {
+  const acp = createAcpAdapter({ agents: { fake: fakeWithPerm('Write file src/a.ts', '--perm-kind', 'edit') } });
+  const events = await collect(acp.run({
+    agentId: 'fake', messages: [{ role: 'user', content: 'hi' }], cwd: '/tmp', toolTier: 'full',
+    requestApproval: () => Promise.reject(new Error('drawer exploded')),
+  }));
+  assert.ok(events.some((e) => e.type === 'delta' && /reject_once/i.test(e.text)), 'gate throw → deny');
+  assert.equal(events.at(-1).stopReason, 'end_turn');
+});
+
+test('acp read tier keeps the heuristic and never consults the gate', async () => {
+  const calls = [];
+  const acp = createAcpAdapter({ agents: { fake: fakeWithPerm('Read file src/a.ts') } });
+  const events = await collect(acp.run({
+    agentId: 'fake', messages: [{ role: 'user', content: 'hi' }], cwd: '/tmp', toolTier: 'read',
+    requestApproval: gate(true, calls),
+  }));
+  assert.ok(events.some((e) => e.type === 'delta' && /allow_once/i.test(e.text)), 'read-only heuristic allow');
+  assert.equal(calls.length, 0, 'gate must not be invoked in read tier');
+});
+
+test('acp resolves custom option ids from the request itself', async () => {
+  const options = JSON.stringify([
+    { optionId: 'yes_once', name: 'Sure', kind: 'allow_once' },
+    { optionId: 'no_way', name: 'Nah', kind: 'reject_once' },
+  ]);
+  const run = (allow) => {
+    const acp = createAcpAdapter({ agents: { fake: fakeWithPerm('Write file src/a.ts', '--perm-kind', 'edit', '--perm-options', options) } });
+    return collect(acp.run({ agentId: 'fake', messages: [{ role: 'user', content: 'hi' }], cwd: '/tmp', toolTier: 'full', requestApproval: gate(allow) }));
+  };
+  const allowed = await run(true);
+  assert.ok(allowed.some((e) => e.type === 'delta' && /PERM: yes_once/.test(e.text)), 'allow resolves custom allow optionId');
+  const denied = await run(false);
+  assert.ok(denied.some((e) => e.type === 'delta' && /PERM: no_way/.test(e.text)), 'deny resolves custom reject optionId');
+});

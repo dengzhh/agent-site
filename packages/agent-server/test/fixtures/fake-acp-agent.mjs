@@ -4,12 +4,24 @@
 // 追加参数 --perm-req <title>：在 session/prompt 期间向客户端发出一个真正的
 // session/request_permission 请求（id 99），把客户端所选 optionId 以
 // `PERM: <optionId>` delta 回显后再 end_turn —— 用来驱动适配器的权限应答逻辑。
+// 可选修饰：
+//   --perm-kind <kind>       toolCall.kind（Task 12：full 级别转发的 action 映射来源）
+//   --perm-options <json>    自定义 options 数组（验 optionId 按请求解析而非硬编码）
 import { createInterface } from 'node:readline';
 
 const mode = process.env.FAKE_ACP_MODE ?? 'ok';
 const argv = process.argv.slice(2);
-const permIdx = argv.indexOf('--perm-req');
-const permTitle = permIdx >= 0 ? argv[permIdx + 1] : undefined;
+const flag = (name) => {
+  const i = argv.indexOf(name);
+  return i >= 0 ? argv[i + 1] : undefined;
+};
+const permTitle = flag('--perm-req');
+const permKind = flag('--perm-kind');
+const permOptions = (() => {
+  const raw = flag('--perm-options');
+  if (raw === undefined) return undefined;
+  try { return JSON.parse(raw); } catch { return undefined; }
+})();
 const sid = permTitle !== undefined ? 'fake-acp-perm' : 'fake-acp-session';
 const rl = createInterface({ input: process.stdin });
 const send = (obj) => process.stdout.write(JSON.stringify(obj) + '\n');
@@ -45,8 +57,9 @@ rl.on('line', (line) => {
       // 注意 toolCallId 必填（SDK 会校验入参，缺了直接回 -32602）。
       pendingPromptId = id;
       send({ jsonrpc: '2.0', id: 99, method: 'session/request_permission',
-        params: { sessionId: params?.sessionId ?? sid, toolCall: { toolCallId: 'perm-1', title: permTitle },
-          options: [
+        params: { sessionId: params?.sessionId ?? sid,
+          toolCall: { toolCallId: 'perm-1', title: permTitle, ...(permKind !== undefined ? { kind: permKind } : {}) },
+          options: permOptions ?? [
             { optionId: 'allow_once', name: 'Allow', kind: 'allow_once' },
             { optionId: 'reject_once', name: 'Reject', kind: 'reject_once' },
           ] } });

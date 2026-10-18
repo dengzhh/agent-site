@@ -15,7 +15,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as acp from '@agentclientprotocol/sdk';
-import { mapSessionUpdate } from './acp-stream.mjs';
+import { mapSessionUpdate, describePermission, resolveOutcomeOptionIds } from './acp-stream.mjs';
 import { ACP_AGENTS } from './acp-agents.mjs';
 import { VERBOSE, logErr } from '../log.mjs';
 
@@ -49,7 +49,7 @@ export function createAcpAdapter({ agents = ACP_AGENTS, probe } = {}) {
       return await commandExists(agents[agentId].cmd);
     },
 
-    async *run({ agentId, messages, cwd = process.cwd(), toolTier, signal } = {}) {
+    async *run({ agentId, messages, cwd = process.cwd(), toolTier, signal, requestApproval } = {}) {
       if (!Object.hasOwn(agents, agentId)) {
         yield { type: 'error', message: `unknown acp agent: ${agentId}` };
         return;
@@ -112,16 +112,35 @@ export function createAcpAdapter({ agents = ACP_AGENTS, probe } = {}) {
         async sessionUpdate(params) {
           for (const ev of mapSessionUpdate(params)) push(ev);
         },
-        // 无头环境不能等用户点确认：期 1 启发式——read 级别放行只读类工具
-        // （title/kind 命中只读词表），其余（写/执行/未知，或 tier none）拒绝。
-        // 期 2 替换为转发抽屉确认（见 spec 期 2）。
+        // 权限应答（期 1 Task 5 启发式 + 期 2 Task 12 抽屉转发）：
+        //  - read 级别：维持期 1 启发式——title/kind 命中只读词表放行，其余拒绝，
+        //    不经抽屉；none 级别 acp 本不该跑工具，同样恒拒绝。
+        //  - full 级别：转发抽屉 ctx.requestApproval(action, summary)（Task 9 注入）。
+        // 这里直接闭包捕获 requestApproval 即可，无需 pi 那套可变引用（pi 跨轮缓存
+        // Agent 才需要 approvals.current）；acp 每次 run 现场拉起子进程、现场构造
+        // client 对象，闭包绑定的就是当轮注入的闸，不存在跨轮引用过期问题。
+        // 闸缺失（绕过 server 直调适配器）或自身抛错 → fail-closed 拒绝（与 Task
+        // 10/11 同一约定），绝不 throw——rejection 会让 SDK 的 RPC 层视为应答失败，
+        // agent 侧回合悬死。
+        // outcome 的 optionId 按请求自带 options 解析（各 agent 命名不一致，见
+        // resolveOutcomeOptionIds），不硬编码。
         async requestPermission(req) {
-          const call = req?.toolCall ?? {};
-          const title = String(call.title ?? call.name ?? '');
-          const kind = String(call.kind ?? '');
-          const readonly = /read|view|grep|glob|search|list|find|inspect|ls/i.test(`${title} ${kind}`);
-          const allow = toolTier === 'read' && readonly;
-          return { outcome: { outcome: 'selected', optionId: allow ? 'allow_once' : 'reject_once' } };
+          const { allowId, rejectId } = resolveOutcomeOptionIds(req?.options);
+          const answer = (allow) => ({ outcome: { outcome: 'selected', optionId: allow ? allowId : rejectId } });
+          if (toolTier !== 'full') {
+            const call = req?.toolCall ?? {};
+            const title = String(call.title ?? call.name ?? '');
+            const kind = String(call.kind ?? '');
+            const readonly = /read|view|grep|glob|search|list|find|inspect|ls/i.test(`${title} ${kind}`);
+            return answer(toolTier === 'read' && readonly);
+          }
+          if (typeof requestApproval !== 'function') return answer(false);
+          try {
+            const { action, summary } = describePermission(req?.toolCall);
+            return answer(Boolean(await requestApproval(action, summary)));
+          } catch {
+            return answer(false);
+          }
         },
         async readTextFile() { throw new Error('fs not supported'); },
         async writeTextFile() { throw new Error('fs not supported'); },
