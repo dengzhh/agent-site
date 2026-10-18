@@ -46,7 +46,15 @@ async function readJson(req, cap = 1_000_000) {
 
 // SYSTEM_PROMPT / STREAM_TIMEOUT_MS / undici 长超时 dispatcher 都随 pi 适配器搬到了
 // adapters/pi.mjs（单一来源），本文件不再持有副本。
-export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOrigins = DEFAULT_ORIGINS, resolve = resolveModel, models, registry, acpProbe }) {
+// 挂起中的权限审批全部按拒绝收敛：resolve(false) + 清 Map。/abort、客户端断连、
+// 会话被逐出（TTL/容量）时都必须调用，否则 approval promise 悬挂泄漏。
+function denyPendingPerms(session) {
+  const cbs = [...(session.pendingPerms?.values() ?? [])];
+  session.pendingPerms?.clear();
+  for (const cb of cbs) cb(false);
+}
+
+export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOrigins = DEFAULT_ORIGINS, resolve = resolveModel, models, registry, acpProbe, approvalTimeoutMs = 120_000 }) {
   // ACP 适配器承接 hermes/openclaw/opencode/codex/dsh 五个子 agent。
   // acpProbe 可注入：测试用它拿到确定性的可用性，避免 shell 出去跑 `which`。
   const acpAdapter = createAcpAdapter(acpProbe ? { probe: acpProbe } : {});
@@ -166,7 +174,7 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
         }
         const id = randomUUID();
         // 不再预建 Agent：适配器在 /messages 时才构造运行时，会话只存运行所需输入。
-        sessions.set({
+        const record = {
           id,
           adapter,
           acpAgentId,
@@ -178,7 +186,12 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
           ccSessionId: null,
           lastUsed: Date.now(),
           streaming: false,
-        });
+          // 待批权限审批表（reqId → resolve 回调），由 run ctx 的 requestApproval 写入
+          pendingPerms: new Map(),
+        };
+        // SessionStore 逐出（TTL/容量）时的自清理钩子
+        record.dispose = () => denyPendingPerms(record);
+        sessions.set(record);
         log('session', `+ ${id.slice(0, 8)} via ${acpAgentId ? `acp:${acpAgentId}` : adapter.id}` +
           ` provider=${body.provider} model=${body.model} cwd=${cwd ?? '-'} tier=${toolTier}`);
         return json(200, { sessionId: id, adapter: adapter.id, provider: body.provider, model: body.model, cwd, toolTier });
@@ -228,6 +241,8 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
             clientGone = true;
             log('turn', `${short} ✂ client disconnected — aborting`);
           }
+          // 断连后没人能应答审批了：全部按拒绝收敛
+          denyPendingPerms(session);
           ac.abort();
         });
         try {
@@ -247,6 +262,23 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
             cwd,
             allowedTools,
             resumeSessionId: session.ccSessionId,
+            // 权限中枢：适配器要执行敏感操作前挂起等用户点头。发 SSE permission_request
+            // 进前端抽屉；POST /sessions/:id/permission 或 120s 超时（approvalTimeoutMs）
+            // 收敛；/abort、断连、会话逐出时按拒绝收敛，promise 不悬挂。
+            requestApproval: (action, summary) => new Promise((resolve) => {
+              const reqId = randomUUID();
+              let timer = null;
+              session.pendingPerms.set(reqId, (allow) => {
+                session.pendingPerms.delete(reqId);
+                if (timer) clearTimeout(timer);
+                resolve(allow);
+              });
+              send('permission_request', { reqId, action, summary });
+              timer = setTimeout(() => {
+                if (session.pendingPerms.delete(reqId)) resolve(false);
+              }, approvalTimeoutMs);
+              timer.unref?.();
+            }),
           })) {
             if (ev.sessionId) session.ccSessionId = ev.sessionId; // cc 续会话
             if (ev.type === 'delta') { deltaChars += ev.text?.length ?? 0; send('delta', { text: ev.text }); }
@@ -263,6 +295,8 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
           log('turn', `${short} ✗ error: ${preview(err?.message ?? err, 120)}`);
           send('error', { message: String(err?.message ?? err) });
         } finally {
+          // 正常收尾时挂起表应为空；兜底收敛，防异常路径泄漏审批 promise
+          denyPendingPerms(session);
           session.streaming = false;
           session.cancel = null;
           send('done', {});
@@ -271,11 +305,27 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
         return;
       }
 
+      // 审批应答：前端抽屉点允许/拒绝 → 这里唤醒挂起的 requestApproval。
+      // 未知会话 / 未知或已收敛的 reqId 都是 404（幂等重放按不存在处理）。
+      const permMatch = req.method === 'POST' && url.pathname.match(/^\/sessions\/([0-9a-f-]+)\/permission$/);
+      if (permMatch) {
+        const session = sessions.get(permMatch[1]);
+        if (!session) return json(404, { error: 'unknown session' });
+        const body = await readJson(req);
+        const cb = session.pendingPerms.get(body?.reqId);
+        if (!cb) return json(404, { error: 'unknown permission request' });
+        session.pendingPerms.delete(body.reqId);
+        cb(body.decision === 'allow');
+        return json(200, { ok: true });
+      }
+
       const abortMatch = req.method === 'POST' && url.pathname.match(/^\/sessions\/([0-9a-f-]+)\/abort$/);
       if (abortMatch) {
         const session = sessions.get(abortMatch[1]);
         if (!session) return json(404, { error: 'unknown session' });
         log('turn', `${abortMatch[1].slice(0, 8)} ⏹ abort requested`);
+        // 挂起的审批先按拒绝收敛（否则适配器悬在 requestApproval 上，promise 泄漏）
+        denyPendingPerms(session);
         // 未在流式中的会话没有 cancel 钩子：no-op（与旧的 agent.abort() 同为幂等无害）
         session.cancel?.();
         return res.writeHead(204, cors).end();

@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -441,4 +442,170 @@ test('quota/openrouter returns 502 when upstream is unreachable', async (t) => {
     assert.equal(r.status, 502);
     assert.equal(r.body.error, 'upstream unreachable');
   } finally { globalThis.fetch = origFetch; }
+});
+
+// ── permission 中枢（Task 9）──────────────────────────────────────────────────
+// 适配器 run ctx 新增 requestApproval(action, summary)：网关发 SSE permission_request
+// 并挂起，前端在抽屉里点允许/拒绝 → POST /sessions/:id/permission 放行或拒绝；
+// 120s（可注入）超时自动拒绝；/abort、断连、会话被逐出时全部按拒绝收敛，不泄漏 promise。
+
+// 权限 stub 适配器：每轮先要一次权限，按答复 yield approved / denied。
+// 不用真实适配器——链路只测网关的挂起/应答/超时语义，与 pi/cc 无关。
+function permStubAdapter() {
+  return {
+    id: 'pi',
+    available: async () => true,
+    run: async function* (ctx) {
+      const ok = await ctx.requestApproval('bash', 'run tests');
+      yield { type: 'delta', text: ok ? 'approved' : 'denied' };
+      yield { type: 'turn_end', stopReason: null };
+    },
+  };
+}
+
+// 与 withFauxServer 同型，但挂 permStub 且可注入审批超时（默认 120s，测试用毫秒级）。
+async function withPermServer(t, { approvalTimeoutMs } = {}) {
+  const models = createModels();
+  const faux = fauxProvider();
+  models.setProvider(faux.provider);
+  const registry = createRegistry([permStubAdapter()]);
+  const srv = await startServer({
+    port: 0, allowedOrigins: ['http://localhost:4321'],
+    resolve: () => ({ model: faux.getModel(), providerId: faux.provider.id }),
+    models, registry, acpProbe: async () => false,
+    ...(approvalTimeoutMs === undefined ? {} : { approvalTimeoutMs }),
+  });
+  t.after(() => srv.close());
+  const base = `http://127.0.0.1:${srv.port}`;
+  const json = async (path, opts) => {
+    const res = await fetch(base + path, opts);
+    return { status: res.status, body: res.headers.get('content-type')?.includes('json') ? await res.json() : await res.text() };
+  };
+  const post = (path, body) => json(path, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify(body),
+  });
+  const createSession = async () => {
+    const r = await post('/sessions', { provider: 'stub', model: 'stub' });
+    assert.equal(r.status, 200);
+    return r.body.sessionId;
+  };
+  // 增量读 SSE：审批测试必须在流中途插入 POST /permission，不能一口气 res.text()
+  const openStream = async (sessionId) => {
+    const res = await fetch(`${base}/sessions/${sessionId}/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+      body: JSON.stringify({ text: 'hi' }),
+    });
+    assert.equal(res.status, 200);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    const next = async () => {
+      for (;;) {
+        const idx = buf.indexOf('\n\n');
+        if (idx !== -1) {
+          const block = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          if (!block.startsWith('data: ')) continue;
+          return JSON.parse(block.slice(6));
+        }
+        const { done, value } = await reader.read();
+        if (done) return null;
+        buf += decoder.decode(value, { stream: true });
+      }
+    };
+    return { next };
+  };
+  return { srv, base, json, post, createSession, openStream };
+}
+
+test('permission_request streams to SSE and an allow answer resumes the turn', async (t) => {
+  const { srv, createSession, openStream, post } = await withPermServer(t);
+  const sessionId = await createSession();
+  const { next } = await openStream(sessionId);
+
+  const req = await next();
+  assert.equal(req.type, 'permission_request');
+  assert.match(req.reqId, /^[0-9a-f-]{36}$/, 'reqId is a uuid');
+  assert.equal(req.action, 'bash');
+  assert.equal(req.summary, 'run tests');
+
+  // 应答码取 plan 实现草稿的 200 {ok:true}（测试草稿里的 204 二选一，弃用）：
+  // 与网关其它 POST 路由一样都回 JSON，前端只看 ok 字段。
+  const ans = await post(`/sessions/${sessionId}/permission`, { reqId: req.reqId, decision: 'allow' });
+  assert.equal(ans.status, 200);
+  assert.deepEqual(ans.body, { ok: true });
+
+  assert.deepEqual(await next(), { type: 'delta', text: 'approved' });
+  assert.equal((await next()).type, 'turn_end');
+  assert.equal((await next()).type, 'done');
+  assert.equal(await next(), null, 'stream closes after done');
+  assert.equal(srv.sessions.peek(sessionId).pendingPerms.size, 0, 'pending map drained after answer');
+});
+
+test('permission answer with any non-allow decision denies the turn', async (t) => {
+  const { createSession, openStream, post } = await withPermServer(t);
+  const sessionId = await createSession();
+  const { next } = await openStream(sessionId);
+  const req = await next();
+  assert.equal(req.type, 'permission_request');
+  const ans = await post(`/sessions/${sessionId}/permission`, { reqId: req.reqId, decision: 'deny' });
+  assert.equal(ans.status, 200);
+  assert.deepEqual(await next(), { type: 'delta', text: 'denied' });
+  assert.equal((await next()).type, 'turn_end');
+  assert.equal((await next()).type, 'done');
+});
+
+test('permission answer with unknown reqId or unknown session 404s', async (t) => {
+  const { json, createSession, post } = await withPermServer(t);
+  const sessionId = await createSession();
+  const noReq = await post(`/sessions/${sessionId}/permission`, { reqId: randomUUID(), decision: 'allow' });
+  assert.equal(noReq.status, 404);
+  assert.equal(noReq.body.error, 'unknown permission request');
+  const noSession = await json('/sessions/00000000-0000-4000-8000-000000000000/permission', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ reqId: 'x', decision: 'allow' }),
+  });
+  assert.equal(noSession.status, 404);
+  assert.equal(noSession.body.error, 'unknown session');
+});
+
+test('pending permission auto-denies after the injected timeout', async (t) => {
+  const { createSession, openStream } = await withPermServer(t, { approvalTimeoutMs: 50 });
+  const sessionId = await createSession();
+  const { next } = await openStream(sessionId);
+  assert.equal((await next()).type, 'permission_request');
+  // 不应答：50ms 后网关自动按拒绝收敛，适配器收到 false
+  assert.deepEqual(await next(), { type: 'delta', text: 'denied' });
+  assert.equal((await next()).type, 'turn_end');
+  assert.equal((await next()).type, 'done');
+});
+
+test('abort resolves pending permissions as denied and the session stays usable', async (t) => {
+  const { srv, json, createSession, openStream, post } = await withPermServer(t);
+  const sessionId = await createSession();
+  const { next } = await openStream(sessionId);
+  assert.equal((await next()).type, 'permission_request');
+
+  const aborted = await json(`/sessions/${sessionId}/abort`, {
+    method: 'POST', headers: { Origin: 'http://localhost:4321' },
+  });
+  assert.equal(aborted.status, 204);
+  // 中止必须把挂起的审批 resolve(false)（否则 promise 悬挂泄漏），适配器随即收尾
+  assert.deepEqual(await next(), { type: 'delta', text: 'denied' });
+  assert.equal((await next()).type, 'turn_end');
+  assert.equal((await next()).type, 'done');
+  assert.equal(srv.sessions.peek(sessionId).pendingPerms.size, 0, 'pending map cleared on abort');
+
+  // 会话没有卡死在 409：新一轮照常流式、照常审批
+  const { next: next2 } = await openStream(sessionId);
+  const req2 = await next2();
+  assert.equal(req2.type, 'permission_request');
+  await post(`/sessions/${sessionId}/permission`, { reqId: req2.reqId, decision: 'allow' });
+  assert.deepEqual(await next2(), { type: 'delta', text: 'approved' });
+  assert.equal((await next2()).type, 'turn_end');
+  assert.equal((await next2()).type, 'done');
 });
