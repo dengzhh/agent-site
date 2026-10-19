@@ -10,6 +10,7 @@ export type ChatEvent =
   | { type: 'usage'; usage: UsageInfo | null }
   | { type: 'activity'; title: string }
   | { type: 'turn_end'; stopReason: string | null }
+  | { type: 'permission_request'; reqId: string; action: string; summary: string }
   | { type: 'error'; message: string }
   | { type: 'done' };
 
@@ -135,6 +136,23 @@ export async function streamMessage(
 
 export async function abortSession(sessionId: string, baseUrl = AGENT_URL): Promise<void> {
   await fetch(`${baseUrl}/sessions/${sessionId}/abort`, { method: 'POST' }).catch(() => {});
+}
+
+/** 权限卡应答。404 = 请求已超时/已收敛/回合已取消（网关按不存在处理），一律 false 不抛错。 */
+export async function answerPermission(
+  sessionId: string,
+  reqId: string,
+  allow: boolean,
+  baseUrl = AGENT_URL,
+): Promise<boolean> {
+  try {
+    const res = await fetch(`${baseUrl}/sessions/${sessionId}/permission`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reqId, decision: allow ? 'allow' : 'deny' }),
+    });
+    return res.ok;
+  } catch { return false; }
 }
 
 /** OpenRouter 账号额度（经网关代理查询，key 不进 URL/日志）。查询失败返回 null。 */
