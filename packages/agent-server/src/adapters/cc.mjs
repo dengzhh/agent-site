@@ -8,37 +8,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseCcLine, isGateError, summarizeToolInput, buildControlResponse } from './cc-stream.mjs';
 import { VERBOSE, logErr } from '../log.mjs';
+import { sanitizeChildEnv } from '../child-env.mjs';
 
 function isolatedConfigDir() {
   return mkdtempSync(join(tmpdir(), 'atbx-cc-'));
 }
 
-// 宿主 Claude Code 会话会把自身运行时状态塞进环境变量：会话 id、子会话标记、
-// messaging socket/token、entrypoint、deferred tool loading 开关等。这些只对
-// 「宿主会话里的子进程」有意义，对网关 spawn 的独立 CLI 全是污染——尤其
-// ENABLE_TOOL_SEARCH 会让 CLI 延后加载工具，而 OpenRouter 等非 Anthropic 兼容
-// 端点不支持 deferred tools（报 "Deferred custom tools are only supported on
-// Anthropic models..."），整轮直接失败。与 CLAUDE_CONFIG_DIR 隔离同一思路：
-// 网关控制的 CLI 不继承宿主会话的运行态，只继承身份/网络（ANTHROPIC_* 由下方
-// 显式覆写）。
-const HOST_SESSION_ENV = [
-  'ENABLE_TOOL_SEARCH',
-  'CLAUDE_CODE_SESSION_ID',
-  'CLAUDE_CODE_SESSION_ATTENDED',
-  'CLAUDE_CODE_CHILD_SESSION',
-  'CLAUDE_CODE_ENTRYPOINT',
-  'CLAUDE_CODE_EXECPATH',
-  'CLAUDE_CODE_MESSAGING_SOCKET',
-  'CLAUDE_CODE_MESSAGING_TOKEN',
-  'CLAUDE_CODE_PROMPT_SUGGESTION',
-];
-
-// 返回剥掉宿主会话变量的副本；不修改入参（调用方可能复用）。
-export function sanitizeChildEnv(baseEnv) {
-  const out = { ...baseEnv };
-  for (const key of HOST_SESSION_ENV) delete out[key];
-  return out;
-}
 
 function buildArgs({ allowedTools = [], resumeSessionId, streamInput = false }) {
   const args = ['-p', '--output-format=stream-json', '--include-partial-messages', '--verbose'];

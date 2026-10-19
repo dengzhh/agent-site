@@ -7,6 +7,27 @@ import { createAcpAdapter } from '../src/adapters/acp.mjs';
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-acp-agent.mjs');
 const collect = async (iter) => { const out = []; for await (const e of iter) out.push(e); return out; };
 
+test('acp adapter does not leak host Claude Code session env into the agent process', async () => {
+  const saved = { ENABLE_TOOL_SEARCH: process.env.ENABLE_TOOL_SEARCH, CLAUDE_CODE_SESSION_ID: process.env.CLAUDE_CODE_SESSION_ID };
+  process.env.ENABLE_TOOL_SEARCH = 'true';
+  process.env.CLAUDE_CODE_SESSION_ID = 'host-sess';
+  try {
+    const acp = createAcpAdapter({
+      agents: { fake: { name: 'Fake', cmd: process.execPath, args: [FIXTURE], isolateEnv: (d) => ({ FAKE_HOME: d, FAKE_ACP_ECHO_ENV: '1' }) } },
+    });
+    const events = await collect(acp.run({ agentId: 'fake', messages: [{ role: 'user', content: 'hi' }], cwd: '/tmp' }));
+    const line = events.find((e) => e.type === 'delta' && e.text.startsWith('ENV:'));
+    assert.ok(line, 'fixture echoed env');
+    assert.match(line.text, /TS=unset/, 'ENABLE_TOOL_SEARCH stripped');
+    assert.match(line.text, /SID=unset/, 'host session id stripped');
+    assert.match(line.text, /HOME=\/tmp\/atbx-acp-/, 'per-agent isolation env still applied');
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+  }
+});
+
 test('acp adapter streams thinking, delta and usage, then ends the turn', async () => {
   const acp = createAcpAdapter({ agents: { fake: { name: 'Fake', cmd: process.execPath, args: [FIXTURE], isolateEnv: (d) => ({ FAKE_HOME: d }) } } });
   const events = await collect(acp.run({

@@ -18,6 +18,7 @@ import * as acp from '@agentclientprotocol/sdk';
 import { mapSessionUpdate, describePermission, resolveOutcomeOptionIds } from './acp-stream.mjs';
 import { ACP_AGENTS } from './acp-agents.mjs';
 import { VERBOSE, logErr } from '../log.mjs';
+import { sanitizeChildEnv } from '../child-env.mjs';
 
 // 取最后一条 user 消息的文本作为本轮 prompt，与 pi/cc 适配器语义一致。
 function lastUserText(messages = []) {
@@ -63,7 +64,7 @@ export function createAcpAdapter({ agents = ACP_AGENTS, probe } = {}) {
       try {
         child = spawn(def.cmd, def.args, {
           cwd,
-          env: { ...process.env, ...def.isolateEnv(home) },
+          env: { ...sanitizeChildEnv(process.env), ...def.isolateEnv(home) },
           stdio: ['pipe', 'pipe', 'pipe'],
         });
       } catch (err) {

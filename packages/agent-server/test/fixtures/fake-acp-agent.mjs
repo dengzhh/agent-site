@@ -75,6 +75,13 @@ rl.on('line', (line) => {
       params: { sessionId: sid, update: { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'thinking...' } } } });
     send({ jsonrpc: '2.0', method: 'session/update',
       params: { sessionId: sid, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'PONG' } } } });
+    // 宿主会话变量回显（隔离回归用）：空值也回显，便于断言「已剥离」
+    if (process.env.FAKE_ACP_ECHO_ENV === '1') {
+      const ts = process.env.ENABLE_TOOL_SEARCH === undefined ? 'unset' : process.env.ENABLE_TOOL_SEARCH;
+      const sid2 = process.env.CLAUDE_CODE_SESSION_ID === undefined ? 'unset' : process.env.CLAUDE_CODE_SESSION_ID;
+      send({ jsonrpc: '2.0', method: 'session/update',
+        params: { sessionId: sid, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `ENV: TS=${ts} SID=${sid2} HOME=${process.env.FAKE_HOME}` } } } });
+    }
     // 真实 ACP 形状：{used, size, cost}（上下文窗口用量），不是 {inputTokens,outputTokens}
     send({ jsonrpc: '2.0', method: 'session/update',
       params: { sessionId: sid, update: { sessionUpdate: 'usage_update', used: 5, size: 200000 } } });

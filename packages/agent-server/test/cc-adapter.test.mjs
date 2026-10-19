@@ -5,7 +5,8 @@ import { readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { createCcAdapter, sanitizeChildEnv } from '../src/adapters/cc.mjs';
+import { createCcAdapter } from '../src/adapters/cc.mjs';
+import { sanitizeChildEnv } from '../src/child-env.mjs';
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-claude.sh');
 const FLOOD_FIXTURE = join(dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-claude-stderr-flood.sh');
