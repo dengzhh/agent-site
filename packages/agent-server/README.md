@@ -18,7 +18,11 @@ memory and are sent only to the model provider you choose.
   `cwd` is an optional working directory — it must exist and be a directory,
   or the session is rejected with `400 {error: "invalid cwd"}`. `toolTier`
   selects the tool set — see [Work directory & tool tiers](#work-directory--tool-tiers))
-- `POST /sessions/:id/messages` — `{text}` → SSE stream (`delta`/`thinking`/`usage`/`activity`/`turn_end`/`error`/`done`)
+- `POST /sessions/:id/messages` — `{text}` → SSE stream (`delta`/`thinking`/`usage`/`activity`/`permission_request`/`turn_end`/`error`/`done`)
+- `POST /sessions/:id/permission` — answers a pending `permission_request`:
+  `{reqId, decision: "allow"}` (any other `decision` counts as a denial) →
+  `200 {ok: true}`. Unknown session or unknown/already-settled `reqId` → `404`
+  (replays are treated as never having existed)
 - `POST /sessions/:id/abort`
 - `POST /quota/openrouter` — `{apiKey}` → `{usage, limit, isFreeTier, rateLimit}`.
   Proxies OpenRouter's `/api/v1/key` account lookup so the page can show
@@ -63,9 +67,9 @@ Each is listed in `/health` as `acp:<id>` with a live `available` probe — the
 chat UI only offers agents it can actually run. Verified working: hermes
 (full turn), codex (handshake). openclaw needs its Gateway; opencode and dsh
 follow the same path once installed. ACP sessions are throwaway-configured too
-(each spawn gets a fresh config home), and permission requests are answered
-heuristically for headless use — read-only-looking calls pass in `read` tier,
-everything else is denied (see
+(each spawn gets a fresh config home), and permission requests are answered for
+headless use — heuristically in `read` tier (read-only-looking calls pass,
+everything else is denied) and via the approval drawer in `full` tier (see
 [Work directory & tool tiers](#work-directory--tool-tiers)); the security
 boundary remains the session `cwd` and the directory-grant mechanism.
 
@@ -77,11 +81,12 @@ unlock file access, both scoped to a single session:
 - `cwd` — a path on the machine running the gateway. It is validated at session
   creation (must exist and be a directory, else `400 invalid cwd`) and becomes
   the working directory / path boundary for every tool the agent gets.
-- `toolTier` — `'none'` (default) or `'read'`. `'full'` additionally attaches
-  the write/execute tools for `pi` (`write_file`/`bash`, each gated by an
-  approval drawer); anything unrecognized falls back to `'none'`, so a typo
-  can never escalate privileges. Note that `bash` runs with the gateway's own
-  environment (`-lc` also sources login profiles), so approved commands can
+- `toolTier` — `'none'` (default), `'read'`, or `'full'`. Anything unrecognized
+  falls back to `'none'`, so a typo can never escalate privileges. `'full'`
+  additionally unlocks the write/execute capabilities per adapter (see below),
+  with every gated call approved through the drawer first
+  ([Permission flow](#permission-flow)). Note that `bash` runs with the gateway's
+  own environment (`-lc` also sources login profiles), so approved commands can
   read the gateway process's environment variables.
 
 What `read` means per adapter:
@@ -99,11 +104,57 @@ What `read` means per adapter:
 - **`acp`** — the sub-agent's session is created with the given `cwd`, and
   `session/request_permission` calls are answered heuristically for headless
   use: in `read` tier, tool calls whose title/kind looks read-only
-  (read/view/grep/glob/search/list/find/inspect/ls) are allowed once; write,
-  execute, and unknown calls are rejected — as is everything in `none` tier.
+  (read/view/grep/glob/search/list/find/inspect/ls) are allowed — answered with
+  the request's own allow-once option, or `cancelled` when the offered options
+  don't contain exactly one; write, execute, and unknown calls are rejected —
+  as is everything in `none` tier.
+
+What `full` means per adapter:
+
+- **`pi`** — attaches the read-only three plus `write_file` and `bash`, again
+  only when a session `cwd` is set (no boundary, no tools). Every
+  `write_file`/`bash` call is gated by an approval before it acts; a denial
+  returns an error tool result (`denied by user`) and nothing is written or
+  executed. `write_file` creates or overwrites a text file up to 1 MB inside
+  `cwd`; the target is resolved and realpath-checked, symlinks are never
+  followed out of `cwd`, and parent directories must already exist (no
+  `mkdir -p`). `bash` runs `bash -lc <command>` inside `cwd` as a detached
+  process group with a 60s timeout (the whole group is killed) and merged
+  stdout+stderr truncated to 8 KB; a non-zero exit code is reported as
+  ordinary output, not a tool error.
+- **`cc`** — the CLI is spawned with `--input-format stream-json
+  --permission-prompt-tool stdio`, turning the pipe into a bidirectional
+  control channel: every tool use the CLI attempts becomes a `can_use_tool`
+  round-trip that the gateway forwards to the drawer and answers with allow
+  (the call proceeds exactly as asked) or deny (a `denied by user` message
+  back to the CLI). A missing or failing approval gate denies the call —
+  fail-closed. Stdin is closed as soon as the turn's result line arrives, so
+  the turn completes instead of waiting on the channel.
+- **`acp`** — `session/request_permission` calls are forwarded to the approval
+  drawer, with the action and summary derived from the tool call's
+  `kind`/`title`. In `read` tier the drawer is bypassed (the heuristic above
+  applies); a missing or failing approval gate rejects the call.
 
 `none` is pure chat: no tools are attached and behavior is unchanged from
 earlier releases.
+
+### Permission flow
+
+A gated call pauses the turn: the gateway emits a `permission_request` SSE
+event (`{reqId, action, summary}` — e.g. the command text or the file path
+about to be written), the chat UI renders an approval card, and the turn
+resumes only when you answer via `POST /sessions/:id/permission`. Unanswered
+requests are auto-denied after 120 seconds; aborting the turn (or losing the
+SSE connection) denies every pending request at once.
+
+Denial is a first-class outcome — the agent is simply told the user refused
+(`pi`: error tool result; `cc`: deny message to the CLI; `acp`: rejected
+outcome) and can carry on from there. Nothing is ever auto-remembered: the
+gateway never selects an "allow and remember" (`*_always`) option, and when an
+ACP agent's offered permission options cannot be resolved to exactly one safe
+allow-once and one reject-once entry (missing, duplicated, ambiguous, or
+"remember"-only lists), the answer is `cancelled` — the agent is told the user
+didn't choose, nothing is granted and nothing remembered.
 
 ## SSE events
 
@@ -113,6 +164,10 @@ earlier releases.
 - `thinking` `{text}` — reasoning chain (render it muted/italic; it arrives before the answer)
 - `usage` `{usage:{used,size,cost?}}` — context-window accounting (ACP agents)
 - `activity` `{title}` — a tool call started (e.g. "Read file")
+- `permission_request` `{reqId, action, summary}` — a gated tool call needs
+  approval; the turn pauses until you answer via
+  `POST /sessions/:id/permission` (see
+  [Permission flow](#permission-flow); unanswered requests auto-deny after 120s)
 - `turn_end` `{stopReason}` — the turn finished (`end_turn`, or `error` on failure)
 - `error` `{message}` — something failed (bad key, gated model, adapter error)
 - `done` — always the final frame; the stream closes after it
