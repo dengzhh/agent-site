@@ -58,12 +58,19 @@ export function describePermission(toolCall) {
 //  - options 缺失/空、kind 缺失或违规（schema 必填，违规即不可信）→ null。
 //  - 不做 name 关键词兜底：名字不可信（"Notify me and proceed" 含 "No"，曾会把
 //    拒绝决策答到放行项上）。
+//  - 歧义防御：同一家族出现多个 *_once 条目（optionId 相同与否不论）→ 该家族
+//    null——按条目计数而非 find 取首个，畸形/恶意 agent 塞进重复候选时宁可取消
+//    也不猜第一个；allowId 与 rejectId 解析到同一 optionId → 两者都 null（放行/
+//    拒绝应答对 agent 不可区分，答了等于把决策权交回 agent）。
 export function resolveOutcomeOptionIds(options) {
   const list = Array.isArray(options) ? options : [];
   const idOf = (familyRe) => {
-    const hit = list.find((o) => typeof o?.optionId === 'string' && o.optionId !== ''
+    const hits = list.filter((o) => typeof o?.optionId === 'string' && o.optionId !== ''
       && familyRe.test(String(o?.kind ?? '')) && /_once$/.test(String(o?.kind ?? '')));
-    return hit ? hit.optionId : null;
+    return hits.length === 1 ? hits[0].optionId : null;
   };
-  return { allowId: idOf(/^allow_/), rejectId: idOf(/^reject_/) };
+  const allowId = idOf(/^allow_/);
+  const rejectId = idOf(/^reject_/);
+  if (allowId !== null && allowId === rejectId) return { allowId: null, rejectId: null };
+  return { allowId, rejectId };
 }

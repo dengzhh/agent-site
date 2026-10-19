@@ -127,3 +127,49 @@ test('resolveOutcomeOptionIds resolves strictly by kind, never by option name', 
     { allowId: null, rejectId: null },
   );
 });
+
+// 歧义防御（fail-closed）：options 由 agent 提供，可能畸形或恶意。
+//  - 同一家族出现多个 *_once 条目（optionId 相同与否不论）→ 该家族 null：
+//    Array.find 只会静默取第一个，畸形 agent 可借此把抽屉决策答到非预期项上；
+//    宁可应答 cancelled（用户未选择）也不猜。
+//  - allowId 与 rejectId 解析到同一个 optionId → 两者都 null：
+//    放行/拒绝应答不可区分，等于把决策权交回 agent。
+test('resolveOutcomeOptionIds fails closed when a family offers multiple *_once candidates', () => {
+  // 两个 allow_once：无法确定用户点的是哪一个 → allowId 取消，reject 照常
+  assert.deepEqual(
+    resolveOutcomeOptionIds([
+      { optionId: 'allow-a', name: 'Allow', kind: 'allow_once' },
+      { optionId: 'allow-b', name: 'Allow more', kind: 'allow_once' },
+      { optionId: 'no', name: 'Reject', kind: 'reject_once' },
+    ]),
+    { allowId: null, rejectId: 'no' },
+  );
+  // 对称：reject 家族重复同样取消
+  assert.deepEqual(
+    resolveOutcomeOptionIds([
+      { optionId: 'yes', name: 'Allow', kind: 'allow_once' },
+      { optionId: 'deny-a', name: 'Deny', kind: 'reject_once' },
+      { optionId: 'deny-b', name: 'Never mind', kind: 'reject_once' },
+    ]),
+    { allowId: 'yes', rejectId: null },
+  );
+  // 同 optionId 的重复条目同样算歧义：规则按条目数计，不为 id 相等豁免
+  assert.deepEqual(
+    resolveOutcomeOptionIds([
+      { optionId: 'dup', name: 'Allow', kind: 'allow_once' },
+      { optionId: 'dup', name: 'Allow', kind: 'allow_once' },
+    ]),
+    { allowId: null, rejectId: null },
+  );
+});
+
+test('resolveOutcomeOptionIds fails closed when allow and reject resolve to the same optionId', () => {
+  // 畸形 agent 让两个家族指到同一 optionId：应答 allow 还是 deny 对它不可区分
+  assert.deepEqual(
+    resolveOutcomeOptionIds([
+      { optionId: 'one', name: 'Allow', kind: 'allow_once' },
+      { optionId: 'one', name: 'Reject', kind: 'reject_once' },
+    ]),
+    { allowId: null, rejectId: null },
+  );
+});
