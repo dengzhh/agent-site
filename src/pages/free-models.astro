@@ -267,7 +267,8 @@ const fmtCtx = (n: number) =>
   .chat-actions { display: flex; gap: .6rem; margin-top: .4rem; }
   /* 表格列宽：Model 吃剩余宽度，其余列固定，避免 Config 列挤压换行（列宽由 <col> 内联 style 提供） */
   .tablewrap table { table-layout: fixed; min-width: 720px; }
-  code.model-id { display: block; margin-top: .15rem; font-size: .8rem; color: var(--ink-soft); overflow-wrap: anywhere; }
+  /* 提到 td 前缀：global.css 的 `code` 规则同权重但加载在后，会把 display/font 覆写掉 */
+  td.col-model code.model-id { display: block; margin-top: .15rem; font-size: .8rem; color: var(--ink-soft); overflow-wrap: anywhere; }
   td.col-config { white-space: nowrap; }
   td.col-config button {
     padding: .25rem .7rem; font-size: .78rem; font-weight: 500;
