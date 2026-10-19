@@ -204,7 +204,7 @@ current grant list:
 ```json
 {
   "ok": true,
-  "version": "0.5.0",
+  "version": "0.5.1",
   "agents": [
     { "id": "pi", "available": true },
     { "id": "cc", "available": false },
