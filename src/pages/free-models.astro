@@ -78,42 +78,47 @@ const fmtCtx = (n: number) =>
     </section>
   ))}
 
-  <section id="configure" class="generator" tabindex="-1">
-    <h2>Generate your config</h2>
-    <p>Pick a model in the table above, or choose here. Your API key is merged in your browser only — it never leaves this page.</p>
-    <form id="gen-form">
-      <div class="field-row">
-        <div>
-          <label for="g-provider">Provider</label>
-          <select id="g-provider">
-            {idx.providers.map((p) => <option value={p.id}>{p.name}</option>)}
-          </select>
+  <aside id="config-drawer" class="config-drawer" aria-label="Generate config" aria-hidden="true">
+    <header class="chat-head">
+      <div><strong>Config for this model</strong><div class="chat-sub">Key is merged in your browser only</div></div>
+      <button id="config-close" type="button" class="drawer-close" aria-label="Close config">✕</button>
+    </header>
+    <div class="config-body">
+      <p class="chat-sub" id="config-pick-label"></p>
+      <form id="gen-form">
+        <div class="field-row">
+          <div>
+            <label for="g-provider">Provider</label>
+            <select id="g-provider">
+              {idx.providers.map((p) => <option value={p.id}>{p.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label for="g-model">Model</label>
+            <select id="g-model"></select>
+          </div>
         </div>
-        <div>
-          <label for="g-model">Model</label>
-          <select id="g-model"></select>
+        <div class="field-row">
+          <div>
+            <label for="g-key">API key (optional, local only)</label>
+            <input id="g-key" type="password" placeholder="paste your key — stays in your browser" autocomplete="off" />
+          </div>
+          <div>
+            <label for="g-target">Target</label>
+            <select id="g-target">
+              <option value="claude-code">Claude Code (settings.json)</option>
+              <option value="codex">Codex CLI (config.toml)</option>
+              <option value="env">Shell env vars</option>
+              <option value="ai-sdk">AI SDK (TypeScript)</option>
+            </select>
+          </div>
         </div>
-      </div>
-      <div class="field-row">
-        <div>
-          <label for="g-key">API key (optional, local only)</label>
-          <input id="g-key" type="password" placeholder="paste your key — stays in your browser" autocomplete="off" />
-        </div>
-        <div>
-          <label for="g-target">Target</label>
-          <select id="g-target">
-            <option value="claude-code">Claude Code (settings.json)</option>
-            <option value="codex">Codex CLI (config.toml)</option>
-            <option value="env">Shell env vars</option>
-            <option value="ai-sdk">AI SDK (TypeScript)</option>
-          </select>
-        </div>
-      </div>
-      <button type="submit">Generate</button>
-    </form>
-    <pre id="g-out" class="result" aria-live="polite" style="white-space:pre-wrap"></pre>
-    <button id="g-copy" type="button" hidden>Copy</button>
-  </section>
+        <button type="submit">Generate</button>
+      </form>
+      <pre id="g-out" class="result" aria-live="polite"></pre>
+      <button id="g-copy" type="button" hidden>Copy</button>
+    </div>
+  </aside>
 
   <aside id="chat-drawer" aria-label="Chat with this model" aria-hidden="true">
     <header class="chat-head">
@@ -170,7 +175,6 @@ const fmtCtx = (n: number) =>
   .provider { margin-top: 2.5rem; }
   .count { font-size: 0.85rem; font-weight: 500; color: var(--ink-soft); margin-left: 0.5rem; }
   .tablewrap { overflow-x: auto; }
-  .generator { border-top: 1px solid var(--line); padding-top: 1rem; margin-top: 3rem; }
   .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
   @media (max-width: 600px) { .field-row { grid-template-columns: 1fr; } }
   .cap-filter { display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 1.25rem 0 0.5rem; }
@@ -192,6 +196,21 @@ const fmtCtx = (n: number) =>
     padding: 1rem 1.1rem;
   }
   #chat-drawer.is-open { transform: translateX(0); }
+  /* ---------- config drawer（与 chat 抽屉同一套开合机制） ---------- */
+  .config-drawer {
+    position: fixed; top: 0; right: 0; bottom: 0;
+    width: min(480px, 100vw);
+    background: var(--surface); border-left: 1px solid var(--line-strong);
+    box-shadow: -12px 0 32px rgba(0,0,0,0.35);
+    transform: translateX(102%); transition: transform .25s ease;
+    display: flex; flex-direction: column; z-index: 61;
+    padding: 1rem 1.1rem; overflow-y: auto;
+  }
+  .config-drawer.is-open { transform: translateX(0); }
+  .config-body { display: flex; flex-direction: column; gap: .8rem; margin-top: .8rem; }
+  .config-body .field-row { grid-template-columns: 1fr; }
+  .config-body #g-out { margin: 0; max-height: 40vh; overflow: auto; white-space: pre-wrap; }
+  .drawer-close, #chat-close { background: transparent; border: 0; color: var(--ink-soft); font-size: 1.1rem; cursor: pointer; padding: .2rem .4rem; }
   .chat-head { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 1px solid var(--line); padding-bottom: .6rem; }
   .chat-sub { font-size: .8rem; color: var(--ink-soft); }
   .chat-agent-row { display: flex; align-items: center; gap: .5rem; margin-top: .6rem; font-size: .85rem; color: var(--ink-soft); }
@@ -250,8 +269,12 @@ const fmtCtx = (n: number) =>
   import { generateConfig, type ConfigTarget } from '../lib/freeconfig';
   import { probeHealth, createSession, streamMessage, abortSession, fetchOpenRouterQuota, answerPermission, keyStorage, type ChatEvent, type OpenRouterQuota } from '../lib/agentchat';
 
+  import { openDrawer, closeDrawers, stopScroll } from '../lib/drawer';
+
   const idx = data;
   const $ = (id: string) => document.getElementById(id)!;
+  const configDrawer = $('config-drawer');
+  const bothDrawers = () => [configDrawer, $('chat-drawer')] as HTMLElement[];
   const provSel = $('g-provider') as HTMLSelectElement;
   const modelSel = $('g-model') as HTMLSelectElement;
   const targetSel = $('g-target') as HTMLSelectElement;
@@ -302,15 +325,25 @@ const fmtCtx = (n: number) =>
     }
   });
 
-  // 表格里的 Configure → 预填生成器
-  document.querySelectorAll<HTMLAnchorElement>('.pick').forEach((a) => {
-    a.addEventListener('click', () => {
-      provSel.value = a.dataset.provider!;
-      fillModels();
-      modelSel.value = a.dataset.model!;
-      render();
+  // 表格里的 Configure → 打开右侧生成器抽屉（拦截锚点，页面不滚动）
+  function openConfig(provider: string, model: string, label: string): void {
+    provSel.value = provider;
+    fillModels();
+    modelSel.value = model;
+    render();
+    ($('config-pick-label') as HTMLElement).textContent = label;
+    openDrawer(bothDrawers(), configDrawer);
+    stopScroll(window);
+  }
+  document.querySelectorAll<HTMLElement>('.pick').forEach((el) => {
+    el.addEventListener('click', (e) => {
+      e.preventDefault(); // 仍是 <a href="#configure">：拦截锚点，页面不跳转
+      const a = el as HTMLElement & { dataset: DOMStringMap };
+      openConfig(a.dataset.provider!, a.dataset.model!, a.dataset.name ?? '');
     });
   });
+  $('config-close').addEventListener('click', () => closeDrawers(bothDrawers()));
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawers(bothDrawers()); });
 
   // 能力筛选：chip 点击 → 按 tr 的 data-caps 显隐整行，全空的 provider 节隐藏
   document.querySelectorAll<HTMLButtonElement>('.cap-chip').forEach((chip) => {
@@ -343,7 +376,6 @@ const fmtCtx = (n: number) =>
   fillModels();
 
   // ── Chat 抽屉：探测本地 agent → 建 session → SSE 聊天 ──
-  const drawer = $('chat-drawer');
   const panes = {
     install: $('chat-install'), cc: $('chat-cc'), key: $('chat-key'), main: $('chat-main'),
   } as Record<string, HTMLElement>;
@@ -629,8 +661,7 @@ const fmtCtx = (n: number) =>
     quotaText = '';
     // 上次缓存的 health 直接先填一次下拉（避免闪烁）；tryGoChat 成功后再刷新
     if (lastHealth) fillAgentSelect(lastHealth);
-    drawer.classList.add('is-open');
-    drawer.setAttribute('aria-hidden', 'false');
+    openDrawer(bothDrawers(), $('chat-drawer'));
     void tryGoChat();
   }
 
@@ -638,8 +669,7 @@ const fmtCtx = (n: number) =>
     a.addEventListener('click', (e) => { e.preventDefault(); openChat(a); });
   });
   $('chat-close').addEventListener('click', () => {
-    drawer.classList.remove('is-open');
-    drawer.setAttribute('aria-hidden', 'true');
+    closeDrawers(bothDrawers());
     stopProbe();
     chat?.streamAbort?.abort();
     resetStreamButtons(); // 旧流的 finally 因 gen++ 会跳过复位，重开前的按钮先归位
