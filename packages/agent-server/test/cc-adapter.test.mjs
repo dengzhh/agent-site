@@ -5,7 +5,7 @@ import { readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { createCcAdapter } from '../src/adapters/cc.mjs';
+import { createCcAdapter, sanitizeChildEnv } from '../src/adapters/cc.mjs';
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-claude.sh');
 const FLOOD_FIXTURE = join(dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-claude-stderr-flood.sh');
@@ -56,6 +56,58 @@ test('cc adapter marks gate errors for routing fallback', async () => {
 test('cc adapter availability reflects cli presence', async () => {
   assert.equal(await createCcAdapter({ cliPath: FIXTURE }).available(), true);
   assert.equal(await createCcAdapter({ cliPath: '/nonexistent/claude' }).available(), false);
+});
+
+// 回归：宿主 Claude Code 会话的运行时变量不得漏进网关 spawn 的 CLI。
+// ENABLE_TOOL_SEARCH=true 会让 CLI 延后加载工具，OpenRouter 等非 Anthropic 兼容
+// 端点直接报 "Deferred custom tools are only supported on Anthropic models..."。
+test('sanitizeChildEnv strips host session vars without mutating input', () => {
+  const input = {
+    ENABLE_TOOL_SEARCH: 'true',
+    CLAUDE_CODE_SESSION_ID: 'host-sess',
+    CLAUDE_CODE_MESSAGING_SOCKET: '/run/cc.sock',
+    CLAUDE_CODE_MESSAGING_TOKEN: 'tok',
+    CLAUDE_CODE_CHILD_SESSION: '1',
+    CLAUDE_CODE_ENTRYPOINT: 'cli',
+    CLAUDE_CODE_EXECPATH: '/x/claude',
+    CLAUDE_CODE_SESSION_ATTENDED: '1',
+    CLAUDE_CODE_PROMPT_SUGGESTION: '0',
+    PATH: '/usr/bin',
+    ANTHROPIC_BASE_URL: 'https://api.example',
+  };
+  const out = sanitizeChildEnv(input);
+  for (const key of ['ENABLE_TOOL_SEARCH', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_MESSAGING_SOCKET',
+    'CLAUDE_CODE_MESSAGING_TOKEN', 'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_ENTRYPOINT',
+    'CLAUDE_CODE_EXECPATH', 'CLAUDE_CODE_SESSION_ATTENDED', 'CLAUDE_CODE_PROMPT_SUGGESTION']) {
+    assert.ok(!(key in out), `${key} stripped`);
+  }
+  assert.equal(out.PATH, '/usr/bin', 'unrelated vars kept');
+  assert.equal(out.ANTHROPIC_BASE_URL, 'https://api.example', 'provider vars kept (overridden later)');
+  assert.equal(input.ENABLE_TOOL_SEARCH, 'true', 'input not mutated');
+});
+
+test('cc adapter does not leak host session env into the CLI process', async () => {
+  const saved = { ENABLE_TOOL_SEARCH: process.env.ENABLE_TOOL_SEARCH, CLAUDE_CODE_SESSION_ID: process.env.CLAUDE_CODE_SESSION_ID, CLAUDE_CODE_MESSAGING_SOCKET: process.env.CLAUDE_CODE_MESSAGING_SOCKET };
+  process.env.ENABLE_TOOL_SEARCH = 'true';
+  process.env.CLAUDE_CODE_SESSION_ID = 'host-sess';
+  process.env.CLAUDE_CODE_MESSAGING_SOCKET = '/run/cc.sock';
+  try {
+    const cc = createCcAdapter({ cliPath: FIXTURE, env: { FAKE_CC_ECHO_ENV: '1', FAKE_CC_CONTROL: 'kept' } });
+    const events = await collect(cc.run({
+      messages: [{ role: 'user', content: 'hi' }], model: 'm', apiKey: 'k',
+      baseUrl: 'https://openrouter.ai/api', cwd: '/tmp', allowedTools: [],
+    }));
+    const line = events.find((e) => e.type === 'delta');
+    assert.ok(line, 'fixture echoed env');
+    assert.match(line.text, /TS=unset/, 'ENABLE_TOOL_SEARCH not inherited by the CLI');
+    assert.match(line.text, /SID=unset/, 'host session id not inherited');
+    assert.match(line.text, /SOCK=unset/, 'host messaging socket not inherited');
+    assert.match(line.text, /CTX=kept/, 'explicit adapter env still passes through');
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+  }
 });
 
 test('cc adapter isolates config from the user environment', async () => {
