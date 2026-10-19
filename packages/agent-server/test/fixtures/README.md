@@ -55,3 +55,27 @@
 同样卡在其自身上游。服务端工具管线（tier/cwd/allowedTools 断言）已由自动化
 测试套件覆盖。
 
+## 期 2 权限卡真机实测（2026-10-19，Task 13 遗留项补测）
+
+环境：网关 31415（源码直启，保留 GLM 代理 env）+ astro dev（/agent-site）+
+真实 `claude` CLI（full tier，stream-json 控制通道）+ playwright 驱动 Chat 抽屉。
+上游走抽屉的 Z.AI/GLM-4.7-Flash 卡（`anthropicApi=api.z.ai/api/anthropic` +
+本机 GLM token；`open.bigmodel.cn` 与 `api.z.ai` 两个 Anthropic 兼容端点均实测
+200，抽屉无自定义 baseUrl 输入，故走 provider 卡）。截图存档：
+`/tmp/atbx-e2e-screens/task13-*.png`（未入库）。
+
+| 验证点 | 结果 |
+|---|---|
+| tier 下拉含 full（"+ Read & run tools"） | ✅ 空 cwd 选 read/full → 归一 `none` + 提示行；full 为瞬态选择，未写入 localStorage |
+| cwd/tier 持久化 | ✅ 刷新页面重开抽屉后 `atbx:cwd` / `atbx:tier=full` 恢复 |
+| Approve 流程 | ✅ cc full 首回合 ~25s 出权限卡（BASH 动作 + 命令摘要）；Approve → 卡片 `is-approved`，回合完成，目标文件落盘且内容精确匹配 |
+| Deny 流程 | ✅ Deny（双击）→ `is-denied`；CLI 收到 `denied by user`，文件未创建，助手回复确认被拒 |
+| 防重/防御 | ✅ 双击 Deny 仅产生一次 `POST /permission`（网络日志证实）；结算后按钮替换为状态标签，陈旧卡结构性不可再点 |
+| 控制台 | ✅ 全程无应用 JS 错误（仅外部 Google Fonts 加载失败，与本站无关） |
+
+**已知问题（如实记录，非 Task 13 回归）**：cc 会话第 2 条消息立即报
+`[error] Claude Code error` —— 即已立项跟踪的「cc 跨 turn resume 修复」：
+每 run 新建并随即删除隔离 `CLAUDE_CONFIG_DIR`，却仍传 `--resume` 旧 id，resume
+必败。测试以「改配置重建会话」绕过。顺带观察：错误行无细节文本（可读性欠佳）；
+助手气泡把 markdown 反引号按字面渲染（既有外观问题）。
+
