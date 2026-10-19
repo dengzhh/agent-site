@@ -174,12 +174,16 @@ didn't choose, nothing is granted and nothing remembered.
 
 ## Directory grants
 
-The `cc` adapter is **chat-only by default**: with no granted directories and no
-session `cwd` it is given no tools at all. Since 0.4.0 a session can unlock its
-read-only tools (`Read`/`Grep`/`Glob`) per-session via the `cwd`/`toolTier`
-fields (see [Work directory & tool tiers](#work-directory--tool-tiers));
-persistent grants remain the alternative, and a granted directory takes
-precedence over the session `cwd` for `cc`.
+The `cc` adapter is **chat-only by default**: in `none`/`read` tiers, with no
+granted directories and no session `cwd`, it is given no tools at all. Since
+0.4.0 a session can unlock its read-only tools (`Read`/`Grep`/`Glob`)
+per-session via the `cwd`/`toolTier` fields (see
+[Work directory & tool tiers](#work-directory--tool-tiers)); persistent grants
+remain the alternative, and a granted directory takes precedence over the
+session `cwd` for `cc`. `full` tier is deliberately different: the CLI keeps
+its native tool set behind the per-action approval drawer, and with no `cwd`
+(or grant) it works in the gateway process's own working directory — set
+`cwd` explicitly if that is not what you want.
 
 Browser pages cannot hand a local service a trusted filesystem path, so
 persistent grants are terminal-only:
