@@ -15,7 +15,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as acp from '@agentclientprotocol/sdk';
-import { mapSessionUpdate } from './acp-stream.mjs';
+import { mapSessionUpdate, describePermission, resolveOutcomeOptionIds } from './acp-stream.mjs';
 import { ACP_AGENTS } from './acp-agents.mjs';
 import { VERBOSE, logErr } from '../log.mjs';
 
@@ -49,7 +49,7 @@ export function createAcpAdapter({ agents = ACP_AGENTS, probe } = {}) {
       return await commandExists(agents[agentId].cmd);
     },
 
-    async *run({ agentId, messages, cwd = process.cwd(), signal } = {}) {
+    async *run({ agentId, messages, cwd = process.cwd(), toolTier, signal, requestApproval } = {}) {
       if (!Object.hasOwn(agents, agentId)) {
         yield { type: 'error', message: `unknown acp agent: ${agentId}` };
         return;
@@ -112,10 +112,43 @@ export function createAcpAdapter({ agents = ACP_AGENTS, probe } = {}) {
         async sessionUpdate(params) {
           for (const ev of mapSessionUpdate(params)) push(ev);
         },
-        // 无头环境不能等用户点确认：自动放行一次性权限。
-        // 真正的安全边界在上层（grant 机制 / 只读工具白名单）。
-        async requestPermission() {
-          return { outcome: { outcome: 'selected', optionId: 'allow_once' } };
+        // 权限应答（期 1 Task 5 启发式 + 期 2 Task 12 抽屉转发）：
+        //  - read 级别：维持期 1 启发式——title/kind 命中只读词表放行，其余拒绝，
+        //    不经抽屉；none 级别 acp 本不该跑工具，同样恒拒绝。
+        //  - full 级别：转发抽屉 ctx.requestApproval(action, summary)（Task 9 注入）。
+        // 这里直接闭包捕获 requestApproval 即可，无需 pi 那套可变引用（pi 跨轮缓存
+        // Agent 才需要 approvals.current）；acp 每次 run 现场拉起子进程、现场构造
+        // client 对象，闭包绑定的就是当轮注入的闸，不存在跨轮引用过期问题。
+        // 闸缺失（绕过 server 直调适配器）或自身抛错 → fail-closed 拒绝（与 Task
+        // 10/11 同一约定），绝不 throw——rejection 会让 SDK 的 RPC 层视为应答失败，
+        // agent 侧回合悬死。
+        // outcome 的 optionId 按请求自带 options 解析（各 agent 命名不一致，见
+        // resolveOutcomeOptionIds），不硬编码；解析不到可安全应答的 *_once 项
+        // （无 options / 家族里只有 *_always / kind 违规）→ 应答 cancelled，agent
+        // 视为「用户未选择」：本轮不放行、也不记住任何授权，永不替用户点「允许
+        // 并记住」。read 级别启发式同样经 answer() 解析（期 1 Task 5 硬编码的
+        // allow_once/reject_once 字面量与标准 options 下等价；非标准 options 下
+        // 改答 cancelled，更 fail-closed）。
+        async requestPermission(req) {
+          const { allowId, rejectId } = resolveOutcomeOptionIds(req?.options);
+          const answer = (allow) => {
+            const optionId = allow ? allowId : rejectId;
+            return { outcome: optionId === null ? { outcome: 'cancelled' } : { outcome: 'selected', optionId } };
+          };
+          if (toolTier !== 'full') {
+            const call = req?.toolCall ?? {};
+            const title = String(call.title ?? call.name ?? '');
+            const kind = String(call.kind ?? '');
+            const readonly = /read|view|grep|glob|search|list|find|inspect|ls/i.test(`${title} ${kind}`);
+            return answer(toolTier === 'read' && readonly);
+          }
+          if (typeof requestApproval !== 'function') return answer(false);
+          try {
+            const { action, summary } = describePermission(req?.toolCall);
+            return answer(Boolean(await requestApproval(action, summary)));
+          } catch {
+            return answer(false);
+          }
         },
         async readTextFile() { throw new Error('fs not supported'); },
         async writeTextFile() { throw new Error('fs not supported'); },

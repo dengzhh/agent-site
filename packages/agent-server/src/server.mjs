@@ -3,6 +3,7 @@
 // server 只负责 HTTP/SSE/CORS 与会话状态（键不落盘）。
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { statSync } from 'node:fs';
 import { resolveModel } from './providers.mjs';
 import { createRegistry } from './adapters/registry.mjs';
 import { createPiAdapter } from './adapters/pi.mjs';
@@ -45,7 +46,15 @@ async function readJson(req, cap = 1_000_000) {
 
 // SYSTEM_PROMPT / STREAM_TIMEOUT_MS / undici 长超时 dispatcher 都随 pi 适配器搬到了
 // adapters/pi.mjs（单一来源），本文件不再持有副本。
-export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOrigins = DEFAULT_ORIGINS, resolve = resolveModel, models, registry, acpProbe }) {
+// 挂起中的权限审批全部按拒绝收敛：resolve(false) + 清 Map。/abort、客户端断连、
+// 会话被逐出（TTL/容量）时都必须调用，否则 approval promise 悬挂泄漏。
+function denyPendingPerms(session) {
+  const cbs = [...(session.pendingPerms?.values() ?? [])];
+  session.pendingPerms?.clear();
+  for (const cb of cbs) cb(false);
+}
+
+export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOrigins = DEFAULT_ORIGINS, resolve = resolveModel, models, registry, acpProbe, approvalTimeoutMs = 120_000 }) {
   // ACP 适配器承接 hermes/openclaw/opencode/codex/dsh 五个子 agent。
   // acpProbe 可注入：测试用它拿到确定性的可用性，避免 shell 出去跑 `which`。
   const acpAdapter = createAcpAdapter(acpProbe ? { probe: acpProbe } : {});
@@ -103,9 +112,52 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
         });
       }
 
+      // OpenRouter 免费额度查询：用户 key 查自己的账号，天然安全。
+      // key 走请求体，不进 URL/日志；上游失败只镜像状态码，不透传响应体。
+      if (req.method === 'POST' && url.pathname === '/quota/openrouter') {
+        const body = await readJson(req);
+        const key = typeof body?.apiKey === 'string' ? body.apiKey : '';
+        if (!key) return json(400, { error: 'apiKey required' });
+        let upstream;
+        try {
+          upstream = await fetch('https://openrouter.ai/api/v1/key', {
+            headers: { authorization: `Bearer ${key}` },
+            signal: AbortSignal.timeout(10_000),
+          });
+        } catch (err) {
+          return json(502, { error: 'upstream unreachable', message: String(err?.message ?? err) });
+        }
+        if (!upstream.ok) return json(upstream.status, { error: 'upstream error' });
+        // 上游 200 + 坏 JSON：parse 抛错的 message 会内嵌上游响应体片段，不透出
+        let data;
+        try {
+          data = (await upstream.json())?.data ?? {};
+        } catch {
+          return json(502, { error: 'upstream error', message: 'invalid JSON from upstream' });
+        }
+        return json(200, {
+          usage: data.usage ?? null,
+          limit: data.limit ?? null,
+          isFreeTier: data.is_free_tier ?? null,
+          rateLimit: data.rate_limit ?? null,
+        });
+      }
+
       if (req.method === 'POST' && url.pathname === '/sessions') {
         const body = await readJson(req);
         if (body == null || typeof body !== 'object') return json(400, { error: 'JSON object body required' });
+        // 工作目录：可选。给出时必须存在且是目录，否则 400（用户在网页粘贴路径，笔误常见，报错要明确）。
+        const cwd = typeof body.cwd === 'string' && body.cwd.trim() ? body.cwd.trim() : null;
+        if (cwd) {
+          try {
+            if (!statSync(cwd).isDirectory()) throw new Error('not a directory');
+          } catch {
+            return json(400, { error: 'invalid cwd', message: `working directory not accessible: ${cwd}` });
+          }
+        }
+        // 工具级别：none=纯对话（默认，与现状一致）| read=只读工具 | full=完整（期 2）。
+        // 未知值安全回落 none，绝不因误传升级权限。
+        const toolTier = ['none', 'read', 'full'].includes(body.toolTier) ? body.toolTier : 'none';
         // 选适配器。优先级：显式 agent > agents 偏好序 > 默认 ['pi']。
         //  ① body.agent = 'acp:<id>' → 指定某个 ACP 子 agent；
         //  ② body.agent = 'pi'/'cc' → 用户在抽屉下拉里显式选择，必须尊重——
@@ -122,20 +174,27 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
         }
         const id = randomUUID();
         // 不再预建 Agent：适配器在 /messages 时才构造运行时，会话只存运行所需输入。
-        sessions.set({
+        const record = {
           id,
           adapter,
           acpAgentId,
           request: body,
           apiKey: body.apiKey ?? null,
           grantedDirs: loadConfig().grantedDirs,
+          cwd,
+          toolTier,
           ccSessionId: null,
           lastUsed: Date.now(),
           streaming: false,
-        });
+          // 待批权限审批表（reqId → resolve 回调），由 run ctx 的 requestApproval 写入
+          pendingPerms: new Map(),
+        };
+        // SessionStore 逐出（TTL/容量）时的自清理钩子
+        record.dispose = () => denyPendingPerms(record);
+        sessions.set(record);
         log('session', `+ ${id.slice(0, 8)} via ${acpAgentId ? `acp:${acpAgentId}` : adapter.id}` +
-          ` provider=${body.provider} model=${body.model}`);
-        return json(200, { sessionId: id, adapter: adapter.id, provider: body.provider, model: body.model });
+          ` provider=${body.provider} model=${body.model} cwd=${cwd ?? '-'} tier=${toolTier}`);
+        return json(200, { sessionId: id, adapter: adapter.id, provider: body.provider, model: body.model, cwd, toolTier });
       }
 
       const msgMatch = req.method === 'POST' && url.pathname.match(/^\/sessions\/([0-9a-f-]+)\/messages$/);
@@ -161,12 +220,13 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
           ...cors,
         });
         const send = (type, payload) => res.write(encodeSSE(type, payload));
-        // 授权目录 → 只读工具 + cwd（只有 cc 适配器用得上：granted 目录是其可读范围，
-        // 无授权时 allowedTools 为空 = 不给任何工具）。
+        // 工具分级：none=不给工具；read=只读三件套；full=完整工具集（含写/执行）。
+        // 这里只管 cc 的 --allowedTools（read 给只读三件套，none/full 不给 cc 工具）；
+        // pi 的分级在 pi.mjs 里按 toolTier 挂 readOnlyTools/fullTools。
         const isCc = session.adapter.id === 'cc';
-        const granted = session.grantedDirs ?? [];
-        const allowedTools = isCc && granted.length ? ['Read', 'Grep', 'Glob'] : [];
-        const cwd = isCc ? granted[0] : undefined;
+        const allowedTools = isCc && session.toolTier === 'read' ? ['Read', 'Grep', 'Glob'] : [];
+        // cwd 语义：cc 用授权目录（CLI 的工作目录）；pi/其他用会话 cwd（工具的路径边界）
+        const cwd = isCc ? (session.grantedDirs?.[0] ?? session.cwd ?? undefined) : (session.cwd ?? undefined);
         // 每轮一个 AbortController：客户端断开 → abort()，/abort 路由也经它取消
         // （abort 幂等，重复调用无害）。cancel 钩子挂在会话上供 /abort 调用。
         const ac = new AbortController();
@@ -182,6 +242,8 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
             clientGone = true;
             log('turn', `${short} ✂ client disconnected — aborting`);
           }
+          // 断连后没人能应答审批了：全部按拒绝收敛
+          denyPendingPerms(session);
           ac.abort();
         });
         try {
@@ -197,9 +259,31 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
             model: session.request.model,
             baseUrl: session.request.baseUrl,
             anthropicApi: session.request.anthropicApi,
+            toolTier: session.toolTier,
             cwd,
             allowedTools,
             resumeSessionId: session.ccSessionId,
+            // 权限中枢：适配器要执行敏感操作前挂起等用户点头。发 SSE permission_request
+            // 进前端抽屉；POST /sessions/:id/permission、120s 超时（approvalTimeoutMs）
+            // 或回合取消（ac.signal /abort、断连）三条路径收敛；会话逐出走 dispose 的
+            // denyPendingPerms。settle 幂等，promise 不悬挂、不重复清算。
+            requestApproval: (action, summary) => new Promise((resolve) => {
+              const reqId = randomUUID();
+              let timer = null;
+              const settle = (allow) => {
+                session.pendingPerms.delete(reqId);
+                if (timer) clearTimeout(timer);
+                ac.signal.removeEventListener('abort', onAbort);
+                resolve(allow);
+              };
+              const onAbort = () => settle(false);
+              if (ac.signal.aborted) { resolve(false); return; }   // 死回合不再发权限帧
+              session.pendingPerms.set(reqId, settle);
+              ac.signal.addEventListener('abort', onAbort, { once: true });
+              send('permission_request', { reqId, action, summary });
+              timer = setTimeout(() => settle(false), approvalTimeoutMs);
+              timer.unref?.();
+            }),
           })) {
             if (ev.sessionId) session.ccSessionId = ev.sessionId; // cc 续会话
             if (ev.type === 'delta') { deltaChars += ev.text?.length ?? 0; send('delta', { text: ev.text }); }
@@ -216,6 +300,8 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
           log('turn', `${short} ✗ error: ${preview(err?.message ?? err, 120)}`);
           send('error', { message: String(err?.message ?? err) });
         } finally {
+          // 正常收尾时挂起表应为空；兜底收敛，防异常路径泄漏审批 promise
+          denyPendingPerms(session);
           session.streaming = false;
           session.cancel = null;
           send('done', {});
@@ -224,11 +310,27 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
         return;
       }
 
+      // 审批应答：前端抽屉点允许/拒绝 → 这里唤醒挂起的 requestApproval。
+      // 未知会话 / 未知或已收敛的 reqId 都是 404（幂等重放按不存在处理）。
+      const permMatch = req.method === 'POST' && url.pathname.match(/^\/sessions\/([0-9a-f-]+)\/permission$/);
+      if (permMatch) {
+        const session = sessions.get(permMatch[1]);
+        if (!session) return json(404, { error: 'unknown session' });
+        const body = await readJson(req);
+        const cb = session.pendingPerms.get(body?.reqId);
+        if (!cb) return json(404, { error: 'unknown permission request' });
+        session.pendingPerms.delete(body.reqId);
+        cb(body.decision === 'allow');
+        return json(200, { ok: true });
+      }
+
       const abortMatch = req.method === 'POST' && url.pathname.match(/^\/sessions\/([0-9a-f-]+)\/abort$/);
       if (abortMatch) {
         const session = sessions.get(abortMatch[1]);
         if (!session) return json(404, { error: 'unknown session' });
         log('turn', `${abortMatch[1].slice(0, 8)} ⏹ abort requested`);
+        // 挂起的审批先按拒绝收敛（否则适配器悬在 requestApproval 上，promise 泄漏）
+        denyPendingPerms(session);
         // 未在流式中的会话没有 cancel 钩子：no-op（与旧的 agent.abort() 同为幂等无害）
         session.cancel?.();
         return res.writeHead(204, cors).end();

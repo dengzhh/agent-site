@@ -50,3 +50,22 @@ test('constructor rejects non-positive capacity', () => {
   assert.throws(() => new SessionStore(0), TypeError);
   assert.throws(() => new SessionStore(-1), TypeError);
 });
+
+// 逐出（容量/TTL）时调用 session.dispose（可选钩子）：网关靠它在会话被逐出时
+// 拒绝所有挂起的权限审批，approval promise / 超时定时器不泄漏。
+test('eviction by capacity or TTL calls session.dispose exactly once', () => {
+  const disposed = [];
+  const mkD = (id) => ({ ...mk(id), dispose: () => disposed.push(id) });
+
+  const s = new SessionStore(2, 60_000);
+  s.set(mkD('a')); s.set(mkD('b'));
+  s.set(mkD('c'));                       // 容量驱逐 a
+  s.set(mkD('d'));                       // 容量驱逐 b
+  assert.deepEqual(disposed, ['a', 'b']);
+
+  const s2 = new SessionStore(10, 50);
+  s2.set(mkD('old'));
+  s2.peek('old').lastUsed = Date.now() - 1000;   // 拨表过期
+  s2.set(mkD('new'));                            // set 触发 TTL 清扫
+  assert.deepEqual(disposed.slice(2), ['old']);
+});

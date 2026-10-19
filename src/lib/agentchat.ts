@@ -1,12 +1,16 @@
 // AgentToolbox 本地智能体桥客户端：SSE 解析为纯函数可测；网络函数薄封装。
 export const AGENT_URL = 'http://127.0.0.1:31415';
 
+/** ACP 的 usage_update 转换结果（pi/cc 无此事件时 usage 为缺省）。 */
+export interface UsageInfo { used?: number; size?: number; cost?: number }
+
 export type ChatEvent =
   | { type: 'delta'; text: string }
   | { type: 'thinking'; text: string }
-  | { type: 'usage'; usage: unknown }
+  | { type: 'usage'; usage: UsageInfo | null }
   | { type: 'activity'; title: string }
   | { type: 'turn_end'; stopReason: string | null }
+  | { type: 'permission_request'; reqId: string; action: string; summary: string }
   | { type: 'error'; message: string }
   | { type: 'done' };
 
@@ -25,6 +29,10 @@ export interface SessionRequest {
   agents?: string[] | null;
   /** 显式指定 agent（如 'pi' / 'cc' / 'acp:hermes'）；指定后忽略 agents 偏好序。 */
   agent?: string | null;
+  /** 会话工作目录；网关校验存在且是目录，否则 400。null = 用网关进程 cwd。 */
+  cwd?: string | null;
+  /** 工具级别：none=纯对话（默认）| read=只读工具（需 cwd）| full=读+写/执行（需 cwd，动作逐个确认）。 */
+  toolTier?: 'none' | 'read' | 'full';
 }
 
 /** 把 SSE 字节流按 \n\n 分块；返回已解析事件与未完成的尾部（下次拼接）。 */
@@ -73,15 +81,24 @@ export async function probeHealth(baseUrl = AGENT_URL, signal?: AbortSignal): Pr
   } catch { return null; }
 }
 
-export async function createSession(body: SessionRequest, baseUrl = AGENT_URL): Promise<string> {
+/** POST /sessions 的响应体：网关建会话后回显落库参数（cwd/toolTier 见 server.mjs）。 */
+export interface SessionResponse {
+  sessionId: string;
+  adapter: string;
+  provider: string;
+  model: string;
+  cwd: string | null;
+  toolTier: 'none' | 'read' | 'full';
+}
+
+export async function createSession(body: SessionRequest, baseUrl = AGENT_URL): Promise<SessionResponse> {
   const res = await fetch(`${baseUrl}/sessions`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`session create failed: ${res.status} ${await res.text()}`);
-  const data = (await res.json()) as { sessionId: string };
-  return data.sessionId;
+  return (await res.json()) as SessionResponse;
 }
 
 /** 发一条消息并流式回调事件；返回时流已结束。signal 中止时 fetch 抛 AbortError。 */
@@ -119,4 +136,41 @@ export async function streamMessage(
 
 export async function abortSession(sessionId: string, baseUrl = AGENT_URL): Promise<void> {
   await fetch(`${baseUrl}/sessions/${sessionId}/abort`, { method: 'POST' }).catch(() => {});
+}
+
+/** 权限卡应答。404 = 请求已超时/已收敛/回合已取消（网关按不存在处理），一律 false 不抛错。 */
+export async function answerPermission(
+  sessionId: string,
+  reqId: string,
+  allow: boolean,
+  baseUrl = AGENT_URL,
+): Promise<boolean> {
+  try {
+    const res = await fetch(`${baseUrl}/sessions/${sessionId}/permission`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reqId, decision: allow ? 'allow' : 'deny' }),
+    });
+    return res.ok;
+  } catch { return false; }
+}
+
+/** OpenRouter 账号额度（经网关代理查询，key 不进 URL/日志）。查询失败返回 null。 */
+export interface OpenRouterQuota {
+  usage: number | null;
+  limit: number | null;
+  isFreeTier: boolean | null;
+  rateLimit: unknown;
+}
+
+export async function fetchOpenRouterQuota(apiKey: string, baseUrl = AGENT_URL): Promise<OpenRouterQuota | null> {
+  try {
+    const res = await fetch(`${baseUrl}/quota/openrouter`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ apiKey }),
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as OpenRouterQuota;
+  } catch { return null; }
 }

@@ -1,11 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from '@earendil-works/pi-ai';
 import { createRegistry } from '../src/adapters/registry.mjs';
 import { createPiAdapter } from '../src/adapters/pi.mjs';
+
 
 // /health 的 grantedDirs 来自网关配置文件。重定向到临时路径，断言才不依赖开发者本机
 // 是否已 grant 过目录；DEFAULT_CONFIG_PATH 在 config.mjs 被 import 时求值，因此
@@ -254,4 +257,551 @@ test('explicit agent overrides the data-layer preference order', async (t) => {
   });
   assert.equal(r.status, 200);
   assert.equal(r.body.adapter, 'pi', '用户显式选择的 agent 必须赢过偏好序');
+});
+
+// 会话级 cwd + toolTier：cwd 必须真实存在（用户在网页粘贴路径，笔误常见 → 400 报错要明确），
+// toolTier 未知值安全回落 none（绝不因误传升级权限），缺省 cwd=null。
+test('sessions accept and validate cwd + toolTier', async (t) => {
+  const { json } = await withFauxServer(t);
+  const mk = (body) => json('/sessions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify(body),
+  });
+  const ok = await mk({ provider: 'faux', model: 'faux', cwd: '/tmp', toolTier: 'read' });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body.cwd, '/tmp');
+  assert.equal(ok.body.toolTier, 'read');
+
+  const bad = await mk({ provider: 'faux', model: 'faux', cwd: '/no/such/dir-xyz' });
+  assert.equal(bad.status, 400);
+  assert.equal(bad.body.error, 'invalid cwd');
+
+  const def = await mk({ provider: 'faux', model: 'faux' });
+  assert.equal(def.body.toolTier, 'none');
+  assert.equal(def.body.cwd, null);
+});
+
+test('pi session with cwd+read tier receives tools via the adapter', async (t) => {
+  // 用注入的 registry/pi 适配器捕获 run ctx：断言 server 把 toolTier/cwd 传进 run
+  const models = createModels();
+  const faux = fauxProvider();
+  models.setProvider(faux.provider);
+  const resolve = () => ({ model: faux.getModel(), providerId: faux.provider.id });
+  const captured = [];
+  const fakePi = {
+    id: 'pi',
+    available: async () => true,
+    run: async function* (ctx) {
+      captured.push(ctx);
+      yield { type: 'delta', text: 'ok' };
+    },
+  };
+  const registry = createRegistry([fakePi]);
+  const srv = await startServer({
+    port: 0, allowedOrigins: ['http://localhost:4321'], resolve, models,
+    registry,
+  });
+  t.after(() => srv.close());
+  const base = `http://127.0.0.1:${srv.port}`;
+  const j = async (path, opts) => {
+    const res = await fetch(base + path, opts);
+    return { status: res.status, body: res.headers.get('content-type')?.includes('json') ? await res.json() : await res.text() };
+  };
+
+  const create = await j('/sessions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ provider: 'faux', model: 'faux', cwd: '/tmp', toolTier: 'read' }),
+  });
+  assert.equal(create.status, 200);
+  const { sessionId } = create.body;
+  const res = await fetch(`${base}/sessions/${sessionId}/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ text: 'hi' }),
+  });
+  await res.text();
+  assert.equal(captured.length, 1, 'adapter.run called once');
+  assert.equal(captured[0].toolTier, 'read', 'toolTier threaded');
+  assert.equal(captured[0].cwd, '/tmp', 'cwd threaded');
+});
+
+test('cc read tier maps to read-only allowedTools', async (t) => {
+  const models = createModels();
+  const faux = fauxProvider();
+  models.setProvider(faux.provider);
+  const echoCc = {
+    id: 'cc',
+    available: async () => true,
+    run: async function* (ctx) {
+      // 捕获 allowedTools 语义由 cc.mjs 内部处理；这里直接断言 server 传入的 ctx
+      yield { type: 'activity', title: `allowedTools=${(ctx.allowedTools ?? []).join(',')}` };
+      yield { type: 'delta', text: 'done' };
+    },
+  };
+  const registry = createRegistry([echoCc]);
+  const srv = await startServer({ port: 0, allowedOrigins: ['http://localhost:4321'], resolve: () => ({}), models, registry });
+  t.after(() => srv.close());
+  const base = `http://127.0.0.1:${srv.port}`;
+  const j2 = async (path, opts) => {
+    const res = await fetch(base + path, opts);
+    return { status: res.status, body: res.headers.get('content-type')?.includes('json') ? await res.json() : await res.text() };
+  };
+  const create = await j2('/sessions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ provider: 'x', model: 'm', agent: 'cc', cwd: '/tmp', toolTier: 'read' }),
+  });
+  const { sessionId } = create.body;
+  const res = await fetch(`${base}/sessions/${sessionId}/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ text: 'hi' }),
+  });
+  const raw = await res.text();
+  assert.match(raw, /allowedTools=Read,Grep,Glob/);
+});
+
+// ── /quota/openrouter：用户 key 查自己账号的免费额度 ───────────────────────────
+// 网关只做代理：key 在请求体（不进 URL/日志），上游失败只镜像状态码不透传响应体。
+
+test('quota/openrouter proxies the key endpoint without logging the key', async (t) => {
+  const calls = [];
+  const origFetch = globalThis.fetch;
+  // 只拦截发往 openrouter.ai 的上游调用；客户端 → 测试服务器的请求放行给真 fetch，
+  // 否则 mock 会短路掉整个往返，路由根本没被执行。
+  globalThis.fetch = async (url, opts) => {
+    if (!String(url).includes('openrouter.ai')) return origFetch(url, opts);
+    calls.push({ url: String(url), auth: opts?.headers?.authorization });
+    return new Response(JSON.stringify({ data: {
+      usage: 3, limit: 50, is_free_tier: true, rate_limit: { requests: 20, interval: '10s' },
+    } }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    const { json } = await withFauxServer(t);
+    const r = await json('/quota/openrouter', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+      body: JSON.stringify({ apiKey: 'sk-or-test' }),
+    });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.usage, 3);
+    assert.equal(r.body.limit, 50);
+    assert.equal(r.body.isFreeTier, true);
+    assert.deepEqual(r.body.rateLimit, { requests: 20, interval: '10s' });
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].url, /openrouter\.ai\/api\/v1\/key/);
+    assert.equal(calls[0].auth, 'Bearer sk-or-test', 'key forwarded as Bearer to upstream');
+  } finally { globalThis.fetch = origFetch; }
+});
+
+test('quota/openrouter without key returns 400', async (t) => {
+  const { json } = await withFauxServer(t);
+  const r = await json('/quota/openrouter', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({}),
+  });
+  assert.equal(r.status, 400);
+});
+
+test('quota/openrouter mirrors upstream failure status without detail', async (t) => {
+  const origFetch = globalThis.fetch;
+  // 同上：只拦上游，客户端请求放行（否则 429 假响应直接喂给断言，路由未被覆盖）。
+  globalThis.fetch = async (url, opts) => {
+    if (!String(url).includes('openrouter.ai')) return origFetch(url, opts);
+    return new Response('{"error":"Rate limit exceeded"}', { status: 429, headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    const { json } = await withFauxServer(t);
+    const r = await json('/quota/openrouter', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+      body: JSON.stringify({ apiKey: 'sk-or-test' }),
+    });
+    assert.equal(r.status, 429);
+    assert.equal(r.body.error, 'upstream error');
+    assert.equal(r.body.detail, undefined, 'upstream body must not leak');
+  } finally { globalThis.fetch = origFetch; }
+});
+
+test('quota/openrouter returns 502 when upstream is unreachable', async (t) => {
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    if (!String(url).includes('openrouter.ai')) return origFetch(url, opts);
+    throw new Error('connect ECONNREFUSED');
+  };
+  try {
+    const { json } = await withFauxServer(t);
+    const r = await json('/quota/openrouter', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+      body: JSON.stringify({ apiKey: 'sk-or-test' }),
+    });
+    assert.equal(r.status, 502);
+    assert.equal(r.body.error, 'upstream unreachable');
+  } finally { globalThis.fetch = origFetch; }
+});
+
+// ── permission 中枢（Task 9）──────────────────────────────────────────────────
+// 适配器 run ctx 新增 requestApproval(action, summary)：网关发 SSE permission_request
+// 并挂起，前端在抽屉里点允许/拒绝 → POST /sessions/:id/permission 放行或拒绝；
+// 120s（可注入）超时自动拒绝；/abort、断连、会话被逐出时全部按拒绝收敛，不泄漏 promise。
+
+// 权限 stub 适配器：每轮先要一次权限，按答复 yield approved / denied。
+// 不用真实适配器——链路只测网关的挂起/应答/超时语义，与 pi/cc 无关。
+function permStubAdapter() {
+  return {
+    id: 'pi',
+    available: async () => true,
+    run: async function* (ctx) {
+      const ok = await ctx.requestApproval('bash', 'run tests');
+      yield { type: 'delta', text: ok ? 'approved' : 'denied' };
+      yield { type: 'turn_end', stopReason: null };
+    },
+  };
+}
+
+// 与 withFauxServer 同型，但挂 permStub 且可注入审批超时（默认 120s，测试用毫秒级）。
+async function withPermServer(t, { approvalTimeoutMs } = {}) {
+  const models = createModels();
+  const faux = fauxProvider();
+  models.setProvider(faux.provider);
+  const registry = createRegistry([permStubAdapter()]);
+  const srv = await startServer({
+    port: 0, allowedOrigins: ['http://localhost:4321'],
+    resolve: () => ({ model: faux.getModel(), providerId: faux.provider.id }),
+    models, registry, acpProbe: async () => false,
+    ...(approvalTimeoutMs === undefined ? {} : { approvalTimeoutMs }),
+  });
+  t.after(() => srv.close());
+  const base = `http://127.0.0.1:${srv.port}`;
+  const json = async (path, opts) => {
+    const res = await fetch(base + path, opts);
+    return { status: res.status, body: res.headers.get('content-type')?.includes('json') ? await res.json() : await res.text() };
+  };
+  const post = (path, body) => json(path, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify(body),
+  });
+  const createSession = async () => {
+    const r = await post('/sessions', { provider: 'stub', model: 'stub' });
+    assert.equal(r.status, 200);
+    return r.body.sessionId;
+  };
+  // 增量读 SSE：审批测试必须在流中途插入 POST /permission，不能一口气 res.text()
+  const openStream = async (sessionId) => {
+    const res = await fetch(`${base}/sessions/${sessionId}/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+      body: JSON.stringify({ text: 'hi' }),
+    });
+    assert.equal(res.status, 200);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    const next = async () => {
+      for (;;) {
+        const idx = buf.indexOf('\n\n');
+        if (idx !== -1) {
+          const block = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          if (!block.startsWith('data: ')) continue;
+          return JSON.parse(block.slice(6));
+        }
+        const { done, value } = await reader.read();
+        if (done) return null;
+        buf += decoder.decode(value, { stream: true });
+      }
+    };
+    return { next };
+  };
+  return { srv, base, json, post, createSession, openStream };
+}
+
+test('permission_request streams to SSE and an allow answer resumes the turn', async (t) => {
+  const { srv, createSession, openStream, post } = await withPermServer(t);
+  const sessionId = await createSession();
+  const { next } = await openStream(sessionId);
+
+  const req = await next();
+  assert.equal(req.type, 'permission_request');
+  assert.match(req.reqId, /^[0-9a-f-]{36}$/, 'reqId is a uuid');
+  assert.equal(req.action, 'bash');
+  assert.equal(req.summary, 'run tests');
+
+  // 应答码取 plan 实现草稿的 200 {ok:true}（测试草稿里的 204 二选一，弃用）：
+  // 与网关其它 POST 路由一样都回 JSON，前端只看 ok 字段。
+  const ans = await post(`/sessions/${sessionId}/permission`, { reqId: req.reqId, decision: 'allow' });
+  assert.equal(ans.status, 200);
+  assert.deepEqual(ans.body, { ok: true });
+
+  assert.deepEqual(await next(), { type: 'delta', text: 'approved' });
+  assert.equal((await next()).type, 'turn_end');
+  assert.equal((await next()).type, 'done');
+  assert.equal(await next(), null, 'stream closes after done');
+  assert.equal(srv.sessions.peek(sessionId).pendingPerms.size, 0, 'pending map drained after answer');
+});
+
+test('permission answer with any non-allow decision denies the turn', async (t) => {
+  const { createSession, openStream, post } = await withPermServer(t);
+  const sessionId = await createSession();
+  const { next } = await openStream(sessionId);
+  const req = await next();
+  assert.equal(req.type, 'permission_request');
+  const ans = await post(`/sessions/${sessionId}/permission`, { reqId: req.reqId, decision: 'deny' });
+  assert.equal(ans.status, 200);
+  assert.deepEqual(await next(), { type: 'delta', text: 'denied' });
+  assert.equal((await next()).type, 'turn_end');
+  assert.equal((await next()).type, 'done');
+});
+
+test('permission answer with unknown reqId or unknown session 404s', async (t) => {
+  const { json, createSession, post } = await withPermServer(t);
+  const sessionId = await createSession();
+  const noReq = await post(`/sessions/${sessionId}/permission`, { reqId: randomUUID(), decision: 'allow' });
+  assert.equal(noReq.status, 404);
+  assert.equal(noReq.body.error, 'unknown permission request');
+  const noSession = await json('/sessions/00000000-0000-4000-8000-000000000000/permission', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ reqId: 'x', decision: 'allow' }),
+  });
+  assert.equal(noSession.status, 404);
+  assert.equal(noSession.body.error, 'unknown session');
+});
+
+test('pending permission auto-denies after the injected timeout', async (t) => {
+  const { createSession, openStream } = await withPermServer(t, { approvalTimeoutMs: 50 });
+  const sessionId = await createSession();
+  const { next } = await openStream(sessionId);
+  assert.equal((await next()).type, 'permission_request');
+  // 不应答：50ms 后网关自动按拒绝收敛，适配器收到 false
+  assert.deepEqual(await next(), { type: 'delta', text: 'denied' });
+  assert.equal((await next()).type, 'turn_end');
+  assert.equal((await next()).type, 'done');
+});
+
+test('sessions accept toolTier full (write/execute tier)', async (t) => {
+  const { json } = await withFauxServer(t);
+  const mk = (toolTier) => json('/sessions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ provider: 'faux', model: 'faux', cwd: '/tmp', toolTier }),
+  });
+  const full = await mk('full');
+  assert.equal(full.status, 200);
+  assert.equal(full.body.toolTier, 'full');
+  const unknown = await mk('sudo');   // 未知值仍安全回落 none，绝不因误传升级权限
+  assert.equal(unknown.body.toolTier, 'none');
+});
+
+test('full-tier session threads requestApproval through the run ctx', async (t) => {
+  const models = createModels();
+  const faux = fauxProvider();
+  models.setProvider(faux.provider);
+  const resolve = () => ({ model: faux.getModel(), providerId: faux.provider.id });
+  const captured = [];
+  const fakePi = {
+    id: 'pi',
+    available: async () => true,
+    run: async function* (ctx) {
+      captured.push(ctx);
+      yield { type: 'delta', text: 'ok' };
+    },
+  };
+  const registry = createRegistry([fakePi]);
+  const srv = await startServer({
+    port: 0, allowedOrigins: ['http://localhost:4321'], resolve, models, registry,
+    acpProbe: async () => false,
+  });
+  t.after(() => srv.close());
+  const base = `http://127.0.0.1:${srv.port}`;
+  const create = await fetch(`${base}/sessions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ provider: 'faux', model: 'faux', cwd: '/tmp', toolTier: 'full' }),
+  });
+  const { sessionId } = await create.json();
+  const res = await fetch(`${base}/sessions/${sessionId}/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ text: 'hi' }),
+  });
+  await res.text();
+  assert.equal(captured.length, 1);
+  assert.equal(captured[0].toolTier, 'full', 'full tier threaded');
+  assert.equal(typeof captured[0].requestApproval, 'function', 'approval gate injected for full tier');
+});
+
+// ── 权限中枢复审补充：并发审批 / 逐出收敛 / abort 信号即时收敛 ──────────────────
+
+// 并发审批 stub：一轮里同时挂起两个审批（bash + write），按各自应答拼 delta。
+// 验证两张权限卡相互独立：不同 reqId、应答互不串扰。
+function dualPermStubAdapter() {
+  return {
+    id: 'pi',
+    available: async () => true,
+    run: async function* (ctx) {
+      const [a, b] = await Promise.all([
+        ctx.requestApproval('bash', 'first command'),
+        ctx.requestApproval('write', 'second file'),
+      ]);
+      yield { type: 'delta', text: `first=${a ? 'allow' : 'deny'} second=${b ? 'allow' : 'deny'}` };
+      yield { type: 'turn_end', stopReason: null };
+    },
+  };
+}
+
+async function withStubServer(t, stub, opts = {}) {
+  const models = createModels();
+  const faux = fauxProvider();
+  models.setProvider(faux.provider);
+  const registry = createRegistry([stub]);
+  const srv = await startServer({
+    port: 0, allowedOrigins: ['http://localhost:4321'],
+    resolve: () => ({ model: faux.getModel(), providerId: faux.provider.id }),
+    models, registry, acpProbe: async () => false,
+    ...(opts.approvalTimeoutMs === undefined ? {} : { approvalTimeoutMs: opts.approvalTimeoutMs }),
+  });
+  t.after(() => srv.close());
+  const base = `http://127.0.0.1:${srv.port}`;
+  const post = async (path, body, headers = { 'content-type': 'application/json', Origin: 'http://localhost:4321' }) => {
+    const res = await fetch(base + path, { method: 'POST', headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    return { status: res.status, body: res.headers.get('content-type')?.includes('json') ? await res.json() : await res.text() };
+  };
+  const createSession = async () => {
+    const r = await post('/sessions', { provider: 'stub', model: 'stub' });
+    assert.equal(r.status, 200);
+    return r.body.sessionId;
+  };
+  const openStream = async (sessionId) => {
+    const res = await fetch(`${base}/sessions/${sessionId}/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+      body: JSON.stringify({ text: 'hi' }),
+    });
+    assert.equal(res.status, 200);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    const next = async () => {
+      for (;;) {
+        const idx = buf.indexOf('\n\n');
+        if (idx !== -1) {
+          const block = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          if (!block.startsWith('data: ')) continue;
+          return JSON.parse(block.slice(6));
+        }
+        const { done, value } = await reader.read();
+        if (done) return null;
+        buf += decoder.decode(value, { stream: true });
+      }
+    };
+    return { next };
+  };
+  return { srv, base, post, createSession, openStream };
+}
+
+test('concurrent approvals: two independent reqIds, answers route independently', async (t) => {
+  const { srv, post, createSession, openStream } = await withStubServer(t, dualPermStubAdapter());
+  const sessionId = await createSession();
+  const { next } = await openStream(sessionId);
+
+  const first = await next();
+  const second = await next();
+  assert.equal(first.type, 'permission_request');
+  assert.equal(second.type, 'permission_request');
+  assert.notEqual(first.reqId, second.reqId, 'two cards, two reqIds');
+  assert.equal(first.action, 'bash');
+  assert.equal(second.action, 'write');
+
+  // 只答第一张：第二张必须仍挂起（答 A 不 resolve B）
+  const denyFirst = await post(`/sessions/${sessionId}/permission`, { reqId: first.reqId, decision: 'deny' });
+  assert.equal(denyFirst.status, 200);
+  assert.equal(srv.sessions.peek(sessionId).pendingPerms.size, 1, 'second approval still pending');
+
+  // 再答第二张：两个答案各自路由到对应的 promise
+  const allowSecond = await post(`/sessions/${sessionId}/permission`, { reqId: second.reqId, decision: 'allow' });
+  assert.equal(allowSecond.status, 200);
+  assert.deepEqual(await next(), { type: 'delta', text: 'first=deny second=allow' });
+  assert.equal((await next()).type, 'turn_end');
+  assert.equal((await next()).type, 'done');
+  assert.equal(srv.sessions.peek(sessionId).pendingPerms.size, 0, 'both cards drained');
+
+  // 已收敛的 reqId 重放按 404（幂等）
+  const replay = await post(`/sessions/${sessionId}/permission`, { reqId: first.reqId, decision: 'allow' });
+  assert.equal(replay.status, 404);
+});
+
+test('session eviction mid-approval denies the pending approval', async (t) => {
+  const { srv, post, createSession, openStream } = await withStubServer(t, permStubAdapter());
+  const sessionId = await createSession();
+  const { next } = await openStream(sessionId);
+  assert.equal((await next()).type, 'permission_request');
+
+  // 灌满会话存储（容量 16）：被审批挂起的会话成了 LRU 最老项，被逐出。
+  // dispose → 挂起审批按拒绝收敛 → stub 收到 false 正常收尾，无悬挂/未处理 rejection。
+  for (let i = 0; i < 16; i++) {
+    const r = await post('/sessions', { provider: 'stub', model: 'stub' });
+    assert.equal(r.status, 200);
+  }
+  assert.equal(srv.sessions.peek(sessionId), undefined, 'session evicted');
+
+  assert.deepEqual(await next(), { type: 'delta', text: 'denied' }, 'pending approval resolved false');
+  assert.equal((await next()).type, 'turn_end');
+  assert.equal((await next()).type, 'done', 'turn finishes sanely after eviction');
+});
+
+test('aborting the turn signal resolves a pending approval immediately', async (t) => {
+  const { srv, post, createSession, openStream } = await withStubServer(t, permStubAdapter());
+  const sessionId = await createSession();
+  const { next } = await openStream(sessionId);
+  assert.equal((await next()).type, 'permission_request');
+
+  try {
+    // 直接触发回合的 AbortController（session.cancel 即 /abort 挂的钩子）：
+    // 收敛只能来自挂在 ac.signal 上的监听——解析要即时，且挂起表要清空。
+    srv.sessions.peek(sessionId).cancel();
+    const ev = await Promise.race([
+      next(),
+      new Promise((r) => setTimeout(() => r({ type: 'still-pending' }), 2000)),
+    ]);
+    assert.deepEqual(ev, { type: 'delta', text: 'denied' }, 'abort resolves the approval right away');
+    assert.equal((await next()).type, 'turn_end');
+    assert.equal((await next()).type, 'done');
+    assert.equal(srv.sessions.peek(sessionId).pendingPerms.size, 0, 'pending map cleared on signal abort');
+  } finally {
+    // 失败路径兜底：收敛可能仍挂起的审批并结束流，服务器才能关闭（不让测试拖到 120s 超时）
+    await post(`/sessions/${sessionId}/abort`).catch(() => {});
+  }
+});
+
+test('abort resolves pending permissions as denied and the session stays usable', async (t) => {
+  const { srv, json, createSession, openStream, post } = await withPermServer(t);
+  const sessionId = await createSession();
+  const { next } = await openStream(sessionId);
+  assert.equal((await next()).type, 'permission_request');
+
+  const aborted = await json(`/sessions/${sessionId}/abort`, {
+    method: 'POST', headers: { Origin: 'http://localhost:4321' },
+  });
+  assert.equal(aborted.status, 204);
+  // 中止必须把挂起的审批 resolve(false)（否则 promise 悬挂泄漏），适配器随即收尾
+  assert.deepEqual(await next(), { type: 'delta', text: 'denied' });
+  assert.equal((await next()).type, 'turn_end');
+  assert.equal((await next()).type, 'done');
+  assert.equal(srv.sessions.peek(sessionId).pendingPerms.size, 0, 'pending map cleared on abort');
+
+  // 会话没有卡死在 409：新一轮照常流式、照常审批
+  const { next: next2 } = await openStream(sessionId);
+  const req2 = await next2();
+  assert.equal(req2.type, 'permission_request');
+  await post(`/sessions/${sessionId}/permission`, { reqId: req2.reqId, decision: 'allow' });
+  assert.deepEqual(await next2(), { type: 'delta', text: 'approved' });
+  assert.equal((await next2()).type, 'turn_end');
+  assert.equal((await next2()).type, 'done');
 });

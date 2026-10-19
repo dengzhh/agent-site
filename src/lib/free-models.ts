@@ -11,6 +11,8 @@ export interface FreeModel {
   lastUpdated: string | null;
   // 能承载该模型的网关适配器偏好序（网关 /sessions 的 agents 参数）
   agents: string[];
+  // 官方模型详情页（openrouter 有确定的 per-model 页；其他 provider 为空）
+  detailUrl?: string | null;
 }
 
 export interface FreeProvider {
@@ -22,6 +24,8 @@ export interface FreeProvider {
   doc: string | null;
   note: string | null;
   anthropicApi: string | null;
+  // 官方模型目录页（provider 级）
+  modelsUrl?: string | null;
   models: FreeModel[];
 }
 

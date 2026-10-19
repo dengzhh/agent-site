@@ -11,8 +11,15 @@ export class SessionStore {
   #sweep() {
     const now = Date.now();
     for (const [id, s] of this.map) {
-      if (now - s.lastUsed > this.ttlMs) this.map.delete(id);
+      if (now - s.lastUsed > this.ttlMs) this.#drop(id);
     }
+  }
+  // 逐出统一走这里：给会话一次自清理机会（如拒绝挂起的权限审批），再移出 Map
+  #drop(id) {
+    const s = this.map.get(id);
+    if (!s) return;
+    this.map.delete(id);
+    s.dispose?.();
   }
   get(id) {
     this.#sweep();
@@ -31,7 +38,7 @@ export class SessionStore {
     this.map.delete(session.id);
     this.map.set(session.id, session);
     while (this.map.size > this.capacity) {
-      this.map.delete(this.map.keys().next().value);
+      this.#drop(this.map.keys().next().value);
     }
   }
   get size() { return this.map.size; }

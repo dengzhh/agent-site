@@ -18,7 +18,16 @@ const GATED_PROVIDER_IDS = new Set(['openrouter']);
 // groq 补 OpenAI 兼容端点：models.dev 无 api 字段，而其免费模型不在下游工具的
 // 静态目录里，需要 baseUrl 才能走动态回退（Chat 抽屉场景）
 export const PROVIDER_OVERRIDES = {
-  zai: { anthropicApi: 'https://api.z.ai/api/anthropic' },
+  zai: {
+    anthropicApi: 'https://api.z.ai/api/anthropic',
+    modelsUrl: 'https://docs.z.ai/guides/llm/overview',
+  },
+  // 官方模型目录页（provider 级）：免费模型表里 provider 名与模型名的"详情"外链
+  openrouter: { modelsUrl: 'https://openrouter.ai/models' },
+  groq: { modelsUrl: 'https://console.groq.com/docs/models' },
+  mistral: { modelsUrl: 'https://docs.mistral.ai/getting-started/models' },
+  cerebras: { modelsUrl: 'https://inference-docs.cerebras.ai/models/overview' },
+  nvidia: { modelsUrl: 'https://build.nvidia.com/models' },
   // openrouter 的 Anthropic 兼容端点在 /api（非 /api/v1）：cc 适配器（Claude Code）
   // 必须用它，否则拼出 /api/v1/v1/messages，被 gate 的免费模型会报"模型不存在"
   openrouter: {
@@ -116,6 +125,9 @@ export function buildFreeModelsIndex(modelsdev, openrouterApi) {
     // 只有真正落盘的模型才被标注，被过滤掉的自然无需标注。
     for (const m of models) {
       m.agents = GATED_PROVIDER_IDS.has(pid) ? ['cc', 'pi'] : ['pi'];
+      // 官方详情页：openrouter 的模型页 URL 规则确定（openrouter.ai/<model_id>，
+      // 含完整介绍/定价/基准）；其他 provider 无可靠 per-model URL，不生成
+      if (pid === 'openrouter') m.detailUrl = `https://openrouter.ai/${m.id}`;
     }
     totalFree += models.length;
     providers.push({

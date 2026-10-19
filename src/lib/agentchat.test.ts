@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseSSEChunk, keyFor, probeHealth } from './agentchat';
+import { parseSSEChunk, keyFor, probeHealth, createSession, fetchOpenRouterQuota, answerPermission } from './agentchat';
 
 describe('parseSSEChunk', () => {
   it('parses complete blocks and keeps partial in rest', () => {
@@ -36,6 +36,50 @@ describe('probeHealth', () => {
   });
 });
 
+describe('createSession', () => {
+  it('returns the whole SessionResponse body, not just the id', async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      sessionId: 's-1', adapter: 'pi', provider: 'openrouter', model: 'q/free',
+      cwd: '/tmp/proj', toolTier: 'read',
+    }), { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch;
+    try {
+      const s = await createSession({ provider: 'openrouter', model: 'q/free', cwd: '/tmp/proj', toolTier: 'read' }, 'http://x');
+      expect(s).toEqual({
+        sessionId: 's-1', adapter: 'pi', provider: 'openrouter', model: 'q/free',
+        cwd: '/tmp/proj', toolTier: 'read',
+      });
+    } finally { globalThis.fetch = original; }
+  });
+});
+
+describe('fetchOpenRouterQuota', () => {
+  it('posts the key in the body and returns the quota shape', async () => {
+    const original = globalThis.fetch;
+    let captured: RequestInfo | undefined;
+    globalThis.fetch = (async (input: RequestInfo) => {
+      captured = input;
+      return new Response(JSON.stringify({
+        usage: 3, limit: 50, isFreeTier: true, rateLimit: { requests: '50' },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    try {
+      const q = await fetchOpenRouterQuota('sk-or-x', 'http://x');
+      expect(q).toEqual({ usage: 3, limit: 50, isFreeTier: true, rateLimit: { requests: '50' } });
+      expect(String(captured)).toBe('http://x/quota/openrouter');
+    } finally { globalThis.fetch = original; }
+  });
+  it('returns null on non-2xx and on network failure', async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = (async () => new Response('{"error":"upstream error"}', { status: 502 })) as typeof fetch;
+    try { expect(await fetchOpenRouterQuota('k', 'http://x')).toBeNull(); }
+    finally { globalThis.fetch = original; }
+    globalThis.fetch = (async () => { throw new Error('down'); }) as typeof fetch;
+    try { expect(await fetchOpenRouterQuota('k', 'http://x')).toBeNull(); }
+    finally { globalThis.fetch = original; }
+  });
+});
+
 describe('new ACP event kinds', () => {
   it('parses a thinking frame', () => {
     const { events } = parseSSEChunk('data: {"type":"thinking","text":"hmm"}\n\n');
@@ -48,5 +92,48 @@ describe('new ACP event kinds', () => {
   it('parses an activity frame', () => {
     const { events } = parseSSEChunk('data: {"type":"activity","title":"Read file"}\n\n');
     expect(events).toEqual([{ type: 'activity', title: 'Read file' }]);
+  });
+});
+
+describe('permission_request', () => {
+  it('parses a permission frame into the typed event', () => {
+    // 网关 encodeSSE 把 type 拼在 payload 之后：data: {"reqId":...,"type":"permission_request"}
+    const { events } = parseSSEChunk(
+      'data: {"reqId":"r-1","action":"bash","summary":"npm test","type":"permission_request"}\n\n',
+    );
+    expect(events).toEqual([
+      { type: 'permission_request', reqId: 'r-1', action: 'bash', summary: 'npm test' },
+    ]);
+  });
+});
+
+describe('answerPermission', () => {
+  it('posts reqId + decision to the permission endpoint and resolves true on 2xx', async () => {
+    const original = globalThis.fetch;
+    let captured: RequestInfo | undefined;
+    let body: string | undefined;
+    globalThis.fetch = (async (input: RequestInfo, init?: RequestInit) => {
+      captured = input;
+      body = init?.body as string;
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    try {
+      expect(await answerPermission('s-1', 'r-1', true, 'http://x')).toBe(true);
+      expect(String(captured)).toBe('http://x/sessions/s-1/permission');
+      expect(body).toBe('{"reqId":"r-1","decision":"allow"}');
+      expect(await answerPermission('s-1', 'r-2', false, 'http://x')).toBe(true);
+      expect(body).toBe('{"reqId":"r-2","decision":"deny"}');
+    } finally { globalThis.fetch = original; }
+  });
+  it('resolves false on 404 (timed out / already settled) and on network failure', async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = (async () => new Response('{"error":"unknown permission request"}', { status: 404 })) as typeof fetch;
+    try { expect(await answerPermission('s-1', 'r-1', true, 'http://x')).toBe(false); }
+    finally { globalThis.fetch = original; }
+    globalThis.fetch = (async () => { throw new Error('down'); }) as typeof fetch;
+    try { expect(await answerPermission('s-1', 'r-1', true, 'http://x')).toBe(false); }
+    finally { globalThis.fetch = original; }
   });
 });
