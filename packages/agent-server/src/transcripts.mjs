@@ -9,8 +9,9 @@
 // 读回时同样按白名单裁剪：写路径封死了入口，读路径就不该把来路不明的
 // 字段（哪怕是手写的盘外文件）原样端给调用方。
 import {
-  mkdirSync, writeFileSync, readFileSync, readdirSync,
+  mkdirSync, readFileSync, readdirSync,
   renameSync, rmSync, chmodSync, existsSync,
+  openSync, writeSync, fsyncSync, closeSync,
 } from 'node:fs';
 import { basename, join, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -59,11 +60,20 @@ export class TranscriptStore {
    */
   constructor({ dir, ttlMs = 7 * 24 * 60 * 60 * 1000 }) {
     if (!dir) throw new TypeError('TranscriptStore requires a dir');
+    if (typeof ttlMs !== 'number' || !Number.isFinite(ttlMs) || ttlMs < 0) {
+      throw new TypeError(`ttlMs must be a finite non-negative number, got ${ttlMs}`);
+    }
     this.dir = dir;
     this.ttlMs = ttlMs;
-    mkdirSync(dir, { recursive: true });
-    // 目录可能已存在且权限偏松（例如用户预先建的），这里统一收紧
-    try { chmodSync(dir, 0o700); } catch { /* 非 posix：忽略 */ }
+    // 目录可能已存在且权限偏松（例如用户预先建的），统一收紧。
+    // 新建的用 mode 0700 直接建对：mode 会再被 umask 削，0700 削不出别的位，
+    // 所以新建的这一路不必事后 chmod（事后 chmod 会把「建的时候就是 0700」
+    // 这件事盖住，测不出来）。
+    const existed = existsSync(dir);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    if (existed) {
+      try { chmodSync(dir, 0o700); } catch { /* 非 posix：忽略 */ }
+    }
   }
 
   #path(id) { return join(this.dir, `${id}.json`); }
@@ -83,22 +93,34 @@ export class TranscriptStore {
   //                        让路由层自然得到「查无此项」，不必包 try/catch。
   #assertId(id) {
     if (typeof id !== 'string' || !SAFE_ID.test(id)) {
-      throw new TypeError(`unsafe transcript id: ${JSON.stringify(id)}`);
+      // id 可能很长或是对象，截断后再进错误消息
+      throw new TypeError(`unsafe transcript id: ${String(id).slice(0, 32)}`);
     }
   }
   #readableId(id) { return typeof id === 'string' && SAFE_ID.test(id); }
 
   // 原子写：先写同目录临时文件再 rename。进程在写一半时被杀，不会留下半截 JSON。
+  // 临时文件用 0600 建（不给 umask 留窗口），写完 fsync 再 rename。
   #writeFile(id, obj) {
     const final = this.#path(id);
     const tmp = `${final}.tmp`;
+    // 上次崩溃可能留下残 tmp：先清掉，否则 'wx' 会一直 EEXIST
+    rmSync(tmp, { force: true });
+    let fd;
     try {
-      writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n');
-      try { chmodSync(tmp, 0o600); } catch { /* 非 posix：忽略 */ }
+      fd = openSync(tmp, 'wx', 0o600);
+      writeSync(fd, JSON.stringify(obj, null, 2) + '\n');
+      fsyncSync(fd);
+      closeSync(fd);
+      fd = undefined;
+      // 不再事后 chmod：open 时的 0600 已经对（mode 只被 umask 削，
+      // 而 umask 不会削属主位），事后 chmod 只会把「建的时候就是 0600」
+      // 这件事盖住，反而测不出来。rename 保留 mode，最终文件仍是 0600。
       renameSync(tmp, final);   // 同文件系统内原子替换
     } catch (err) {
       // 序列化失败（如循环引用）会停在写临时文件那步。不清掉的话，
       // 下次 list() 会看到它、用户也会在目录里看到一个莫名其妙的残留文件。
+      try { if (fd !== undefined) closeSync(fd); } catch { /* 已经关了 */ }
       try { rmSync(tmp, { force: true }); } catch { /* 已经没了 */ }
       throw err;
     }
@@ -109,7 +131,7 @@ export class TranscriptStore {
    * 两处写入方（网关记配置、适配器记自己的东西）因此可以各写各的字段，
    * 不会互相抹掉。null 是「显式值」，不是「没给」——要清掉某字段请删记录。
    * createdAt 保持首次值；lastUsed 缺省刷新为当前时间，
-   * 但调用方显式给了就尊重那个值（导入既有记录 / 回填 / 测试造时间线需要）。
+   * 但调用方显式给了就尊重那个值（导入既有记录 / 回填 / 测试造时间线）。
    * @param {object} rec 至少含 id；其余字段见 spec 的单文件格式
    * @throws {TypeError} rec 缺 id，或 id 不满足 SAFE_ID
    */
@@ -169,12 +191,17 @@ export class TranscriptStore {
     return { ...pick(obj, STAMP_FIELDS), ...pick(obj, RECORD_FIELDS) };
   }
 
+  // 不带副作用地读一份原始 JSON：remove() 用它取 configDir，
+  // 又不想因为文件损坏而触发隔离（用户点名删的就是要删掉）。
+  #readRaw(path) {
+    try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; }
+  }
+
   // 隔离而非删除：文件可能只是被一次崩溃写坏了，用户还想抢救里面的内容。
   // 目标是固定名 <id>.corrupt.json —— 不叠加后缀，因为 list() 会跳过这个后缀，
   // 叠加既没意义又会让文件名无界增长（.corrupt.corrupt.corrupt…）。
   #quarantine(path) {
     const dest = `${path.replace(/\.json$/, '')}.corrupt.json`;
-    if (path === dest) return;              // 已在隔离区，不要再隔离自己
     try { renameSync(path, dest); } catch { /* 已移动/已删 */ }
   }
 
@@ -194,9 +221,10 @@ export class TranscriptStore {
     try { names = readdirSync(this.dir); } catch { return []; }
     const out = [];
     for (const name of names) {
-      if (!name.endsWith('.json') || name.endsWith('.tmp')) continue;
       // 隔离区不是历史：用户没修好之前它不该出现在列表里，也不该被再次隔离
       if (name.endsWith('.corrupt.json')) continue;
+      // 临时文件（<id>.json.tmp）不以此结尾，自然被挡在外面
+      if (!name.endsWith('.json')) continue;
       const id = basename(name, '.json');
       if (!SAFE_ID.test(id)) {
         this.#quarantine(join(this.dir, name));
@@ -214,12 +242,6 @@ export class TranscriptStore {
     return out.sort((a, b) => b.lastUsed - a.lastUsed);
   }
 
-  // 不带副作用地读一份原始 JSON：remove() 用它取 configDir，
-  // 又不想因为文件损坏而触发隔离（用户点名删的就是要删掉）。
-  #readRaw(path) {
-    try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; }
-  }
-
   /**
    * 删一条历史：json + cc 的持久 config dir（若有）。幂等。
    * @returns {boolean} 是否真的删掉过 json（用于区分「删了」与「本来就没有」）
@@ -233,7 +255,6 @@ export class TranscriptStore {
     // 指向别处），那也得一起收，否则 cc 的 transcript 留在盘上没人管。
     const rec = this.#readRaw(path);
     rmSync(path, { force: true });
-    // cc 会话带一个持久 config dir（--resume 依赖它），删除时要连目录一起收
     const companion = this.companionDir(id);
     if (companion) rmSync(companion, { recursive: true, force: true });
     const extra = typeof rec?.configDir === 'string' ? rec.configDir : null;
@@ -243,6 +264,17 @@ export class TranscriptStore {
       rmSync(extra, { recursive: true, force: true });
     }
     return existed;
+  }
+
+  // extra 是不是「我们可以放心删的目录」：必须在 store 目录或系统临时目录
+  // 之下，且不能就是这两个根目录本身。
+  #isDisposableDir(p) {
+    const target = resolve(p);
+    for (const root of [resolve(this.dir), resolve(tmpdir())]) {
+      if (target === root) continue;
+      if (target.startsWith(root + sep)) return true;
+    }
+    return false;
   }
 
   /**
@@ -271,17 +303,6 @@ export class TranscriptStore {
     return ids.length;
   }
 
-  // extra 是不是「我们可以放心删的目录」：必须在 store 目录或系统临时目录
-  // 之下，且不能就是这两个根目录本身。
-  #isDisposableDir(p) {
-    const target = resolve(p);
-    for (const root of [resolve(this.dir), resolve(tmpdir())]) {
-      if (target === root) continue;
-      if (target.startsWith(root + sep)) return true;
-    }
-    return false;
-  }
-
   /**
    * TTL 清扫：删掉 lastUsed 超期的记录。网关启动时调一次。
    * @param {number} [now] 可注入的当前时间（测试用）
@@ -298,3 +319,4 @@ export class TranscriptStore {
     return dropped;
   }
 }
+

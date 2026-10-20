@@ -58,6 +58,15 @@ test('file and dir are owner-only (0600 / 0700)', (t) => {
 });
 
 // 收紧只 chmod 是不够的：新建的那一瞬也得是 0700，不能留 0755 的窗口。
+test('a newly created store dir is 0700 from the start', (t) => {
+  const parent = freshDir();
+  t.after(() => rmSync(parent, { recursive: true, force: true }));
+  const dir = join(parent, 'fresh');
+  new TranscriptStore({ dir });
+  assert.equal(statSync(dir).mode & 0o777, 0o700,
+    'a brand new dir must never be briefly world-readable');
+});
+
 test('list filters by agent/cwd/provider/model and sorts by lastUsed desc', (t) => {
   const { store } = tmpStore(t);
   store.save(base({ id: 'a', lastUsed: 100 }));
@@ -347,6 +356,16 @@ test('a record whose payload id disagrees with its filename is quarantined', (t)
 
 // 临时文件不是历史：既不进列表，也不被 sweep 顺手删掉（它可能是
 // 另一个进程正在写的）。
+test('a stale .json.tmp is ignored by list() and left alone by sweep()', (t) => {
+  const { dir, store } = tmpStore(t, { ttlMs: 1000 });
+  store.save(base({ id: 'p-1', lastUsed: 1 }));
+  writeFileSync(join(dir, 'p-1.json.tmp'), '{ half-written');
+  assert.deepEqual(store.list({}).map((r) => r.id), ['p-1'], 'the tmp is not a record');
+  assert.deepEqual(store.sweep(Date.now()), ['p-1'], 'the expired record still goes');
+  assert.ok(existsSync(join(dir, 'p-1.json.tmp')), 'the tmp file is left alone');
+});
+
+// 网关与适配器各写各的字段：不能互相抹掉。
 test('save() merges per field: the two writers do not erase each other', (t) => {
   const { store } = tmpStore(t);
   // 网关那一侧：配置 + 消息
@@ -429,3 +448,23 @@ test('clear() needs a filter; clearAll() is the full wipe', (t) => {
   assert.equal(store.get('b'), null);
 });
 
+test('the store rejects a nonsense ttlMs', (t) => {
+  const { dir } = tmpStore(t);
+  assert.throws(() => new TranscriptStore({ dir, ttlMs: NaN }), TypeError);
+  assert.throws(() => new TranscriptStore({ dir, ttlMs: -1 }), TypeError);
+  assert.throws(() => new TranscriptStore({ dir, ttlMs: '7d' }), TypeError);
+  assert.doesNotThrow(() => new TranscriptStore({ dir, ttlMs: 0 }));
+});
+
+// 错误消息里的 id 要截断：它可能是个很大的对象，整个塞进异常文本
+// 会把日志冲垮。
+test('an unsafe id is reported truncated', (t) => {
+  const { store } = tmpStore(t);
+  try {
+    store.save(base({ id: 'x'.repeat(500) }));
+    assert.fail('should have thrown');
+  } catch (err) {
+    assert.ok(err instanceof TypeError);
+    assert.ok(err.message.length < 100, `message must be short, got: ${err.message}`);
+  }
+});
