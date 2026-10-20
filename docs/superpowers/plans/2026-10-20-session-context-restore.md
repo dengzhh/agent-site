@@ -306,6 +306,10 @@ export class TranscriptStore {
     const path = this.#path(id);
     let existed = false;
     try { rmSync(path, { force: true }); existed = true; } catch { /* 不存在 */ }
+    // cc 目录既可能在 <dir>/<id>.cc（我们建的），也可能是记录里指的外部位
+    // （旧版本 / mkdtemp）。两种都收，否则删了记录、目录却永远留在盘上。
+    const rec = this.#read(path);
+    if (rec?.configDir) rmSync(rec.configDir, { recursive: true, force: true });
     rmSync(join(this.dir, `${id}.cc`), { recursive: true, force: true });
     return existed;
   }
@@ -615,10 +619,26 @@ export function createCcAdapter({ cliPath = 'claude', env = {}, transcripts = nu
 // 现在目录由 TranscriptStore 托管：记录里有 configDir 字段，目录跟着记录活。
 // 会话被逐出 → store.remove() 连目录一起收；进程退出兜底扫 store 里的记录。
 // 没传 transcripts 的调用方（旧测试 / 一次性调用）退化为「每轮自建自删」。
+//
+// 首次为某会话建的目录放在 store 目录里（<store>/<sessionId>.cc，0700），
+// 而不是 mkdtemp 的 /tmp 下：remove()/sweep()/clear() 删记录时要能顺手把
+// 目录收掉，而它们只知道自己管的那个 store 目录。路径要过 SAFE_ID
+//（sessionId 来自请求体），不过就不用它拼路径。
 function configDirFor(transcripts, sessionId) {
   if (transcripts && sessionId) {
     const rec = transcripts.get(sessionId);
-    if (rec?.configDir) return { dir: rec.configDir, keep: true };
+    if (rec?.configDir) {
+      try {
+        mkdirSync(rec.configDir, { recursive: true, mode: 0o700 });
+        return { dir: rec.configDir, keep: true };
+      } catch { /* 目录没了/权限不对：落到下面新建一个 */ }
+    }
+    const dir = transcripts.companionDir(sessionId);
+    if (dir) {
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      try { chmodSync(dir, 0o700); } catch { /* 非 posix：忽略 */ }
+      return { dir, keep: true };
+    }
   }
   const dir = mkdtempSync(join(tmpdir(), 'atbx-cc-'));
   return { dir, keep: false };
@@ -637,6 +657,8 @@ if (transcripts && sessionId && ev.sessionId) {
   });
 }
 ```
+
+注意 `save()` 是**按字段合并**的（见 Task 1）：只有 `rec` 里**显式出现**的键才覆盖已有值；值为 `null` 同样是「显式值」，会把旧的 `cwd` 冲成 null。cc 适配器不知道真实 cwd 时就不要带这个键，别传 `cwd: null`。`configDir` 必须在 `RECORD_FIELDS` 里，否则会被白名单丢掉、`restore()` 永远返回 null。
 
 注意：`run()` 的 ctx 里没有 provider/model/toolTier，那些由 server 在建会话时写（见 Task 5），适配器只补自己知道的字段。`save()` 是合并语义（保留已有字段），所以两条路径可以分别写。
 
