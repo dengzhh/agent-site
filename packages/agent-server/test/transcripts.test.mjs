@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, statSync, writeFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TranscriptStore } from '../src/transcripts.mjs';
@@ -136,5 +136,77 @@ test('get on a missing id returns null instead of throwing', () => {
   const dir = freshDir();
   try {
     assert.equal(new TranscriptStore({ dir }).get('nope'), null);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// Task 6 会把请求体里的 persistId 直接喂给 get/remove，那时 id 就成了
+// 用户可控的路径片段。落盘/删除前必须挡住 traversal。
+test('a traversal id cannot write outside the store dir', () => {
+  const parent = freshDir();
+  const dir = join(parent, 'sub');
+  try {
+    const store = new TranscriptStore({ dir });
+    assert.throws(() => store.save(base({ id: '../../ESCAPED' })), TypeError,
+      'save fails loud on a programmer-error id');
+    assert.equal(existsSync(join(parent, 'ESCAPED.json')), false, 'nothing written outside dir');
+    assert.deepEqual(readdirSync(dir), [], 'nothing written inside dir either');
+  } finally { rmSync(parent, { recursive: true, force: true }); }
+});
+
+test('bad ids: save throws, get/remove return empty (route input is not an exception)', () => {
+  const dir = freshDir();
+  try {
+    const store = new TranscriptStore({ dir });
+    assert.throws(() => store.save(base({ id: '../x' })), TypeError);
+    assert.throws(() => store.save(base({ id: 'a/b' })), TypeError);
+    assert.throws(() => store.save(base({ id: '' })), TypeError);
+    assert.throws(() => store.save(base({ id: 'x'.repeat(129) })), TypeError);
+    // 同一个 id 走读/删路径只该「查无此项」，不该把异常抛到 HTTP 层
+    assert.equal(store.get('../x'), null);
+    assert.equal(store.get('a/b'), null);
+    assert.equal(store.remove('../x'), false);
+    // 合法 id 不受影响：UUID 形态要放行
+    const uuid = '3f2504e0-4f89-41d3-9a0c-0305e82c3301';
+    store.save(base({ id: uuid }));
+    assert.equal(store.get(uuid)?.id, uuid);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('quarantine does not compound across repeated list/sweep', () => {
+  const dir = freshDir();
+  try {
+    const store = new TranscriptStore({ dir });
+    store.save(base());
+    writeFileSync(join(dir, 'p-1.json'), '{ this is not json');
+    store.get('p-1');
+    assert.ok(existsSync(join(dir, 'p-1.corrupt.json')), 'quarantined on first read');
+    for (let i = 0; i < 5; i++) { store.list({}); store.sweep(); }
+    const files = readdirSync(dir);
+    assert.deepEqual(files, ['p-1.corrupt.json'], `name must not grow, got ${files.join(', ')}`);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('apiKey never reaches disk even if the caller passes one', () => {
+  const dir = freshDir();
+  try {
+    const store = new TranscriptStore({ dir });
+    const saved = store.save(base({ apiKey: 'sk-secret', authorization: 'Bearer sk-secret' }));
+    assert.equal(saved.apiKey, undefined, 'stripped from the returned record too');
+    const raw = readFileSync(join(dir, 'p-1.json'), 'utf8');
+    assert.ok(!raw.includes('sk-secret'), `key must not be on disk: ${raw}`);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a failed write leaves no stale .tmp behind', () => {
+  const dir = freshDir();
+  try {
+    const store = new TranscriptStore({ dir });
+    store.save(base());
+    // 循环引用无法 JSON.stringify → 写临时文件那步就炸了
+    const cyclic = base();
+    cyclic.messages = []; cyclic.self = cyclic;
+    assert.throws(() => store.save(cyclic), /circular|cyclic/i);
+    assert.deepEqual(readdirSync(dir), ['p-1.json'], 'tmp cleaned up, original intact');
+    assert.equal(store.get('p-1').title, '写一个贪吃蛇', 'previous record not damaged');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
