@@ -186,27 +186,90 @@ test('quarantine does not compound across repeated list/sweep', () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('apiKey never reaches disk even if the caller passes one', () => {
+test('a planted traversal payload id cannot drive clear() outside the dir', () => {
+  const parent = freshDir();
+  const dir = join(parent, 'sub');
+  try {
+    const store = new TranscriptStore({ dir });
+    // 绕过 save/get/remove，直接在盘上放一个「payload id 带 traversal」的文件。
+    // list() 过去的版本会把它原样吐出来，clear() 于是拿它去拼路径删到 dir 外。
+    writeFileSync(join(dir, 'planted.json'), JSON.stringify({
+      v: 1, id: '../../VICTIM', agent: 'pi', lastUsed: 1, title: 'planted',
+    }));
+    const canary = join(parent, 'VICTIM.json');
+    writeFileSync(canary, 'CANARY');
+    assert.deepEqual(store.list({}), [], 'malformed id must not reach the caller');
+    assert.equal(store.clear({}), 0, 'nothing to clear — nothing attempted');
+    assert.equal(readFileSync(canary, 'utf8'), 'CANARY', 'file outside dir untouched');
+    // 坏 id 是「损坏」的一种，处置方式应与已知策略一致：隔离而非原地留着被反复读
+    assert.deepEqual(readdirSync(dir), ['planted.corrupt.json'], 'quarantined');
+  } finally { rmSync(parent, { recursive: true, force: true }); }
+});
+
+// 兜底：denylist 永远追不上所有拼法（大小写、嵌套、env 里的同名变量…），
+// 所以改成白名单——不在 spec 字段表里的，一律不落盘。
+test('no credential spelling reaches disk, at any depth or casing', () => {
   const dir = freshDir();
   try {
     const store = new TranscriptStore({ dir });
-    const saved = store.save(base({ apiKey: 'sk-secret', authorization: 'Bearer sk-secret' }));
-    assert.equal(saved.apiKey, undefined, 'stripped from the returned record too');
+    const saved = store.save(base({
+      apiKey: 'sk-1', authorization: 'Bearer sk-2', token: 'sk-3', APIKEY: 'sk-4',
+      nested: { apiKey: 'sk-5', deep: { token: 'sk-6' } },
+      env: { ANTHROPIC_API_KEY: 'sk-7' },
+      headers: { authorization: 'Bearer sk-8' },
+      junk: 'sk-9',
+    }));
     const raw = readFileSync(join(dir, 'p-1.json'), 'utf8');
-    assert.ok(!raw.includes('sk-secret'), `key must not be on disk: ${raw}`);
+    for (let i = 1; i <= 9; i++) {
+      assert.ok(!raw.includes(`sk-${i}`), `sk-${i} must not be on disk: ${raw}`);
+    }
+    // 剥离要发生在返回值上，调用方不能把刚写的 key 又读回来
+    assert.equal(saved.apiKey, undefined);
+    assert.equal(saved.nested, undefined);
+    assert.equal(saved.env, undefined);
+    assert.equal(saved.junk, undefined);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('a failed write leaves no stale .tmp behind', () => {
+// 白名单的反面风险：哪天少写一个字段，transcript 静默丢数据。所以钉住
+// spec 的完整字段表必须原样往返。
+test('every spec field round-trips unchanged (allowlist is complete)', () => {
+  const dir = freshDir();
+  try {
+    const store = new TranscriptStore({ dir });
+    const full = {
+      id: 'full-1', adapter: 'cc', agent: 'cc', provider: 'zai', model: 'glm-4.7',
+      cwd: '/tmp/work', toolTier: 'full', title: '完整形态',
+      messages: [{ role: 'user', content: 'hi', timestamp: 1 }],
+      piSessionId: 'pi-abc', ccSessionId: 'cc-xyz',
+      createdAt: 111, lastUsed: 222,
+    };
+    store.save(full);
+    const got = store.get('full-1');
+    for (const [k, v] of Object.entries(full)) {
+      if (k === 'createdAt' || k === 'lastUsed') continue;   // save 会按规则盖时间戳
+      assert.deepEqual(got[k], v, `field ${k} must survive the allowlist`);
+    }
+    assert.equal(got.v, 1, 'format version stamped');
+    // 列表侧同样要带得出这些字段（只是没有 messages）
+    const [hit] = store.list({});
+    assert.equal(hit.ccSessionId, 'cc-xyz');
+    assert.equal(hit.piSessionId, 'pi-abc');
+    assert.equal(hit.messages, undefined);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// 这条要真的打到 rename 那一步：之前用循环引用让 JSON.stringify 抛，
+// 而 stringify 发生在 writeFileSync 之前，压根没建过 tmp，删不删都能过。
+test('a failed rename leaves no stale .tmp behind', () => {
   const dir = freshDir();
   try {
     const store = new TranscriptStore({ dir });
     store.save(base());
-    // 循环引用无法 JSON.stringify → 写临时文件那步就炸了
-    const cyclic = base();
-    cyclic.messages = []; cyclic.self = cyclic;
-    assert.throws(() => store.save(cyclic), /circular|cyclic/i);
-    assert.deepEqual(readdirSync(dir), ['p-1.json'], 'tmp cleaned up, original intact');
-    assert.equal(store.get('p-1').title, '写一个贪吃蛇', 'previous record not damaged');
+    // 在最终路径上摆一个目录：tmp 写得出来，renameSync 挪不动（EISDIR/ENOTEMPTY）
+    mkdirSync(join(dir, 'blocked.json'));
+    assert.throws(() => store.save(base({ id: 'blocked' })));
+    assert.deepEqual(readdirSync(dir), ['blocked.json', 'p-1.json'], 'no .tmp residue');
+    assert.equal(store.get('p-1').title, '写一个贪吃蛇', 'pre-existing record undamaged');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

@@ -3,8 +3,9 @@
 // 「跨重启/跨逐出的历史」。会话被内存 LRU 逐出时内容留在这里，不删。
 //
 // 安全取向（spec Security 节）：transcript 含 full tier 的工具输出、读过的
-// 文件、截图，故文件 0600 / 目录 0700。apiKey 永不进这里——那由调用方保证
-// 只走请求体，本模块也不提供任何存取 key 的入口。
+// 文件、截图，故文件 0600 / 目录 0700。凭据永不进这里：save() 按字段白名单
+// 组装记录（见 RECORD_FIELDS），黑名单式的「记得别把 apiKey 传进来」已经
+// 被证明拦不住——嵌套一层、大小写一变、塞进 env 就都溜过去了。
 import {
   mkdirSync, writeFileSync, readFileSync, readdirSync,
   renameSync, rmSync, chmodSync, existsSync,
@@ -18,8 +19,13 @@ const FORMAT_VERSION = 1;
 // 又天然排掉 `/`、`..`、前导点这些能逃出 dir 的片段。
 const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
-// 有些字段即便调用方忘了剔除也不许落盘。见 save()。
-const SECRET_KEYS = ['apiKey', 'authorization'];
+// 记录的完整字段表（spec 单文件格式），照抄而非推断。
+// 只认这张表：不在上面的字段一律不落盘，凭据也就没地方藏。
+// 代价是 spec 加字段必须同步这里——刻意用测试钉住往返来兜这个风险。
+const RECORD_FIELDS = [
+  'id', 'adapter', 'agent', 'provider', 'model', 'cwd', 'toolTier', 'title',
+  'messages', 'piSessionId', 'ccSessionId',
+];
 
 export class TranscriptStore {
   /**
@@ -76,17 +82,17 @@ export class TranscriptStore {
     this.#assertId(rec?.id);
     const prev = this.#read(this.#path(rec.id));
     const now = Date.now();
-    const merged = {
-      v: FORMAT_VERSION,
-      ...rec,
-      createdAt: prev?.createdAt ?? rec.createdAt ?? now,
-      // 调用方显式给了 lastUsed 就尊重它（导入/迁移既有记录、测试造时间线）；
-      // 没给才盖当前时间。永远用 now 会把导入的历史全部「刷新」成当下。
-      lastUsed: rec.lastUsed ?? now,
-    };
-    // 「key 永不落盘」不该只是调用方的自觉：那是一条纪律，而纪律会被违反。
-    // 在唯一的写入口剔除，磁盘上就不可能多出一个 key，header 的承诺才成立。
-    for (const k of SECRET_KEYS) delete merged[k];
+    // 显式按白名单挑字段，而不是 {...rec} 再删几个键：黑名单永远少一种拼法
+    // （大小写、嵌套一层、塞进 env），白名单则天然封死——只要不在这张表上，
+    // 就碰不到磁盘。凭据的保证因此是结构性的，不依赖调用方的自觉。
+    const merged = { v: FORMAT_VERSION, createdAt: 0, lastUsed: 0 };
+    for (const k of RECORD_FIELDS) {
+      if (rec[k] !== undefined) merged[k] = rec[k];
+    }
+    merged.createdAt = prev?.createdAt ?? rec.createdAt ?? now;
+    // 调用方显式给了 lastUsed 就尊重它（导入/迁移既有记录、测试造时间线）；
+    // 没给才盖当前时间。永远用 now 会把导入的历史全部「刷新」成当下。
+    merged.lastUsed = rec.lastUsed ?? now;
     this.#writeFile(rec.id, merged);
     return merged;
   }
@@ -101,6 +107,13 @@ export class TranscriptStore {
     }
     // 版本不符一律当损坏：绝不猜测未来格式的形状（spec 边界情况节）
     if (obj?.v !== FORMAT_VERSION || typeof obj.id !== 'string') {
+      this.#quarantine(path);
+      return null;
+    }
+    // payload 里的 id 同样要过白名单。list()/clear()/sweep() 是从目录里
+    // 拿文件名、再拿 payload.id 去拼删除路径的，不在这里挡住，一个手写的
+    // 坏文件就能把删除操作指到 dir 之外——之前那句 typeof string 等于没设防。
+    if (!SAFE_ID.test(obj.id)) {
       this.#quarantine(path);
       return null;
     }
