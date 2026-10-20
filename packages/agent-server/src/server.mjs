@@ -219,6 +219,29 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
         // 并回收 cc 适配器为这个会话建的隔离配置目录（留着就是泄漏）。
         record.dispose = () => { denyPendingPerms(record); adapter.disposeSession?.(id); };
         sessions.set(record);
+        // 配置字段由网关写：适配器只写自己那几个（pi 写 messages，cc 写
+        // ccSessionId/configDir），筛选四维（agent/cwd/provider/model）与
+        // title 只有网关知道——没有这次写入，GET /sessions 的筛选永远命中
+        // 0 条，前端「会话」行会一直空着。逐字段合并，不会盖掉适配器写的。
+        //
+        // ⚠️ 缺省字段传 undefined（而不是 null）：save() 逐字段合并时
+        // undefined =「没给」，保留盘上的旧值；null 是「显式值」，会把
+        // 恢复会话（persistId）已有的 provider/cwd 抹成空。
+        // ⚠️ 别用 body.name 当 title：那是**模型显示名**（前端传的是
+        // `a.dataset.name`），拿它当会话标题会把列表每一行都写成同一个模型名。
+        // 建会话时还没有消息，标题无从谈起——留空，由落盘那处按首条 user
+        // 消息派生。UI 已有 `s.title || '(无标题)'` 的兜底。
+        // ⚠️ 绝不写 apiKey —— 它不在 RECORD_FIELDS 白名单里，写了也存不进去，
+        // 但别把它当参数传。
+        try {
+          store.save({
+            id, adapter: adapter.id, agent: acpAgentId ? `acp:${acpAgentId}` : adapter.id,
+            provider: body.provider ?? undefined, model: body.model ?? undefined,
+            cwd: cwd ?? undefined, toolTier,
+          });
+        } catch (err) {
+          log('session', `transcript save failed for ${id.slice(0, 8)}: ${preview(err?.message ?? err, 120)}`);
+        }
         log('session', `+ ${id.slice(0, 8)} via ${acpAgentId ? `acp:${acpAgentId}` : adapter.id}` +
           ` provider=${body.provider} model=${body.model} cwd=${cwd ?? '-'} tier=${toolTier}`);
         return json(200, {

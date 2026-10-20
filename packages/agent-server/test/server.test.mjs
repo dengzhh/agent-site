@@ -926,3 +926,46 @@ test('a resumed session accepts messages on its persistId', async (t) => {
     await r.body.cancel();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+// ── Task 6 补漏：配置字段必须真的落盘 ────────────────────────────────────────
+//
+// 上一批测试全在测试里手写 store.save({... provider:'faux' ...})，于是路由写对了、
+// 列表查得到，但**生产路径从没写过这四个字段**（适配器只写自己那几样，网关
+// 根本没调过 store.save）——真实一轮跑完，list(agent,cwd,provider,model) 恒 0 条。
+// 这条测试自己跑一轮（真发消息、走适配器落盘），再查列表：端到端钉住
+// 「真实一轮之后列表查得到」。
+test('a real turn persists the fields the session list filters on', async (t) => {
+  const dir = freshDir();
+  try {
+    const store = new TranscriptStore({ dir });
+    const { json, base, faux } = await withFauxServer(t, ['http://localhost:4321'], undefined, store);
+    faux.setResponses([fauxAssistantMessage([fauxText('hi')])]);
+    const created = await json('/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+      body: JSON.stringify({ provider: 'faux', model: 'faux', cwd: '/tmp' }),
+    });
+    assert.equal(created.status, 200);
+    const sessionId = created.body.sessionId;
+    // 真跑一轮：走 /messages（SSE），让适配器也写它那几样（messages 等）
+    const res = await fetch(`${base}/sessions/${sessionId}/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+      body: JSON.stringify({ text: 'hi' }),
+    });
+    await res.text();
+    const rec = store.get(sessionId);
+    assert.ok(rec, 'session persisted on create');
+    assert.equal(rec.provider, 'faux');
+    assert.equal(rec.model, 'faux');
+    assert.equal(rec.agent, 'pi');
+    assert.equal(rec.cwd, '/tmp');
+    assert.equal(rec.title, 'hi', 'title derived from the first user message');
+    const listed = await json('/sessions?agent=pi&provider=faux&model=faux');
+    assert.equal(listed.status, 200);
+    assert.ok(listed.body.sessions.some((s) => s.id === sessionId),
+      'the list filter must actually match a real session');
+    // apiKey 绝不入盘
+    assert.equal(rec.apiKey, undefined);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

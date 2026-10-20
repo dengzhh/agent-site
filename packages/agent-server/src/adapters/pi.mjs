@@ -54,6 +54,17 @@ function lastUserText(messages = []) {
   return '';
 }
 
+// 会话标题：首条 user 消息的前 40 字。content 可能是字符串，也可能是
+// pi 形状的 [{type:'text',text}] 数组——两种都取文本。
+function deriveTitle(messages = []) {
+  const firstUser = (messages ?? []).find((m) => m && m.role === 'user');
+  if (!firstUser) return null;
+  const raw = Array.isArray(firstUser.content)
+    ? firstUser.content.map((b) => (b?.type === 'text' ? String(b.text ?? '') : '')).join('')
+    : String(firstUser.content ?? '');
+  return raw.trim().slice(0, 40) || null;
+}
+
 function defaultMakeAgent(models, model, sessionId, apiKey, tools, restoredMessages) {
   return new Agent({
     // tools（tier=read 时的只读三件套）会成为 Agent 的 leading system message，
@@ -196,9 +207,15 @@ export function createPiAdapter({ models, resolve, makeAgent = defaultMakeAgent,
             // run 末尾的错误清理逐出缓存——磁盘满一次就毁掉整个会话对话。
             if (transcripts && cache && sessionId) {
               try {
+                const rec = transcripts.get(sessionId);
+                // 会话标题：首条 user 消息的前 40 字。只在记录还没有标题时
+                // 写一次——用户改过的标题不能被后续轮次冲掉（逐字段合并）。
+                // 建会话那一刻还没有消息，标题由这里补上。
+                const title = rec?.title ?? deriveTitle(agent.state.messages);
                 transcripts.save({
                   id: sessionId, adapter: 'pi', agent: 'pi',
                   messages: withUsage(agent.state.messages),
+                  ...(title ? { title } : {}),
                 });
               } catch (err) {
                 logErr('pi', `transcript save failed for ${sessionId}: ${err?.message ?? err}`);
