@@ -1268,21 +1268,32 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
         // 不带 = 新建。已有活跃内存会话的同 id → 409（两个标签页不能共用一份
         // transcript，后写的会覆盖前写的）。
         const persistId = typeof body.persistId === 'string' && body.persistId.trim() ? body.persistId.trim() : null;
-        if (persistId) {
-          if (sessions.peek(persistId)) return json(409, { error: 'session already active' });
-          // 恢复时问适配器要材料：拿不到（记录没了/目录没了/agent 不支持）→
-          // 照旧建新会话，但在响应里说明，让前端别假装有历史。
-          const material = adapter.restore?.(persistId) ?? null;
-          if (!material) return json(200, { sessionId: persistId, adapter: adapter.id, resumed: false, provider: body.provider, model: body.model, cwd, toolTier });
-        }
+        // 恢复材料先取出来：成功与否都要写进响应（resumed），前端据此决定要不要
+        // 渲染历史。拿不到（记录没了/目录没了/agent 不支持）→ resumed:false，
+        // 但 id 仍是 persistId，让前端别假装有历史。
+        const material = persistId ? (adapter.restore?.(persistId) ?? null) : null;
+        if (persistId && sessions.peek(persistId)) return json(409, { error: 'session already active' });
         const id = persistId ?? randomUUID();
 ```
 
-3d. 记录里带上 persistId 相关字段，dispose 改为走 store：
+**`resumed` 必须在两条出口都给**（原计划只写了失败那条，成功那条的 `resumed:true`
+漏了，而本任务的测试正要断言它为真）。`POST /sessions` 结尾的返回改为：
 
 ```js
-          record.dispose = () => { denyPendingPerms(record); adapter.disposeSession?.(id); };
+        return json(200, {
+          sessionId: id, adapter: adapter.id,
+          resumed: Boolean(material),
+          provider: body.provider, model: body.model, cwd, toolTier,
+          ...(material?.messages ? { messages: material.messages } : {}),
+        });
 ```
+
+（`messages` 一并返回，省掉前端再发一次请求——Task 7 的 4e 依赖它。
+`title` 同理，有就带。）
+
+3d. `dispose` 已经正确（走 `adapter.disposeSession?.()`，而 pi/cc 的
+`disposeSession` 都是刻意 no-op —— LRU 逐出不能删历史，见 Task 4）。
+**此步无需改动**，保留原样即可；别在这里加 `store.remove()`。
 
 3e. 新增 4 个路由。放在 `POST /sessions` 之后、`/messages` 之前：
 
@@ -1299,7 +1310,10 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
       }
 
       // 删单条历史（含 cc 的持久 config dir）。
-      const delMatch = req.method === 'DELETE' && url.pathname.match(/^\/sessions\/([0-9a-f-]+)$/);
+      // **id 的正则必须与 store 的 SAFE_ID 对齐**：`[0-9a-f-]+` 只认小写十六进制，
+      // 会把 `bye`/`dup`/`resume-me` 这类 id 挡在门外（404 而不是 204）——本任务
+      // 自己的测试就用这些 id。UUID 当然也符合下面的式子。
+      const delMatch = req.method === 'DELETE' && url.pathname.match(/^\/sessions\/([A-Za-z0-9_-]{1,128})$/);
       if (delMatch) {
         store.remove(delMatch[1]);
         return res.writeHead(204, cors).end();
