@@ -579,7 +579,10 @@ test('cc adapter restore returns null when the config dir is gone', () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('cc adapter disposeSession removes the persisted record and its config dir', () => {
+// 已实现形态（8ef8e35）：disposeSession 是 no-op —— LRU 逐出会调 dispose
+// （sessions.mjs:22 → server.mjs:194），删记录等于把「重启后要恢复的那份历史」
+// 自己删掉。所以这里断言「都还在」。
+test('cc adapter disposeSession keeps the record and its config dir', () => {
   const dir = freshDir();
   try {
     const store = new TranscriptStore({ dir });
@@ -591,8 +594,8 @@ test('cc adapter disposeSession removes the persisted record and its config dir'
     const before = store.get('sess-cc-3');
     assert.ok(before, 'record exists');
     cc.disposeSession('sess-cc-3');
-    assert.equal(store.get('sess-cc-3'), null, 'record removed');
-    assert.equal(existsSync(before.configDir), false, 'config dir removed with it');
+    assert.ok(store.get('sess-cc-3'), 'eviction must not delete history');
+    assert.ok(existsSync(before.configDir), 'config dir survives eviction too');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 ```
@@ -685,21 +688,17 @@ if (transcripts && sessionId && ev.sessionId) {
     },
 ```
 
-3e. `liveConfigDirs` 的全局兜底改为扫 store 里的 configDir：
+3e. `sweepSync` 的全局兜底**不再删任何 config dir**（原计划让它扫 store 记录删目录，那与「目录要跨重启存活」直接冲突——进程一退出就把恢复材料全清了）。只保留杀子进程：
 
 ```js
 function sweepSync(sig) {
   for (const c of liveChildren) killTree(c, sig);
-  // 持久化的 config dir 记在 store 里（不是 Set）：进程被信号终止时生成器的
-  // finally 不跑，靠这里按 store 的记录扫掉。
-  for (const rec of transcripts?.list({}) ?? []) {
-    if (!rec.configDir) continue;
-    try { rmSync(rec.configDir, { recursive: true, force: true }); } catch { /* 尽力而为 */ }
-  }
+  // 目录的生存期归 transcript 记录管：store 拥有的要跨重启存活，
+  // 无主的在 run() 的 finally 里已经删了。这里没有可删的东西。
 }
 ```
 
-`sweepSync` 需要能拿到 `transcripts`——把 `installGlobalCleanup` 改成接收它：`installGlobalCleanup(transcripts)`，调用处传参。
+`installGlobalCleanup` 因此不需要 `transcripts`。
 
 - [ ] **Step 4: 运行测试确认通过**
 
