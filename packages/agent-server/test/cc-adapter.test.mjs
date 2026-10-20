@@ -1,11 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { readFileSync, rmSync, mkdtempSync, existsSync } from 'node:fs';
+import { readFileSync, rmSync, mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { createCcAdapter } from '../src/adapters/cc.mjs';
+import { TranscriptStore } from '../src/transcripts.mjs';
 import { sanitizeChildEnv } from '../src/child-env.mjs';
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-claude.sh');
@@ -283,7 +284,10 @@ test('cc adapter keeps the isolated config dir across turns so --resume works', 
   const upstream = await startFakeAnthropic();
   t.after(upstream.close);
 
-  const cc = createCcAdapter();
+  // 目录的生存期如今跟随 transcript 记录（磁盘），必须传 store——不传的目录
+  // 无主，turn 结束即删，resume 自然失败（这正是旧行为的回归）。
+  const store = mkStore(t);
+  const cc = createCcAdapter({ transcripts: store });
   const cwd = mkdtempSync(join(tmpdir(), 'atbx-cc-resume-'));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
 
@@ -307,6 +311,8 @@ test('cc adapter keeps the isolated config dir across turns so --resume works', 
 // 会话终结时适配器必须回收隔离目录：否则一次浏览器会话就永久泄漏一个
 // CLAUDE_CONFIG_DIR（含用户这一会话的 transcript）。
 test('cc adapter disposeSession reclaims the isolated config dir', async () => {
+  // 无 transcripts 的旧行为（本用例）：目录无主，turn 结束即删——这里只断言
+  // 旧用例路径仍然自洽，不再断言 dispose 删目录（见下面带 store 的用例）。
   const cc = createCcAdapter({ cliPath: FIXTURE, env: { FAKE_CC_ECHO_CONFIG: '1' } });
   const events = await collect(cc.run({
     messages: [{ role: 'user', content: 'hi' }], model: 'm', apiKey: 'k',
@@ -314,7 +320,91 @@ test('cc adapter disposeSession reclaims the isolated config dir', async () => {
   }));
   const dir = events.find((e) => e.type === 'delta')?.text?.match(/CFG=(\S+)/)?.[1];
   assert.ok(dir, 'fixture echoed the config dir');
-  assert.ok(existsSync(dir), 'dir still present after the turn (needed for --resume)');
-  cc.disposeSession('sess-dispose-1');
-  assert.ok(!existsSync(dir), 'disposeSession removed the dir');
+  assert.ok(!existsSync(dir), 'unowned dir removed at turn end');
+  cc.disposeSession('sess-dispose-1'); // no-op without a store
+});
+
+// ── 持久化：config dir 的生存期跟随 transcript 记录 ──────────────────────────
+// 目录不再由内存 Map 管（重启即忘），而是记进 TranscriptStore：重启 / LRU 逐出后
+// 下一轮 turn 仍能 --resume。dispose 只做内存收尾，绝不删记录或目录——
+// 被逐出的会话历史正是「重启后还能恢复」的那份，删了本任务就白做了。
+
+const mkStore = (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'atbx-cc-store-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  return new TranscriptStore({ dir });
+};
+
+test('cc adapter persists ccSessionId and config dir into the transcript store', async (t) => {
+  const store = mkStore(t);
+  const cc = createCcAdapter({ cliPath: FIXTURE, transcripts: store });
+  const events = await collect(cc.run({
+    messages: [{ role: 'user', content: 'hi' }], model: 'm', apiKey: 'k',
+    baseUrl: 'https://openrouter.ai/api', cwd: '/tmp', allowedTools: [], sessionId: 'sess-cc-1',
+  }));
+  assert.equal(events.at(-1).type, 'turn_end');
+  const rec = store.get('sess-cc-1');
+  assert.equal(rec.ccSessionId, 'fake-sess-1', 'ccSessionId persisted');
+  assert.equal(rec.adapter, 'cc');
+  assert.ok(existsSync(rec.configDir), 'config dir on disk');
+  // fixture CLI 不写 projects/ 下的 transcript，plant 一个再验 restore：
+  // 强校验要求文件真的在，restore 才肯说「可恢复」。
+  mkdirSync(join(rec.configDir, 'projects', 'fake-slug'), { recursive: true });
+  writeFileSync(join(rec.configDir, 'projects', 'fake-slug', 'fake-sess-1.jsonl'), '{}\n');
+  const restored = cc.restore('sess-cc-1');
+  assert.deepEqual(restored, { configDir: rec.configDir, ccSessionId: 'fake-sess-1' });
+});
+
+test('cc adapter restore returns null when the config dir is gone', (t) => {
+  const store = mkStore(t);
+  const cc = createCcAdapter({ cliPath: FIXTURE, transcripts: store });
+  store.save({ id: 'sess-cc-2', adapter: 'cc', ccSessionId: 'x', configDir: join(tmpdir(), 'gone-xyz') });
+  assert.equal(cc.restore('sess-cc-2'), null);
+  // 记录缺字段同样不可恢复
+  store.save({ id: 'sess-cc-2b', adapter: 'cc', configDir: tmpdir() });
+  assert.equal(cc.restore('sess-cc-2b'), null);
+});
+
+test('cc adapter disposeSession keeps the record and its config dir', async (t) => {
+  const store = mkStore(t);
+  const cc = createCcAdapter({ cliPath: FIXTURE, transcripts: store });
+  const events = await collect(cc.run({
+    messages: [{ role: 'user', content: 'hi' }], model: 'm', apiKey: 'k',
+    baseUrl: 'https://openrouter.ai/api', cwd: '/tmp', allowedTools: [], sessionId: 'sess-cc-3',
+  }));
+  assert.equal(events.at(-1).type, 'turn_end');
+  const dir = store.get('sess-cc-3').configDir;
+  cc.disposeSession('sess-cc-3');
+  assert.ok(store.get('sess-cc-3'), 'record survives eviction');
+  assert.ok(existsSync(dir), 'config dir survives eviction');
+});
+
+test('cc adapter revive creates a fresh dir and clears a stale ccSessionId', (t) => {
+  const store = mkStore(t);
+  const cc = createCcAdapter({ cliPath: FIXTURE, transcripts: store });
+  store.save({ id: 'sess-cc-4', adapter: 'cc', ccSessionId: 'old-id', configDir: join(tmpdir(), 'atbx-cc-gone-4') });
+  const dir = cc.__configDirFor('sess-cc-4').dir;  assert.ok(existsSync(dir), 'fresh dir created');
+  const rec = store.get('sess-cc-4');
+  assert.equal(rec.configDir, dir, 'new dir recorded');
+  assert.equal(rec.ccSessionId, null, 'stale ccSessionId cleared so restore() cannot lie');
+  assert.equal(cc.restore('sess-cc-4'), null, 'not restorable until a turn succeeds');
+});
+
+// restore 的强校验：configDir 在而 projects/ 下没有 <ccSessionId>.jsonl 时，
+// --resume 必然失败（"No conversation found"），restore 不得谎报可恢复。
+test('cc adapter restore returns null when the transcript file is missing', (t) => {
+  const store = mkStore(t);
+  const cc = createCcAdapter({ cliPath: FIXTURE, transcripts: store });
+  const dir = mkdtempSync(join(tmpdir(), 'atbx-cc-empty-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(join(dir, 'projects', 'some-slug'), { recursive: true });
+  store.save({ id: 'sess-cc-5', adapter: 'cc', ccSessionId: 'absent-id', configDir: dir });
+  assert.equal(cc.restore('sess-cc-5'), null, 'no <id>.jsonl under projects/ → not restorable');
+  writeFileSync(join(dir, 'projects', 'some-slug', 'absent-id.jsonl'), '{}\n');
+  assert.deepEqual(cc.restore('sess-cc-5'), { configDir: dir, ccSessionId: 'absent-id' });
+});
+
+test('cc adapter restore returns null without a store', () => {
+  const cc = createCcAdapter({ cliPath: FIXTURE });
+  assert.equal(cc.restore('sess-whatever'), null);
 });
