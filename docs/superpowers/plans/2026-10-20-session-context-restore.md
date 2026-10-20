@@ -858,6 +858,13 @@ git commit -m "feat(agent-server): pi adapter rebuilds from a persisted transcri
 
 把 pi 的 transcript 额外写一份 pi CLI 原生格式到共享目录。这是「本机能打开网站会话」的落地。
 
+> **实测依据（2026-10-21，真实 pi CLI，本次专门验证）**——三条都与原计划写法相反，照做才能真 resume：
+> 1. **文件不能平铺在 sessions 根目录下**。把 `xxx.jsonl` 直接放 `~/.pi/agent/sessions/` 里，`pi --session xxx` 报 `No session found matching 'xxx'`。CLI 按 **cwd slug 子目录** 找：`<sessions>/<slug>/<stamp>_<uuid>.jsonl`。
+> 2. **slug 的格式**：cwd 去掉前导 `/`、其余 `/` 换成 `-`、两端包 `--`。实测一段：`/tmp/slug/my-proj_2` → `--tmp-slug-my-proj_2--`（下划线原样保留，不转义）。这条来自实际跑一轮 `pi -p` 后看落盘路径，**不要凭猜测写 slug 函数**——写一个 `cwdSlug()` 并给它配单元测试（用例至少含 `/home/dengzh/AI`、`/tmp/slug/my-proj_2`）。
+> 3. **`piSessionId` 必须另外生成**，不能用网关的 sessionId：库只把它带给 provider（`agent.js:308`），与 CLI 的会话 id 无关。文件名里的 `<uuid>` 就是它，CLI 用 `--session <id>` 匹配。
+>
+> 权限：sessions 根是 0755、各 jsonl 是 0644（实测），但**我们写的文件要 0600**（transcript 含 full tier 输出），子目录 0700。
+
 **Files:**
 - Modify: `packages/agent-server/src/config.mjs`
 - Modify: `packages/agent-server/src/adapters/pi.mjs`
@@ -888,11 +895,16 @@ test('pi adapter mirrors the session into the shared dir in CLI-native format', 
       sessionId: 'sess-mirror-1', cwd: '/tmp/work', toolTier: 'none',
     }));
 
-    const files = readdirSync(sharedDir).filter((f) => f.endsWith('.jsonl'));
+    // 不是平铺在 sharedDir 根下：CLI 只认 <sessions>/<cwdSlug>/ 子目录
+    const slugDir = join(sharedDir, '--tmp-work--');
+    assert.ok(existsSync(slugDir), 'written into the cwd-slug subdirectory');
+    const files = readdirSync(slugDir).filter((f) => f.endsWith('.jsonl'));
     assert.equal(files.length, 1, 'one CLI-native session file written');
-    const lines = readFileSync(join(sharedDir, files[0]), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const lines = readFileSync(join(slugDir, files[0]), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
     assert.equal(lines[0].type, 'session');
     assert.equal(lines[0].cwd, '/tmp/work', 'cwd preserved for the CLI project check');
+    // 0600：里面是 full tier 的工具输出，和 transcript 一个口径
+    assert.equal(statSync(join(slugDir, files[0])).mode & 0o777, 0o600, 'mirror file is owner-only');
     assert.ok(lines.some((l) => l.type === 'message' && JSON.stringify(l.message).includes('菠萝')),
       'user text present');
 
@@ -956,9 +968,11 @@ export function createPiAdapter({ models, resolve, makeAgent = defaultMakeAgent,
 4b. 在 Task 4 步骤 3d 的 `transcripts.save(...)` 之后接镜像逻辑：
 
 ```js
-        // 镜像一份 pi CLI 原生格式到共享目录：本机 `pi --session-dir <dir>
-        // --session <piSessionId>` 就能打开这个会话（实测可用）。
-        // piSessionId 首次生成后固定存进记录，保证同一个会话始终是同一个 id。
+        // 镜像一份 pi CLI 原生格式到共享目录：本机 `pi --session <piSessionId>`
+        // 就能打开这个会话。三条实测约束（见本节开头）：
+        //   · 必须落在 <sessions>/<cwdSlug>/ 子目录里，平铺在根下 CLI 找不到；
+        //   · slug = cwd 去前导 '/'、其余 '/' → '-'、两端包 '--'；
+        //   · piSessionId 首次生成后固定存进记录，同一个会话始终是同一个 id。
         // 失败绝不影响回合——互通是增益，不是依赖。
         if (piSessionDir) {
           try {
@@ -968,15 +982,32 @@ export function createPiAdapter({ models, resolve, makeAgent = defaultMakeAgent,
               piSessionId, cwd: cwd ?? process.cwd(), name: rec.title ?? 'AgentToolbox',
               messages: agent.state.messages ?? [],
             });
-            mkdirSync(piSessionDir, { recursive: true });
+            const slugDir = join(piSessionDir, cwdSlug(cwd ?? process.cwd()));
+            mkdirSync(slugDir, { recursive: true, mode: 0o700 });
             const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-            writeFileSync(join(piSessionDir, `${stamp}_${piSessionId}.jsonl`), renderPiSession(lines));
+            // 0600：和 transcript 一个口径，里面是 full tier 的工具输出
+            writeFileSync(join(slugDir, `${stamp}_${piSessionId}.jsonl`),
+              renderPiSession(lines), { mode: 0o600 });
             transcripts.save({ id: sessionId, piSessionId });
           } catch (err) {
             logErr('pi:mirror', String(err?.message ?? err).slice(0, 120));
           }
         }
 ```
+
+4b'. `cwdSlug()` 放 `pi-session-writer.mjs` 里导出（纯函数，好测）：
+
+```js
+/**
+ * cwd → pi CLI 的会话子目录名。实测：/tmp/slug/my-proj_2 → --tmp-slug-my-proj_2--
+ * （前导 / 去掉，其余 / 变 -，两端包 --；下划线等字符原样保留）。
+ */
+export function cwdSlug(cwd) {
+  return `--${String(cwd).replace(/^\//, '').replace(/\//g, '-')}--`;
+}
+```
+
+给它配至少两个测试（`/home/dengzh/AI` → `--home-dengzh-AI--`、`/tmp/slug/my-proj_2` → `--tmp-slug-my-proj_2--`）。这是纯约定，抄错了 CLI 静默找不到会话，所以必须用测试钉住。
 
 4c. 文件顶部加 import：
 
