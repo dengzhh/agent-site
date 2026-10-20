@@ -22,14 +22,31 @@ import { randomUUID } from 'node:crypto';
 
 const SESSION_FORMAT_VERSION = 3;   // pi CLI 的 session 行固定的 version
 
-/** 生成一个 8 位短 id：parentId 链上的节点标识（CLI 只用它串链，不要求是 UUID）。 */
-const nodeId = () => randomUUID().replace(/-/g, '').slice(0, 8);
+// 12 位十六进制：链是隐式的，一次碰撞就把 parentId 指到错的人身上且毫无声息，
+// 8 位的 2^32 空间撑不起这个代价，多出来的熵是免费的。
+const nodeId = () => randomUUID().replace(/-/g, '').slice(0, 12);
 
 // 出去的 JSONL 是给外部 CLI 吃的，字段错了它不会响——只会默默续出一个空会话。
 // 所以宁可在这里响亮地炸：调用方传脏值是程序员 bug，不是运行时容错的对象。
+// 错误消息里带上原值（截断），定位问题不用再翻调用栈。
 function assertNonEmptyString(v, label) {
   if (typeof v !== 'string' || v === '') {
-    throw new TypeError(`${label} must be a non-empty string`);
+    throw new TypeError(`${label} must be a non-empty string, got ${String(v).slice(0, 32)}`);
+  }
+}
+
+// message 是从盘上读回来的数据，形状没有保证，逐条验：
+//   m 非空对象、role 是字符串、content 是数组。缺哪个字段、第几条，都写进错误。
+function assertMessage(m, i) {
+  const at = `messages[${i}]`;
+  if (m === null || typeof m !== 'object' || Array.isArray(m)) {
+    throw new TypeError(`${at} must be a message object, got ${String(m).slice(0, 32)}`);
+  }
+  if (typeof m.role !== 'string') {
+    throw new TypeError(`${at}.role must be a string, got ${String(m.role).slice(0, 32)}`);
+  }
+  if (!Array.isArray(m.content)) {
+    throw new TypeError(`${at}.content must be an array, got ${String(m.content).slice(0, 32)}`);
   }
 }
 
@@ -45,37 +62,52 @@ export function buildPiSessionLines({ piSessionId, cwd, name, messages = [] }) {
   assertNonEmptyString(piSessionId, 'piSessionId');
   assertNonEmptyString(cwd, 'cwd');
   if (!Array.isArray(messages)) throw new TypeError('messages must be an array if given');
+  // 名字只有「没给/空串/空白」落回缺省；给了别的类型是脏值，照头部的口径响亮地炸
+  if (name !== undefined && name !== null && typeof name !== 'string') {
+    throw new TypeError(`name must be a string if given, got ${String(name).slice(0, 32)}`);
+  }
   const now = new Date().toISOString();
 
   const infoId = nodeId();
   const lines = [
     { type: 'session', version: SESSION_FORMAT_VERSION, id: piSessionId, timestamp: now, cwd },
-    // name 先 trim 再判断：空白串和没给是一回事，都落回缺省名
     { type: 'session_info', id: infoId, parentId: null, timestamp: now,
       name: typeof name === 'string' && name.trim() !== '' ? name : 'AgentToolbox' },
   ];
 
   let parentId = infoId;
-  for (const m of messages) {
+  for (const [i, m] of messages.entries()) {
+    assertMessage(m, i);
     const id = nodeId();
     const inner = {
       role: m.role,
-      content: m.content,
-      // 真实 CLI 文件里这个位置是 epoch 毫秒数字（事件行的才是 ISO），照抄
-      timestamp: m.timestamp ?? Date.now(),
+      // 浅拷贝：这是转换器不是视图，调用方在 build 之后继续改 transcript，
+      // 不能反过来改写我们即将落盘的内容
+      content: [...m.content],
+      // 真实 CLI 文件里这个位置是 epoch 毫秒数字（事件行的才是 ISO），照抄；
+      // 非 numeric 一律回退到当下——混进来的 ISO 字符串不能原样带出去
+      timestamp: Number.isFinite(m.timestamp) ? m.timestamp : Date.now(),
     };
     // usage / stopReason / api / provider / model 有就带，没有就不造字段——
-    // CLI 对缺失字段有容忍路径，凭空编造反而可能让它误判回合状态。
+    // usage 形状由调用方保证（实测 CLI 读它的 totalTokens 等字段，缺了会崩）。
     for (const k of ['usage', 'stopReason', 'api', 'provider', 'model']) {
-      if (m[k] !== undefined) inner[k] = m[k];
+      if (m[k] !== undefined) inner[k] = k === 'usage' ? { ...m[k] } : m[k];
     }
+    // 事件行统一盖 now 是刻意的：CLI 对行只要求有序，真实时刻由载荷里的
+    // timestamp 承载；逐行换时刻只添噪声。
     lines.push({ type: 'message', id, parentId, timestamp: now, message: inner });
     parentId = id;
   }
   return lines;
 }
 
-/** 序列化成 JSONL 文本（末尾带换行，符合 CLI 的逐行读取）。 */
+/** 序列化成 JSONL 文本（末尾带换行，符合 CLI 的逐行读取）；空数组就是空文件。 */
 export function renderPiSession(lines) {
-  return lines.map((l) => JSON.stringify(l)).join('\n') + '\n';
+  return lines.map((l, i) => {
+    // null/undefined 今天会序列化成字面量 "undefined" 行，对逐行解析的 CLI 是毒
+    if (l === null || typeof l !== 'object') {
+      throw new TypeError(`lines[${i}] must be an object, got ${String(l).slice(0, 32)}`);
+    }
+    return JSON.stringify(l);
+  }).join('\n') + (lines.length ? '\n' : '');
 }

@@ -39,6 +39,16 @@ test('every line carries a unique id and an ISO timestamp', () => {
   for (const l of lines) assert.match(l.timestamp, /^\d{4}-\d{2}-\d{2}T/);
 });
 
+test('node ids are 12 hex chars — the chain silently corrupts on collision, so spend the entropy', () => {
+  const lines = buildPiSessionLines({
+    piSessionId: '01abc', cwd: '/tmp/x',
+    messages: [msg('user', [{ type: 'text', text: 'a' }])],
+  });
+  for (const id of [lines[1].id, lines[2].id]) {
+    assert.match(id, /^[0-9a-f]{12}$/);
+  }
+});
+
 test('image blocks are copied verbatim — base64 must survive', () => {
   const img = { type: 'image', data: 'iVBORw0KGgoAAAANS', mimeType: 'image/png' };
   const lines = buildPiSessionLines({
@@ -57,55 +67,68 @@ test('assistant messages keep usage/stopReason when present and omit when absent
       msg('assistant', [{ type: 'text', text: 'no meta' }]),
     ],
   });
-  assert.equal(lines[2].message.usage.input, 1);
+  // deepEqual 而非只看 input：usage 必须是「原样照抄」，被改写/包装过的也算错
+  assert.deepEqual(lines[2].message.usage, { input: 1, output: 2 });
   assert.equal(lines[2].message.stopReason, 'stop');
-  assert.equal(lines[3].message.usage, undefined, 'absent meta stays absent — do not invent fields');
+  // undefined 也可能是「有这个键但值是 undefined」：断言键根本不存在
+  assert.equal('usage' in lines[3].message, false, 'absent meta stays absent — do not invent fields');
+  assert.equal('stopReason' in lines[3].message, false);
 });
 
-test('empty transcript still produces a valid header pair', () => {
-  const lines = buildPiSessionLines({ piSessionId: '01abc', cwd: '/tmp/x', name: 'n', messages: [] });
-  assert.equal(lines.length, 2);
-  assert.equal(lines[0].type, 'session');
-  assert.equal(lines[1].type, 'session_info');
+test('optional fields are copied, not aliased — later mutation of the transcript must not leak in', () => {
+  const content = [{ type: 'text', text: 'a' }];
+  const usage = { input: 1 };
+  const lines = buildPiSessionLines({
+    piSessionId: '01abc', cwd: '/tmp/x', name: 'n',
+    messages: [{ role: 'assistant', content, usage, timestamp: 1 }],
+  });
+  content.push({ type: 'text', text: 'injected' });
+  usage.output = 999;
+  assert.equal(lines[2].message.content.length, 1, 'content is a copy');
+  assert.deepEqual(lines[2].message.usage, { input: 1 }, 'usage is a copy');
 });
 
-test('message payload timestamp mirrors real pi files: epoch-ms number on the payload, ISO on the event line', () => {
+test('message payload timestamp is coerced to epoch-ms: non-numeric input falls back to now', () => {
   // 实测本机真实会话文件：事件行 timestamp 是 ISO 字符串，message 载荷里的
   // timestamp 是 epoch 毫秒数字（见 ~/.pi/agent/sessions 下的 .jsonl）。
+  // transcript 里若混进了 ISO 字符串，不能原样带出去。
+  for (const bad of ['2026-08-27T11:09:30.853Z', null, undefined]) {
+    const before = Date.now();
+    const lines = buildPiSessionLines({
+      piSessionId: '01abc', cwd: '/tmp/x', name: 'n',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'a' }], timestamp: bad }],
+    });
+    const ts = lines[2].message.timestamp;
+    assert.equal(typeof ts, 'number', `timestamp ${JSON.stringify(bad)} must be coerced to a number`);
+    assert.ok(ts >= before && ts <= Date.now() + 1000, 'fallback must be a plausible epoch-ms value');
+  }
+});
+
+test('numeric message timestamp passes through as epoch-ms', () => {
   const lines = buildPiSessionLines({
     piSessionId: '01abc', cwd: '/tmp/x', name: 'n',
     messages: [msg('user', [{ type: 'text', text: 'a' }], 1787828970852)],
   });
-  assert.equal(typeof lines[2].timestamp, 'string');
   assert.equal(lines[2].message.timestamp, 1787828970852);
-  assert.equal(typeof lines[2].message.timestamp, 'number');
 });
 
-test('message payload timestamp falls back to current epoch-ms when absent', () => {
-  const before = Date.now();
-  const lines = buildPiSessionLines({
-    piSessionId: '01abc', cwd: '/tmp/x', name: 'n',
-    messages: [{ role: 'user', content: [{ type: 'text', text: 'a' }] }],
-  });
-  const ts = lines[2].message.timestamp;
-  assert.equal(typeof ts, 'number');
-  assert.ok(ts >= before, 'fallback must be a plausible epoch-ms value');
-});
-
-test('blank name falls back to the default', () => {
-  for (const name of [undefined, '', '   ']) {
+test('blank name falls back to the default; a non-string name is a TypeError', () => {
+  for (const name of [undefined, null, '', '   ']) {
     const lines = buildPiSessionLines({ piSessionId: '01abc', cwd: '/tmp/x', name });
     assert.equal(lines[1].name, 'AgentToolbox', `name=${JSON.stringify(name)} falls back`);
   }
   const named = buildPiSessionLines({ piSessionId: '01abc', cwd: '/tmp/x', name: 'x' });
   assert.equal(named[1].name, 'x', 'a real name is kept as-is');
+  assert.throws(() => buildPiSessionLines({ piSessionId: '01abc', cwd: '/tmp/x', name: 42 }), TypeError);
+  assert.throws(() => buildPiSessionLines({ piSessionId: '01abc', cwd: '/tmp/x', name: {} }), TypeError);
 });
 
-test('throws TypeError on missing/empty piSessionId or cwd', () => {
-  assert.throws(() => buildPiSessionLines({ cwd: '/tmp/x' }), TypeError);
-  assert.throws(() => buildPiSessionLines({ piSessionId: '01abc' }), TypeError);
-  assert.throws(() => buildPiSessionLines({ piSessionId: '', cwd: '/tmp/x' }), TypeError);
-  assert.throws(() => buildPiSessionLines({ piSessionId: '01abc', cwd: '' }), TypeError);
+test('throws TypeError on missing/empty piSessionId or cwd, naming the field and the value', () => {
+  assert.throws(() => buildPiSessionLines({ cwd: '/tmp/x' }), /piSessionId/);
+  assert.throws(() => buildPiSessionLines({ piSessionId: '01abc' }), /cwd/);
+  assert.throws(() => buildPiSessionLines({ piSessionId: '', cwd: '/tmp/x' }), /piSessionId/);
+  assert.throws(() => buildPiSessionLines({ piSessionId: '01abc', cwd: '' }), /cwd/);
+  assert.throws(() => buildPiSessionLines({ piSessionId: 42, cwd: '/tmp/x' }), /42/, 'the offending value appears in the message');
 });
 
 test('throws TypeError when messages is not an array', () => {
@@ -113,6 +136,17 @@ test('throws TypeError when messages is not an array', () => {
   assert.throws(() => buildPiSessionLines({ piSessionId: '01abc', cwd: '/tmp/x', messages: {} }), TypeError);
   // messages 缺省是合法的（当作空 transcript）
   assert.doesNotThrow(() => buildPiSessionLines({ piSessionId: '01abc', cwd: '/tmp/x' }));
+});
+
+test('throws TypeError naming field and index for malformed messages', () => {
+  const opts = (messages) => ({ piSessionId: '01abc', cwd: '/tmp/x', messages });
+  // null / undefined 直接躺在数组里，也要带索引——裸的 "reading 'role'" 没法定位
+  assert.throws(() => buildPiSessionLines(opts([null])), /messages\[0\]/);
+  assert.throws(() => buildPiSessionLines(opts([undefined])), /messages\[0\]/);
+  assert.throws(() => buildPiSessionLines(opts([msg('user', []), 7])), /messages\[1\]/);
+  assert.throws(() => buildPiSessionLines(opts([{ role: 'user', timestamp: 1 }])), /messages\[0\]\.content/);
+  assert.throws(() => buildPiSessionLines(opts([msg('user', 'hi')])), /messages\[0\]\.content must be an array/);
+  assert.throws(() => buildPiSessionLines(opts([{ content: [], timestamp: 1 }])), /messages\[0\]\.role/);
 });
 
 test('renderPiSession emits one \\n-terminated JSON line per event, round-trip identical', () => {
@@ -130,4 +164,12 @@ test('renderPiSession emits one \\n-terminated JSON line per event, round-trip i
   const roundImg = parsed[2].message.content[1];
   assert.equal(roundImg.data, img.data);
   assert.equal(roundImg.mimeType, img.mimeType);
+});
+
+test('renderPiSession: empty array renders as empty string; garbage elements are TypeErrors', () => {
+  assert.equal(renderPiSession([]), '', 'an empty file is "", not a bare newline');
+  // 今天 null/undefined 会序列化成字面量 "undefined" 行——对逐行读取的 CLI 是毒
+  assert.throws(() => renderPiSession([{ type: 'session' }, null]), TypeError);
+  assert.throws(() => renderPiSession([undefined]), TypeError);
+  assert.throws(() => renderPiSession(['nope']), TypeError);
 });
