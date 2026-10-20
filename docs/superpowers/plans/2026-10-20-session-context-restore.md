@@ -1242,8 +1242,7 @@ Expected: FAIL — 5 条新用例全红
 
 - [ ] **Step 3: 改 `server.mjs`**
 
-3a'. 补 import（`server.mjs` 现有 import 里没有 `path`/`os`/`TranscriptStore`/`piSessionDir`，
-不补下面 3a 的代码连编译都过不去）：
+验证：只要 `POST /sessions` 用 `persistId:'resume-me'` 拿 200，紧接着往
 
 ```js
 import { join } from 'node:path';
@@ -1398,6 +1397,97 @@ test('a resumed session accepts messages on its persistId', async (t) => {
 （`baseOf` 用测试里现成的 `base`：`withFauxServer` 已返回它，把 `base` 也解构出来，
 直接 `fetch(base + '/sessions/resume-me/messages', …)`，不必新增 helper。这条用例
 要读 SSE，断言到状态码即可，读完记得 `r.body.cancel()`。）
+
+3g. **⚠️ 补上「配置字段落盘」——缺了这一步 `GET /sessions` 永远是空列表。**
+
+3e 的列表按 `agent/cwd/provider/model` 四维筛，Task 7 的 UI 也按这四维查。
+但**全仓库没有任何一处把这四个字段写进记录**：适配器只写自己的东西
+（`pi.mjs:199` 写 `id/adapter/agent/messages`，`cc.mjs:315` 写
+`id/adapter/agent/configDir/ccSessionId`），`server.mjs` 根本没调过 `store.save()`。
+于是真实一轮跑完，记录里 `provider/model/cwd/toolTier/title` 全是 undefined，
+`list({agent,cwd,provider,model})` 恒为 0 条 —— 前端「会话」行永远空着，
+只有 `list({})` 能看到记录。这不是测试问题，是功能不存在（实测：跑完一轮后
+`store.get(id)` 只有 `v,createdAt,lastUsed,id,adapter,agent,messages`）。
+
+在 `POST /sessions` 里 `sessions.set(record)` 之后补一次落盘：
+
+```js
+        // 配置字段由网关写：适配器只写自己那几个（pi 写 messages，cc 写
+        // ccSessionId/configDir），筛选四维（agent/cwd/provider/model）与
+        // title 只有网关知道——没有这次写入，GET /sessions 的筛选永远命中
+        // 0 条，前端「会话」行会一直空着。逐字段合并，不会盖掉适配器写的。
+        try {
+          // ⚠️ 别用 body.name 当 title：那是**模型显示名**（前端传的是
+          // `a.dataset.name`），拿它当会话标题会把列表每一行都写成同一个模型名。
+          // 建会话时还没有消息，标题无从谈起——留空，由落盘那处按首条 user
+          // 消息派生（见下）。UI 已有 `s.title || '(无标题)'` 的兜底。
+          store.save({
+            id, adapter: adapter.id, agent: acpAgentId ? `acp:${acpAgentId}` : adapter.id,
+            provider: body.provider ?? null, model: body.model ?? null,
+            cwd, toolTier,
+          });
+        } catch (err) {
+          log('session', `transcript save failed for ${id.slice(0, 8)}: ${preview(err?.message ?? err, 120)}`);
+        }
+```
+
+标题在本任务**可以暂缺**——建会话那一刻还没有消息，而 UI 有 `(无标题)` 兜底。
+要让它有内容，就在适配器落盘那处（Task 4 的 `pi.mjs:199`）按首条 user 消息派生；
+只在记录还没有标题时写，免得把用户改过的标题冲掉：
+
+```js
+                const rec = transcripts.get(sessionId);
+                // 首条 user 消息的前 40 字当标题；只在还没有标题时写一次。
+                // 逐字段合并保证了后续轮次不会覆盖它。
+                const firstUser = (agent.state.messages ?? []).find((m) => m.role === 'user');
+                const title = rec?.title ?? (firstUser
+                  ? String(firstUser.content?.map((b) => (b.type === 'text' ? b.text : '')).join('') ?? '').slice(0, 40) || null
+                  : null);
+                transcripts.save({
+                  id: sessionId, adapter: 'pi', agent: 'pi',
+                  messages: withUsage(agent.state.messages),
+                  ...(title ? { title } : {}),
+                });
+```
+
+（`title` 已在 `RECORD_FIELDS` 白名单里，无需改 store。）
+
+失败只记日志，不影响建会话（与适配器同口径：存不下历史不该让用户聊不了天）。
+**绝不写 `apiKey`** —— 它不在 `RECORD_FIELDS` 白名单里，写了也存不进去，
+但别把它当参数传。
+
+给它配测试（钉住「真实一轮之后列表查得到」这个端到端性质，而不是又一次手写记录）：
+
+```js
+test('a real turn persists the fields the session list filters on', async (t) => {
+  const dir = freshDir();
+  try {
+    const store = new TranscriptStore({ dir });
+    const { json, faux } = await withFauxServer(t, ['http://localhost:4321'], undefined, store);
+    faux.setResponses([fauxAssistantMessage([fauxText('hi')])]);
+    const created = await json('/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+      body: JSON.stringify({ provider: 'faux', model: 'faux' }),
+    });
+    assert.equal(created.status, 200);
+    // 直接驱动适配器跑一轮（走 /messages 要读 SSE，这里只关心落盘）
+    // —— 若不便，改为断言 list 能查到 created.body.sessionId 即可。
+    const rec = store.get(created.body.sessionId);
+    assert.ok(rec, 'session persisted on create');
+    assert.equal(rec.provider, 'faux');
+    assert.equal(rec.model, 'faux');
+    const listed = await json('/sessions?agent=pi&provider=faux&model=faux');
+    assert.equal(listed.status, 200);
+    assert.ok(listed.body.sessions.some((s) => s.id === created.body.sessionId),
+      'the list filter must actually match a real session');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+```
+
+> 这条是「全绿 ≠ 功能存在」的又一个实例：Task 6 的 6 条测试全在测试里
+> `store.save({... provider:'faux' ...})` 手写记录，所以路由写得对、列表查得到，
+> 但生产路径从没写过这些字段，一条也查不到。测试必须**自己跑一轮**再查。
 
 - [ ] **Step 4: 更新测试 helper**
 
@@ -1671,6 +1761,10 @@ export function localResumeCommand(s: SessionSummary): string | null {
 
 4c. `openChat` 改成接收 `persistId`，并记录当前卡片元素：
 
+**当前的 `openChat` 签名是 `function openChat(a: HTMLAnchorElement)`（`free-models.astro:644`），
+而计划里所有调用点传的都是 `<button>`（`.chat-pick` 就是 `HTMLButtonElement`）**——
+沿用 `HTMLAnchorElement` 会类型报错。改成 `HTMLElement`：
+
 ```ts
   let currentPickEl: HTMLElement | null = null;
 
@@ -1704,28 +1798,30 @@ export function localResumeCommand(s: SessionSummary): string | null {
     });
 ```
 
-4e. 历史消息回填。`tryGoChat()` 成功建会话后，若是恢复则把列表那条的消息渲染出来——**消息内容由网关在 `resumed: true` 时一并返回**。为免前端再发一次请求，让 `POST /sessions` 的恢复分支在响应里带 `messages`：
+4e. 历史消息回填。**消息由网关在 `resumed:true` 时一并返回**（Task 6 的 3c 已经把
+`messages` 放进 `POST /sessions` 的响应，前端不必再发一次请求）。
 
-在 Task 6 步骤 3c 的恢复分支改返回：
+> ⚠️ 下面这段是**旧的**写法，Task 6 的 3c 改过之后它已经失效，**不要照抄**：
+> 它假设 `POST /sessions` 有个专门处理 persistId 的分支（`rec`/`resumed:true` 硬编码），
+> 而 3c 把两条出口合并了（`resumed: Boolean(material)`），没有 `rec` 变量。
+> 照抄会读到不存在的 `rec`。网关侧的返回以 Task 6 的 3c 为准。
 
 ```js
-          const rec = store.get(persistId);
-          return json(200, {
-            sessionId: persistId, adapter: adapter.id, resumed: true,
-            provider: body.provider, model: body.model, cwd, toolTier,
-            messages: rec?.messages ?? [], title: rec?.title ?? null,
-          });
+          // ⚠️ 旧写法（已废弃，勿用）
+          // const rec = store.get(persistId);
+          // return json(200, { ... resumed: true, messages: rec?.messages ?? [], title: rec?.title ?? null });
 ```
 
-前端在 `ensureSession()` 之后：
+前端在 `ensureSession()` 拿到 `res` 之后：
 
 ```ts
-      if (res.resumed) {
-        const n = res.messages?.length ?? 0;
+      // res.resumed 为 true 时网关已把历史消息一起给了（Task 6 的 3c）。
+      // 没有历史（resumed:false 或消息为空）就别画分隔线——空对话不需要它。
+      if (res.resumed && (res.messages?.length ?? 0) > 0) {
         chatLog.textContent = '';
-        const sep = chatMsg('hint', `— 已恢复 ${fmtTime(res.title ? Date.now() : Date.now())}前的对话，${n} 条消息 —`);
-        sep.textContent = `— 已恢复历史对话，${n} 条消息 —`;
-        for (const m of res.messages ?? []) {
+        const n = res.messages!.length;
+        chatMsg('hint', `— 已恢复历史对话，${n} 条消息 —`);
+        for (const m of res.messages!) {
           if (m.role !== 'user' && m.role !== 'assistant') continue;   // 跳过 system / tool 行
           const text = Array.isArray(m.content)
             ? m.content.map((b) => (b.type === 'text' ? b.text : b.type === 'image' ? '[图片]' : `[${b.type}]`)).join('')
@@ -1735,7 +1831,9 @@ export function localResumeCommand(s: SessionSummary): string | null {
       }
 ```
 
-（`SessionResponse` 类型加 `resumed?: boolean; messages?: unknown[]; title?: string | null;`）
+（`SessionResponse` 类型加 `resumed?: boolean; messages?: unknown[]; title?: string | null;`
+并把 `messages` 的元素类型定为 `{ role: string; content: unknown }`，`m.content` 才
+能通过 TS 检查。`res.messages` 的元素用 `unknown` 断言会绊住 `m.role`。）
 
 4f. 三个按钮：
 
