@@ -229,7 +229,7 @@ test('cc adapter kills the child when the consumer stops early', async () => {
 test('cc adapter leaves no orphan when the host process is terminated', async () => {
   const pidFile = pidFilePath('hostterm');
   const holder = join(dirname(fileURLToPath(import.meta.url)), 'fixtures/cc-turn-holder.mjs');
-  const gateway = spawn(process.execPath, [holder, HANG_FIXTURE, pidFile], { stdio: 'ignore' });
+  const gateway = spawn(process.execPath, [holder, HANG_FIXTURE, pidFile, 'sess-hostterm'], { stdio: 'ignore' });
   let pid = null;
   try {
     pid = await waitForPid(pidFile);
@@ -308,20 +308,76 @@ test('cc adapter keeps the isolated config dir across turns so --resume works', 
   assert.equal(second.find((e) => e.sessionId)?.sessionId, firstSid, 'resumed turn reuses the session id');
 });
 
-// 会话终结时适配器必须回收隔离目录：否则一次浏览器会话就永久泄漏一个
-// CLAUDE_CONFIG_DIR（含用户这一会话的 transcript）。
-test('cc adapter disposeSession reclaims the isolated config dir', async () => {
-  // 无 transcripts 的旧行为（本用例）：目录无主，turn 结束即删——这里只断言
-  // 旧用例路径仍然自洽，不再断言 dispose 删目录（见下面带 store 的用例）。
+// 同一症状、无 store 的后备路径：server.mjs 目前正是这条路（还没接 store），
+// 后备 Map 必须让同一 sessionId 的目录跨 turn 存活，否则 --resume 照样失败。
+// 删掉后备 Map 或把后备目录改回「turn 结束即删」，这个用例立刻红。
+test('cc adapter keeps the config dir across turns without a store so --resume works', async (t) => {
+  const hasCli = await createCcAdapter().available();
+  if (!hasCli) { t.skip('claude CLI not installed'); return; }
+
+  const upstream = await startFakeAnthropic();
+  t.after(upstream.close);
+
+  const cc = createCcAdapter();
+  const cwd = mkdtempSync(join(tmpdir(), 'atbx-cc-resume-nostore-'));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  const run = (resumeSessionId) => collect(cc.run({
+    messages: [{ role: 'user', content: 'hi' }],
+    model: 'claude-sonnet-4-5', apiKey: 'k', baseUrl: upstream.baseUrl, cwd, allowedTools: [],
+    resumeSessionId, sessionId: 'sess-resume-2',
+  }));
+
+  const first = await withTimeout(run(null), 90000, 'first turn (no store)');
+  const firstSid = first.find((e) => e.sessionId)?.sessionId;
+  assert.ok(firstSid, 'first turn reports a session id');
+  assert.equal(first.at(-1).type, 'turn_end', 'first turn should complete');
+
+  const second = await withTimeout(run(firstSid), 90000, 'second turn (no store)');
+  assert.equal(second.at(-1).type, 'turn_end', `second turn errored: ${second.at(-1).message}`);
+  assert.equal(second.find((e) => e.sessionId)?.sessionId, firstSid, 'resumed turn reuses the session id');
+});
+
+// 一次性调用（没给 sessionId）：目录无主，turn 结束即删，不留泄漏。
+// 注意带 sessionId 的目录即使无 store 也跨 turn 保留——见下面的后备路径用例。
+test('cc adapter turn end reclaims the dir of a sessionless call', async () => {
   const cc = createCcAdapter({ cliPath: FIXTURE, env: { FAKE_CC_ECHO_CONFIG: '1' } });
   const events = await collect(cc.run({
     messages: [{ role: 'user', content: 'hi' }], model: 'm', apiKey: 'k',
-    baseUrl: 'https://openrouter.ai/api', cwd: '/tmp', allowedTools: [], sessionId: 'sess-dispose-1',
+    baseUrl: 'https://openrouter.ai/api', cwd: '/tmp', allowedTools: [],
   }));
   const dir = events.find((e) => e.type === 'delta')?.text?.match(/CFG=(\S+)/)?.[1];
   assert.ok(dir, 'fixture echoed the config dir');
   assert.ok(!existsSync(dir), 'unowned dir removed at turn end');
-  cc.disposeSession('sess-dispose-1'); // no-op without a store
+});
+
+// ── 无 store 的后备路径（server.mjs 现行走的路）──────────────────────────────
+// 没有 transcript 记录可挂时，目录挂在进程内的 fallbackDirs：同一 sessionId
+// 的后续 turn 复用它，--resume 才找得到 transcript。这是 0.5.2 修好的行为，
+// 一次性删掉它线上会立刻回到「第 2 条消息报错」，故必须有自己的覆盖。
+test('cc adapter without a store reuses one dir per session across turns', async () => {
+  const cc = createCcAdapter({ cliPath: FIXTURE, env: { FAKE_CC_ECHO_CONFIG: '1' } });
+  const run = () => collect(cc.run({
+    messages: [{ role: 'user', content: 'hi' }], model: 'm', apiKey: 'k',
+    baseUrl: 'https://openrouter.ai/api', cwd: '/tmp', allowedTools: [], sessionId: 'sess-fb-1',
+  }));
+  const first = await run();
+  const dir = first.find((e) => e.type === 'delta')?.text?.match(/CFG=(\S+)/)?.[1];
+  assert.ok(dir, 'fixture echoed the config dir');
+  assert.ok(existsSync(dir), 'dir kept after the turn (needed for --resume)');
+  const second = await run();
+  assert.equal(second.find((e) => e.type === 'delta')?.text?.match(/CFG=(\S+)/)?.[1], dir,
+    'second turn reuses the same dir');
+  assert.ok(existsSync(dir), 'dir still alive after the second turn');
+  // 会话终结：目录只挂在内存缓存里，会话一逐出它就成了没人再引用的孤儿，
+  // 此刻删（等价 0.5.2 的 dropConfigDir）。
+  cc.disposeSession('sess-fb-1');
+  assert.ok(!existsSync(dir), 'disposeSession reclaimed the fallback dir');
+  // 逐出后再来一个同 id 的 turn：新建目录，而不是拿到已删目录的引用。
+  const third = await run();
+  assert.notEqual(third.find((e) => e.type === 'delta')?.text?.match(/CFG=(\S+)/)?.[1], dir,
+    'after eviction a fresh dir is created');
+  cc.disposeSession('sess-fb-1');
 });
 
 // ── 持久化：config dir 的生存期跟随 transcript 记录 ──────────────────────────
@@ -379,15 +435,120 @@ test('cc adapter disposeSession keeps the record and its config dir', async (t) 
   assert.ok(existsSync(dir), 'config dir survives eviction');
 });
 
-test('cc adapter revive creates a fresh dir and clears a stale ccSessionId', (t) => {
+// 目录的位置与权限是安全属性：必须落在 store 自己的 <id>.cc/ 里（remove() 才
+// 能一并收走），mode 必须 0700。改成 mkdtemp / mode 0o755 都算回归。
+test('cc adapter puts the config dir in the store at mode 0700', async (t) => {
+  const { statSync } = await import('node:fs');
   const store = mkStore(t);
   const cc = createCcAdapter({ cliPath: FIXTURE, transcripts: store });
+  await collect(cc.run({
+    messages: [{ role: 'user', content: 'hi' }], model: 'm', apiKey: 'k',
+    baseUrl: 'https://openrouter.ai/api', cwd: '/tmp', allowedTools: [], sessionId: 'sess-cc-7',
+  }));
+  const rec = store.get('sess-cc-7');
+  assert.equal(rec.configDir, store.companionDir('sess-cc-7'), 'config dir is the store companion dir');
+  assert.equal(statSync(rec.configDir).mode & 0o777, 0o700, 'dir mode is 0700');
+});
+
+// R3（逐字段合并的另一半）：适配器写记录只许碰自己的三个字段，cwd/provider/
+// model/toolTier 是 server 记的，绝不能被适配器覆盖或清空。
+test('cc adapter persisting does not clobber server-owned record fields', async (t) => {
+  const store = mkStore(t);
+  const cc = createCcAdapter({ cliPath: FIXTURE, transcripts: store });
+  store.save({
+    id: 'sess-cc-8', adapter: 'cc', agent: 'cc',
+    cwd: '/home/user/proj', provider: 'openrouter', model: 'x/y:free', toolTier: 'full',
+  });
+  await collect(cc.run({
+    messages: [{ role: 'user', content: 'hi' }], model: 'm', apiKey: 'k',
+    baseUrl: 'https://openrouter.ai/api', cwd: '/tmp', allowedTools: [], sessionId: 'sess-cc-8',
+  }));
+  const rec = store.get('sess-cc-8');
+  assert.equal(rec.cwd, '/home/user/proj', 'cwd untouched');
+  assert.equal(rec.provider, 'openrouter', 'provider untouched');
+  assert.equal(rec.model, 'x/y:free', 'model untouched');
+  assert.equal(rec.toolTier, 'full', 'toolTier untouched');
+});
+
+// 失败/被闸的回合不得盖掉上一个好 id：CLI 在失败时也常带 sessionId，拿它
+// 覆盖等于把还能 resume 的会话废掉。要测的就是「persist 的窄化」本身，所以
+// 先 plant 一个真实 transcript（fixture 不写盘），保证 revive 不触发、记录
+// 里的好 id 原封不动地进入失败回合。
+test('cc adapter does not overwrite ccSessionId on an errored turn', async (t) => {
+  const store = mkStore(t);
+  const cc = createCcAdapter({ cliPath: FIXTURE, transcripts: store });
+  // 先来一个成功回合，落下好 id
+  await collect(cc.run({
+    messages: [{ role: 'user', content: 'hi' }], model: 'm', apiKey: 'k',
+    baseUrl: 'https://openrouter.ai/api', cwd: '/tmp', allowedTools: [], sessionId: 'sess-cc-9',
+  }));
+  const dir = store.get('sess-cc-9').configDir;
+  assert.equal(store.get('sess-cc-9').ccSessionId, 'fake-sess-1');
+  // plant transcript：fixture 不写盘，不 plant 的话下一回合会走 revive（新目录
+  // + 清 id），那就成了在测 revive 而不是 persist 的窄化。
+  mkdirSync(join(dir, 'projects', 'fake-slug'), { recursive: true });
+  writeFileSync(join(dir, 'projects', 'fake-slug', 'fake-sess-1.jsonl'), '{}\n');
+  // 再来一个失败回合（fixture 的 error 分支仍报 fake-sess-1）
+  const errCc = createCcAdapter({ cliPath: FIXTURE, env: { FAKE_CC_MODE: 'error' }, transcripts: store });
+  const events = await collect(errCc.run({
+    messages: [{ role: 'user', content: 'hi' }], model: 'm', apiKey: 'k',
+    baseUrl: 'https://openrouter.ai/api', cwd: '/tmp', allowedTools: [], sessionId: 'sess-cc-9',
+  }));
+  assert.equal(events.at(-1).type, 'error');
+  assert.equal(store.get('sess-cc-9').ccSessionId, 'fake-sess-1', 'good id survived the failed turn');
+  assert.equal(store.get('sess-cc-9').configDir, dir, 'config dir untouched');
+});
+
+// revive 的一种：旧 configDir 指向的目录整个没了。同一 sessionId 再跑一回合，
+// 适配器必须新建目录、落盘新路径、清掉旧 ccSessionId——而不是拿着旧 id 对
+// 着空目录 --resume（必报 "No conversation found"）。
+test('cc adapter revive creates a fresh dir and clears a stale ccSessionId', async (t) => {
+  const store = mkStore(t);
+  const cc = createCcAdapter({ cliPath: FIXTURE, env: { FAKE_CC_ECHO_CONFIG: '1' }, transcripts: store });
   store.save({ id: 'sess-cc-4', adapter: 'cc', ccSessionId: 'old-id', configDir: join(tmpdir(), 'atbx-cc-gone-4') });
-  const dir = cc.__configDirFor('sess-cc-4').dir;  assert.ok(existsSync(dir), 'fresh dir created');
+  const events = await collect(cc.run({
+    messages: [{ role: 'user', content: 'hi' }], model: 'm', apiKey: 'k',
+    baseUrl: 'https://openrouter.ai/api', cwd: '/tmp', allowedTools: [], sessionId: 'sess-cc-4',
+  }));
+  const dir = events.find((e) => e.type === 'delta')?.text?.match(/CFG=(\S+)/)?.[1];
+  assert.ok(dir && existsSync(dir), 'fresh dir created for the turn');
   const rec = store.get('sess-cc-4');
   assert.equal(rec.configDir, dir, 'new dir recorded');
-  assert.equal(rec.ccSessionId, null, 'stale ccSessionId cleared so restore() cannot lie');
-  assert.equal(cc.restore('sess-cc-4'), null, 'not restorable until a turn succeeds');
+  assert.equal(rec.ccSessionId, 'fake-sess-1', 'turn-end persisted the fresh id');
+  // 而在 revive 那一刻（save 落盘后、turn 终结前）旧 id 必须已被清掉：
+  // 用一个不产生终结事件的 CLI 重跑，观察中间态。
+  const cc2 = createCcAdapter({ cliPath: HANG_FIXTURE, transcripts: store });
+  const iter = cc2.run({
+    messages: [{ role: 'user', content: 'hi' }], model: 'm', apiKey: 'k',
+    baseUrl: 'https://openrouter.ai/api', cwd: '/tmp', allowedTools: [], sessionId: 'sess-cc-4',
+  });
+  await iter.next(); // 触发 configDirFor（此刻 revive 已发生），随后夹具挂住
+  try {
+    assert.equal(store.get('sess-cc-4').ccSessionId, null, 'stale id cleared before any terminal event');
+    assert.equal(cc2.restore('sess-cc-4'), null, 'not restorable until a turn succeeds');
+  } finally {
+    try { await iter.return?.(); } catch { /* 已结束 */ }
+  }
+});
+
+// revive 的另一种：目录还在，但里面没有 <ccSessionId>.jsonl（transcript 被
+// 手删 / 目录被清）。同样必须重开新目录并清 id，不能拿旧 id 对着空目录 resume。
+test('cc adapter revive when the recorded transcript file is gone', async (t) => {
+  const store = mkStore(t);
+  const cc = createCcAdapter({ cliPath: FIXTURE, env: { FAKE_CC_ECHO_CONFIG: '1' }, transcripts: store });
+  const staleDir = mkdtempSync(join(tmpdir(), 'atbx-cc-stale-'));
+  t.after(() => rmSync(staleDir, { recursive: true, force: true }));
+  mkdirSync(join(staleDir, 'projects', 'some-slug'), { recursive: true });
+  store.save({ id: 'sess-cc-6', adapter: 'cc', ccSessionId: 'vanished-id', configDir: staleDir });
+  const events = await collect(cc.run({
+    messages: [{ role: 'user', content: 'hi' }], model: 'm', apiKey: 'k',
+    baseUrl: 'https://openrouter.ai/api', cwd: '/tmp', allowedTools: [], sessionId: 'sess-cc-6',
+  }));
+  const dir = events.find((e) => e.type === 'delta')?.text?.match(/CFG=(\S+)/)?.[1];
+  assert.notEqual(dir, staleDir, 'a fresh dir replaced the transcript-less one');
+  const rec = store.get('sess-cc-6');
+  assert.equal(rec.configDir, dir, 'configDir updated on disk');
+  assert.equal(rec.ccSessionId, 'fake-sess-1', 'fresh id persisted at turn end');
 });
 
 // restore 的强校验：configDir 在而 projects/ 下没有 <ccSessionId>.jsonl 时，
@@ -407,4 +568,30 @@ test('cc adapter restore returns null when the transcript file is missing', (t) 
 test('cc adapter restore returns null without a store', () => {
   const cc = createCcAdapter({ cliPath: FIXTURE });
   assert.equal(cc.restore('sess-whatever'), null);
+});
+
+// ── 进程退出兜底与目录生存期（R9）────────────────────────────────────────────
+// store 记录指向的 config dir 必须跨 SIGTERM 存活——它承载着重启后恢复所需
+// 的 transcript，被兜底误删等于又回到「重启后 resume 失败」。
+test('cc adapter leaves store-owned config dirs intact when the host process exits', async () => {
+  const holder = join(dirname(fileURLToPath(import.meta.url)), 'fixtures/cc-turn-holder.mjs');
+  const storeDir = mkdtempSync(join(tmpdir(), 'atbx-cc-r9-store-'));
+  const pidFile = pidFilePath('r9');
+  const gateway = spawn(process.execPath, [holder, HANG_FIXTURE, pidFile, 'sess-r9', storeDir], { stdio: 'ignore' });
+  let pid = null;
+  try {
+    pid = await waitForPid(pidFile);
+    // companion dir 在 spawn 前就已由 configDirFor 落盘，此刻必然存在
+    assert.ok(existsSync(join(storeDir, 'sess-r9.cc')), 'companion dir exists before exit');
+    gateway.kill('SIGTERM');
+    const gwDead = await waitUntilDead(gateway.pid, 8000);
+    if (isAlive(pid)) { try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ } }
+    assert.ok(gwDead, `gateway pid ${gateway.pid} ignored SIGTERM`);
+    assert.ok(existsSync(join(storeDir, 'sess-r9.cc')), 'store-owned config dir survives process exit');
+  } finally {
+    if (isAlive(gateway.pid)) { try { gateway.kill('SIGKILL'); } catch { /* already gone */ } }
+    if (pid && isAlive(pid)) { try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ } }
+    rmSync(pidFile, { force: true });
+    rmSync(storeDir, { recursive: true, force: true });
+  }
 });

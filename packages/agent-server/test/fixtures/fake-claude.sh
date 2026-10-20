@@ -15,7 +15,7 @@ if [ "${FAKE_CC_ECHO_ENV:-}" = "1" ]; then
 fi
 case "${FAKE_CC_MODE:-ok}" in
   error)
-    echo '{"type":"result","subtype":"error_during_execution","session_id":"fake-sess-1","is_error":true,"result":"API Error: 500 boom"}'
+    echo '{"type":"result","subtype":"error_during_execution","session_id":"fake-sess-ERR","is_error":true,"result":"API Error: 500 boom"}'
     ;;
   gate)
     echo '{"type":"result","subtype":"error_during_execution","session_id":"fake-sess-1","is_error":true,"result":"403 only available on agentic harnesses"}'

@@ -16,18 +16,25 @@ import { sanitizeChildEnv } from '../child-env.mjs';
 // resume 必然失败——CLI 2.1.302 实测报 "No conversation found with session
 // ID: …"，用户看到的就是「第 2 条消息立即报错」（2026-10-20 复现确认）。
 // 修法是把目录的生存期绑到真正需要它的东西上：会话，并**记进 transcript
-// 记录**（configDir 字段）。此前的内存 Map 版本在网关重启或 LRU 逐出后即忘，
-// 下一轮照样 resume 失败；磁盘记录让目录跨进程存活，与历史本身同生共死
-// （remove()/sweep() 删记录时一并回收目录）。只有没传 transcripts 的调用方
-// （旧测试 / 一次性调用）维持旧行为：本轮自建自删，无主可记。
+// 记录**（configDir 字段）。磁盘记录让目录跨进程存活（网关重启 / LRU 逐出后
+// 仍可 resume），与历史本身同生共死（remove()/sweep() 删记录时一并回收目录）。
+// 没传 transcripts 的调用方退回内存 Map（0.5.2 的行为）：同一进程内同
+// sessionId 复用目录，进程退出兜底统一回收——server.mjs 目前正是这条路
+// （还没把 store 接进来），删了它线上立刻回到「第 2 条消息报错」。
+
+// 无 store 时的后备缓存：sessionId → { dir, lastUsed }。仅进程内有效；
+// 谁来删见 configDirFor 的注释与 sweepSync。
+const fallbackDirs = new Map();
 
 // 取本会话的隔离目录。返回 { dir, keep }：
-//   keep = true  → 目录归会话所有（已记入或即将记入 transcript 记录）。调用方
-//                  **不得**在单个 turn 结束时删它（下一轮 --resume 还要靠它）；
-//                  回收只经由 transcript.remove()/sweep() / 进程退出兜底。
-//   keep = false → 调用方没给 sessionId 或没传 store，没有归属，turn 结束就删。
+//   keep = true  → 目录归会话所有（已记入 transcript 记录或挂在后备缓存里）。
+//                  调用方**不得**在单个 turn 结束时删它（下一轮 --resume 还要
+//                  靠它）；回收只经由 transcript.remove()/sweep()/disposeSession/
+//                  进程退出兜底。
+//   keep = false → 调用方没给 sessionId，没有归属，turn 结束就删（一次性调用）。
 function configDirFor(transcripts, sessionId) {
-  if (transcripts && sessionId) {
+  if (!sessionId) return { dir: mkdtempSync(join(tmpdir(), 'atbx-cc-')), keep: false };
+  if (transcripts) {
     // 先看记录里有没有上次的目录。注意 mkdirSync(recursive) 会把被删掉的目录
     // **原样重建**而不是抛错，所以「目录还在吗」不能靠 mkdir 探测——要靠
     // 目录里有没有上次那个 transcript 文件。文件不在（目录被清/用户手删），
@@ -49,13 +56,26 @@ function configDirFor(transcripts, sessionId) {
       // transcript 没了——旧 id 留着的话 restore() 会拿它配一个空目录，
       // --resume 必然失败（"No conversation found"）。null 在 save 的逐字段
       // 合并里是显式清除。首个成功的 turn 结束前 restore() 返回 null。
+      // 刻意不在 turn 开始前写别的字段：回合失败时记录里会留一条只有
+      // configDir 的桩记录，这是接受的——它无害（restore() 返回 null），
+      // 且让 remove() 能收回这个已存在的目录。
       transcripts.save({ id: sessionId, configDir: dir, ccSessionId: null });
       return { dir, keep: true };
     }
-    // id 不安全（不该发生：server 早已验过形状）——落到底下的无主分支。
+    // id 不安全（不该发生：server 早已验过形状）——落到底下的后备分支。
+  }
+  // 无 store：同 sessionId 复用一个进程内目录（0.5.2 行为），跨 turn 保
+  // --resume 能找到 transcript；但不能跨进程，重启后历史丢了，目录可重建。
+  const hit = fallbackDirs.get(sessionId);
+  if (hit) {
+    fallbackDirs.delete(sessionId); // 重新插入 → 刷新 LRU 序
+    hit.lastUsed = Date.now();
+    fallbackDirs.set(sessionId, hit);
+    return { dir: hit.dir, keep: true };
   }
   const dir = mkdtempSync(join(tmpdir(), 'atbx-cc-'));
-  return { dir, keep: false };
+  fallbackDirs.set(sessionId, { dir, lastUsed: Date.now() });
+  return { dir, keep: true };
 }
 
 
@@ -131,10 +151,16 @@ function terminate(child) {
 }
 
 // 同步清理：只做同步操作（process.kill / rmSync 都是同步的），'exit' 阶段可用。
-// config dir 不在这里删：归会话所有的必须跨重启存活（见 configDirFor 的注释），
-// 只有无主目录（keep=false 已在 finally 里删过）才可能残留，而无主目录不进这个表。
+// 归 store 所有的 config dir 不在这里删——它必须跨重启存活，磁盘回收是
+// transcript.remove()/sweep() 的事。无 store 的后备目录则相反：进程一死就没
+// 有任何记录能找回它，留着只会堆积，退出时统一扫掉（实时逐条删不划算，
+// 'exit' 阶段一次性 rm 更简单也更完备）。
 function sweepSync(sig) {
   for (const c of liveChildren) killTree(c, sig);
+  for (const { dir } of fallbackDirs.values()) {
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* 尽力而为 */ }
+  }
+  fallbackDirs.clear();
 }
 
 let globalCleanupInstalled = false;
@@ -188,8 +214,8 @@ export function createCcAdapter({ cliPath = 'claude', env = {}, transcripts = nu
         });
       } catch (err) {
         // 同步 spawn 失败（参数非法等）：无主目录必须回收，否则泄漏。
-        // 会话目录留给 disposeSession / TTL——此刻删掉会让后续 turn 的 resume
-        // 失去目标（正是本修复要消灭的失败模式）。
+        // 会话目录归 fallbackDirs / transcript 记录所有——此刻删掉会让后续
+        // turn 的 resume 失去目标（正是本修复要消灭的失败模式）。
         if (!keep) dropOwnedDir(configDir);
         yield { type: 'error', message: `failed to spawn claude: ${err.message}` };
         return;
@@ -280,10 +306,12 @@ export function createCcAdapter({ cliPath = 'claude', env = {}, transcripts = nu
             if (ev.type === 'error' && isGateError(ev.message)) ev.gate = true;
             if (ev.type === 'turn_end' || ev.type === 'error') {
               sawTerminal = true;
-              // 回合终结：把 cc 的 session id 和 config dir 记进 transcript 记录，
-              // 重启/LRU 逐出后 restore() 与下一轮 --resume 才有据可依。
+              // 回合成功终结：把 cc 的 session id 和 config dir 记进 transcript
+              // 记录，重启/LRU 逐出后 restore() 与下一轮 --resume 才有据可依。
               // 刻意只写这三个字段（cwd 等别的归 server 管，逐字段合并不会互踩）。
-              if (transcripts && sessionId && ev.sessionId) {
+              // 刻意只在 turn_end 写：失败回合的 id 不可信（CLI 常在吐 result 前
+              // 就换 id），盖掉上一个好 id 等于把能 resume 的会话废掉。
+              if (ev.type === 'turn_end' && transcripts && sessionId && ev.sessionId) {
                 transcripts.save({
                   id: sessionId, adapter: 'cc', agent: 'cc',
                   configDir, ccSessionId: ev.sessionId,
@@ -306,7 +334,7 @@ export function createCcAdapter({ cliPath = 'claude', env = {}, transcripts = nu
           if (tail.type === 'turn_end' || tail.type === 'error') {
             sawTerminal = true;
             if (interactive) endStdin(); // 与循环内同款：result 行已到即关 stdin（幂等）
-            if (transcripts && sessionId && tail.sessionId) {
+            if (tail.type === 'turn_end' && transcripts && sessionId && tail.sessionId) {
               transcripts.save({
                 id: sessionId, adapter: 'cc', agent: 'cc',
                 configDir, ccSessionId: tail.sessionId,
@@ -339,19 +367,25 @@ export function createCcAdapter({ cliPath = 'claude', env = {}, transcripts = nu
         // 不在这里 delete(liveChildren)：交给 'close' 回调，避免「已发信号但未死透」
         // 期间从进程退出兜底钩子的视野里消失（见上面 close 监听）。
         terminate(child); // SIGTERM + 宽限后 SIGKILL，保证最终一定死
-        // 只删「无主」目录：归会话所有的已记进 transcript 记录，要跨重启存活。
+        // 只删「无主」目录（没给 sessionId 的一次性调用）：归会话所有的要么
+        // 已记进 transcript 记录，要么挂在 fallbackDirs 里留给后续 turn。
         if (!keep) dropOwnedDir(configDir);
       }
     },
-    // 会话终结（TTL/容量逐出、客户端关抽屉）时由 server 调用。这里的 dispose
-    // 只释放内存簿记（旧版 Map 缓存已删，如今没有内存态可释放，no-op）——
-    // **不删** transcript 记录或 config dir：被逐出的会话历史正是「重启后
-    // 还能恢复」的那份，删了恢复就成了空话。磁盘回收只经由 transcript 的
-    // remove()/sweep()（用户删除 / TTL 到期）。
-    disposeSession() {},
-    // 测试钩子：revive（新建空目录并清掉旧 ccSessionId）不经 spawn，无法从
-    // 外部触发——暴露 configDirFor 本体供测试直接驱动。
-    __configDirFor(sessionId) { return configDirFor(transcripts, sessionId); },
+    // 会话终结（TTL/容量逐出、客户端关抽屉）时由 server 调用。
+    // store 有记录的会话：**不删**记录或 config dir——被逐出的会话历史正是
+    // 「重启后还能恢复」的那份，删了恢复就成了空话；磁盘回收只经由
+    // transcript 的 remove()/sweep()（用户删除 / TTL 到期）。
+    // 无 store 的会话：目录只挂在内存缓存里，会话一终结它就成了没人再引用
+    // 的孤儿（缓存键是 sessionId，逐出后不会再命中），留到进程退出才扫只会
+    // 堆积——此刻删，与 0.5.2 的 dropConfigDir 同一职责。
+    disposeSession(id) {
+      if (!id || transcripts) return;
+      const hit = fallbackDirs.get(id);
+      if (!hit) return;
+      fallbackDirs.delete(id);
+      try { rmSync(hit.dir, { recursive: true, force: true }); } catch { /* 尽力而为 */ }
+    },
     // 恢复材料：重启 / 内存逐出后由 server 调用，拿到 config dir 和上次的
     // cc session id，下一轮 turn 才能带 --resume。强校验：configDir 与
     // ccSessionId 都在、目录存在、且 projects/ 下真有 <ccSessionId>.jsonl——
@@ -384,8 +418,9 @@ function findCcTranscript(configDir, ccSessionId) {
   return false;
 }
 
-// 回收一个「无主」（未绑定 sessionId）的隔离目录。有主的走 transcript 的
-// remove()/sweep()，不能在单个 turn 结束时删。
+// 回收一个「无主」（未绑定 sessionId）的隔离目录。有主的归 transcript 的
+// remove()/sweep() 或 fallbackDirs 的 disposeSession/进程退出兜底，不能在
+// 单个 turn 结束时删。
 function dropOwnedDir(dir) {
   try { rmSync(dir, { recursive: true, force: true }); } catch { /* 尽力而为 */ }
 }
