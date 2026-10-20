@@ -14,6 +14,11 @@ import { readOnlyTools, fullTools } from './pi-tools.mjs';
 import { Agent as UndiciAgent, fetch as undiciFetch } from 'undici';
 
 const SYSTEM_PROMPT = 'You are a helpful assistant chatting in the AgentToolbox web app. Be concise and useful.';
+// 这些终结原因留下的 assistant 消息是占位（空文本 / abort / 错误），喂回模型
+// 就是脏上下文——绝不落盘。'error' 与 'aborted' 库都会发 turn_end
+// （agent.js 的 stopReason: aborted ? 'aborted' : 'error'），缺一个都会把
+// 坏轮写进历史；用集合而不是字符串比较，新出现的脏原因一眼可见。
+const DIRTY_STOP_REASONS = new Set(['error', 'aborted']);
 const STREAM_TIMEOUT_MS = 15 * 60_000;
 
 const streamDispatcher = new UndiciAgent({
@@ -161,23 +166,25 @@ export function createPiAdapter({ models, resolve, makeAgent = defaultMakeAgent,
         if (ev.type === 'message_update' && ev.assistantMessageEvent.type === 'text_delta') {
           push({ type: 'delta', text: ev.assistantMessageEvent.delta });
         } else if (ev.type === 'turn_end') {
-          push({ type: 'turn_end', stopReason: ev.message.stopReason ?? null, sessionId });
+          push({ type: 'turn_end', stopReason: ev.message.stopReason ?? null });
           // agent.prompt 不 reject provider 错误：失败编码为 stopReason:'error' +
           // errorMessage。不转发的话客户端只会看到空白回复。
           if (ev.message.stopReason === 'error') {
             push({ type: 'error', message: ev.message.errorMessage ?? 'provider error' });
-          } else {
+          } else if (!DIRTY_STOP_REASONS.has(ev.message.stopReason)) {
             // 成功的终结回合才落盘：把 Agent 眼中的完整对话（含本轮）原样存下——
             // 与 initialState.messages 同一形状，恢复时无需重整。cwd/provider/
             // model/title 由网关记（逐字段合并，两边不会互踩），适配器只写自己
-            // 独有的字段。piSessionId 就是 Agent 构造时用的 sessionId（库把它
-            // 作为 provider 侧的会话标识），记录里存一份供 Task 5 镜像到
-            // ~/.pi/agent/sessions 时对得上号。失败/中止轮留脏上下文，与缓存
-            // 逐出同一理由不落盘。
+            // 独有的字段。刻意不存「piSessionId / gatewaySessionId」之类：
+            // Agent 构造用的 sessionId 就是网关的会话键，与记录 id 同值，存了
+            // 只是重复；而它也不是 pi CLI 的 --session 句柄（库只把它转发给
+            // provider，不写 ~/.pi/agent/sessions）——真正可 resume 的 CLI id
+            // 由 Task 5 单独铸造并镜像。另外 store 的 RECORD_FIELDS 白名单里
+            // 没有这个字段，写了也会被剥掉。失败/中止轮留占位 assistant 消息，
+            // 与缓存逐出同一理由不落盘。
             if (transcripts && sessionId && Array.isArray(agent.state?.messages)) {
               transcripts.save({
                 id: sessionId, adapter: 'pi', agent: 'pi',
-                piSessionId: sessionId,
                 messages: stripPartialUsage(agent.state.messages),
               });
             }

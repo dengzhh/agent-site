@@ -63,9 +63,12 @@ const stubAgent = (state = {}) => {
   const agent = {
     subscribe: (fn) => { emit = fn; return () => { emit = null; }; },
     prompt: async () => {
-      if (state.messages) agent.state.messages = [...agent.state.messages, ...state.messages];
+      // state.messages 是「本轮结束后 Agent 应处于的完整状态」，直接替换而不是
+      // 追加：追加会把构造时已放进 state 的同批消息再叠一遍。
+      if (state.messages) agent.state.messages = [...state.messages];
       if (state.errorMessage) agent.state.errorMessage = state.errorMessage;
-      emit?.({ type: 'turn_end', message: { stopReason: 'stop' }, toolResults: [] });
+      // stopReason 可配置：aborted/error 轮的落盘行为各有用例钉住。
+      emit?.({ type: 'turn_end', message: { stopReason: state.stopReason ?? 'stop' }, toolResults: [] });
     },
     abort: () => {},
     state: { messages: [], ...state },
@@ -288,7 +291,9 @@ test('pi adapter persists the conversation on turn_end', async (t) => {
     assert.ok(rec, 'record saved');
     assert.equal(rec.adapter, 'pi');
     assert.equal(rec.agent, 'pi');
-    assert.equal(rec.piSessionId, 'sess-pi-1', 'piSessionId recorded for Task 5 mirroring');
+    // 不存 piSessionId/gatewaySessionId：与 id 同值纯属重复，且真 CLI id 归 Task 5
+    assert.equal(rec.piSessionId, undefined);
+    assert.equal(rec.gatewaySessionId, undefined);
     const userMsgs = rec.messages.filter((m) => m.role === 'user');
     assert.ok(userMsgs.some((m) => JSON.stringify(m).includes('first question')), 'user text persisted');
     assert.ok(rec.messages.some((m) => m.role === 'assistant'), 'assistant reply persisted');
@@ -434,4 +439,125 @@ test('everything keeps working without a transcripts store', async (t) => {
   assert.ok(events.some((e) => e.type === 'turn_end'));
   assert.equal(typeof pi.restore, 'function');
   pi.disposeSession('sess-pi-1'); // no-store 下也必须是安全的 no-op
+});
+
+// ── 修复轮：aborted 轮不落盘、gatewaySessionId 更名、逐字段合并不被清空 ────────
+
+// aborted 的 turn_end 不得覆盖已落盘的好记录：客户端断连会 abort()（server.mjs
+// 的 SSE teardown），库对 aborted 与 error 同样发 turn_end（stopReason 区分）。
+// 占位 assistant 消息混进历史，下一轮就会喂给模型——脏上下文。
+test('an aborted turn does not overwrite the previously persisted record', async (t) => {
+  const dir = freshDir();
+  try {
+    const store = new TranscriptStore({ dir });
+    const { pi } = piSetup(store, () => stubAgent({
+      messages: [{ role: 'assistant', content: [], stopReason: 'aborted' }],
+      stopReason: 'aborted',
+    }));
+    store.save({ id: 'sess-pi-1', adapter: 'pi', agent: 'pi', messages: [{ role: 'user', content: 'good history' }] });
+    const before = store.get('sess-pi-1');
+    const events = await runTurn(pi, 'q', { signal: abortSignalNow() });
+    assert.ok(events.some((e) => e.type === 'turn_end'));
+    assert.deepEqual(store.get('sess-pi-1'), before, 'aborted turn must not touch the record');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('an errored turn likewise leaves the prior record untouched', async (t) => {
+  const dir = freshDir();
+  try {
+    const store = new TranscriptStore({ dir });
+    const { pi } = piSetup(store, () => stubAgent({
+      messages: [{ role: 'assistant', content: [], stopReason: 'error' }],
+      stopReason: 'error', errorMessage: 'boom',
+    }));
+    store.save({ id: 'sess-pi-1', adapter: 'pi', agent: 'pi', messages: [{ role: 'user', content: 'good history' }] });
+    const before = store.get('sess-pi-1');
+    await runTurn(pi, 'q');
+    assert.deepEqual(store.get('sess-pi-1'), before, 'errored turn must not touch the record');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// 逐字段合并的边界：适配器绝不写 gateway 归档的配置字段（cwd/provider/model/
+// title）。若哪天把 null 或 undefined 显式传进 save，undefined 会走「保留旧值」
+// 分支测不出来，null 却是显式清除——R2（记录被适配器清空）就是这么发生的。
+// 本用例先由网关写入四个配置字段，再跑一轮适配器的 save，断言四者原样存活。
+test('persisting a turn preserves gateway-owned fields (no R2 clobber)', async (t) => {
+  const dir = freshDir();
+  try {
+    const store = new TranscriptStore({ dir });
+    const { pi } = piSetup(store, () => stubAgent({
+      messages: [{ role: 'assistant', content: [{ type: 'text', text: 'a' }] }],
+    }));
+    store.save({
+      id: 'sess-pi-1', adapter: 'pi', agent: 'pi',
+      cwd: '/work', provider: 'openrouter', model: 'free-small', title: 'My chat',
+      messages: [{ role: 'user', content: 'seed' }],
+    });
+    await runTurn(pi, 'next');
+    const rec = store.get('sess-pi-1');
+    assert.equal(rec.cwd, '/work');
+    assert.equal(rec.provider, 'openrouter');
+    assert.equal(rec.model, 'free-small');
+    assert.equal(rec.title, 'My chat');
+    // stub 的 prompt 把 state.messages 作为「本轮结束后的完整状态」整体替换，
+    // 故断言本轮的 assistant 产出覆盖了种子历史且消息确实被重写。
+    assert.ok(rec.messages.some((m) => JSON.stringify(m).includes('"a"')), 'messages rewritten this turn');
+    assert.ok(!rec.messages.some((m) => JSON.stringify(m).includes('seed')), 'stale seed replaced');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+function abortSignalNow() {
+  const c = new AbortController();
+  c.abort();
+  return c.signal;
+}
+
+// LRU 逐出后再发言：真实世界的双重播种风险。会话被挤出一 capacity 的缓存后，
+// Agent 重建、种子回灌——此时种下的历史必须恰好等于记录里的条数，不能翻倍。
+test('LRU eviction then a new turn seeds exactly the persisted history once', async (t) => {
+  const dir = freshDir();
+  try {
+    const store = new TranscriptStore({ dir });
+    const seen = [];
+    const { models, faux } = fauxSetup();
+    // 记录里预放 3 条历史；stub 每轮再各产出 1 条 user + 1 条 assistant
+    store.save({
+      id: 'sess-pi-1', adapter: 'pi', agent: 'pi',
+      messages: [
+        { role: 'user', content: 'h1' },
+        { role: 'assistant', content: [{ type: 'text', text: 'h1r' }] },
+        { role: 'user', content: 'h2' },
+      ],
+    });
+    const pi = createPiAdapter({
+      models,
+      resolve: () => ({ model: faux.getModel(), providerId: faux.provider.id }),
+      transcripts: store,
+      capacity: 1, // 极小缓存：第二个会话一进来就把 sess-pi-1 挤出去
+      makeAgent: (_m, _model, sid, _key, _tools, restored) => {
+        seen.push({ sid, restored });
+        return stubAgent({
+          messages: [
+            { role: 'user', content: 't1' },
+            { role: 'assistant', content: [{ type: 'text', text: 't1r' }] },
+          ],
+        });
+      },
+    });
+    const opts = { request: { provider: 'faux', model: 'faux' }, apiKey: 'k', toolTier: 'none' };
+    // 第 1 轮：冷启动播种（seen[0] = 3 条历史）
+    await collect(pi.run({ messages: [{ role: 'user', content: 'first' }], sessionId: 'sess-pi-1', ...opts }));
+    assert.equal(seen[0].sid, 'sess-pi-1');
+    assert.equal(seen[0].restored.length, 3, 'first cold start seeds the 3 persisted messages');
+    // 挤出：另一个会话占据 capacity=1 的唯一槽位
+    await collect(pi.run({ messages: [{ role: 'user', content: 'other' }], sessionId: 'sess-other', ...opts }));
+    assert.equal(seen[1].sid, 'sess-other', 'second session builds its own agent (evicts sess-pi-1)');
+    // 第 3 轮：sess-pi-1 的 Agent 已被逐出 → 重建 + 重新播种。历史 = 3（预置）
+    // + 第 1 轮落盘的 2 条 = 5 条；种子必须正好 5 条，不能 3+5 翻倍。
+    await collect(pi.run({ messages: [{ role: 'user', content: 'third' }], sessionId: 'sess-pi-1', ...opts }));
+    assert.equal(seen[2].sid, 'sess-pi-1', 'evicted session rebuilds an agent');
+    const rec = store.get('sess-pi-1');
+    assert.equal(seen[2].restored.length, rec.messages.length, 'seeded count equals history length exactly');
+    assert.equal(seen[2].restored.filter((m) => JSON.stringify(m).includes('t1r')).length, 1, 'no duplication of the prior turn');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
