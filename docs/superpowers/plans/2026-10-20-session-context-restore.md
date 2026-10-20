@@ -194,8 +194,11 @@ Expected: FAIL — `Cannot find module '../src/transcripts.mjs'`
 // 「跨重启/跨逐出的历史」。会话被内存 LRU 逐出时内容留在这里，不删。
 //
 // 安全取向（spec Security 节）：transcript 含 full tier 的工具输出、读过的
-// 文件、截图，故文件 0600 / 目录 0700。apiKey 永不进这里——那由调用方保证
-// 只走请求体，本模块也不提供任何存取 key 的入口。
+// 文件、截图，故文件 0600 / 目录 0700。凭据永不进这里：save() 按 RECORD_FIELDS
+// 白名单组装记录——「记得别把 apiKey 传进来」这种黑名单式纪律已被实测证明拦不住
+// （嵌套一层、大小写一变、塞进 env 就溜过去了），只有白名单能结构性封死。
+// 时间戳另做数值强转：既堵住「把凭据塞进 createdAt/lastUsed」这条路，
+// 也避免非数值 lastUsed 让 sweep 的 NaN 比较永不为真（静默 TTL 绕过）。
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, renameSync, rmSync, chmodSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -314,9 +317,10 @@ export class TranscriptStore {
     return ids.length;
   }
 
-  // 已知小瑕疵（实现时确认过，属可接受）：`.corrupt.json` 也以 .json 结尾，
-  // 因此 list() 每次都会尝试读隔离文件并再次 rename 到自身（try/catch 吞掉，
-  // 无实际效果）。代价是每轮多几次 stat，不值得为它加排除规则。
+  // 隔离区不是历史：list() 跳过 .corrupt.json，所以隔离文件不会被再次读取、
+  // 不会被再次隔离（早期版本漏了这条，导致 .corrupt.corrupt.corrupt… 无界增长）。
+  // 副作用：隔离文件因此也不受 sweep()/clear() 管——它是留给用户抢救的副本，
+  // 被 TTL 清掉反而违背隔离的初衷。要定期清理得另加一个显式方法。
 
   /**
    * TTL 清扫：删掉 lastUsed 超期的记录。网关启动时调一次。
