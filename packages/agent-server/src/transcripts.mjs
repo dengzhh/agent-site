@@ -22,9 +22,10 @@ const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 // 记录的完整字段表（spec 单文件格式），照抄而非推断。
 // 只认这张表：不在上面的字段一律不落盘，凭据也就没地方藏。
 // 代价是 spec 加字段必须同步这里——刻意用测试钉住往返来兜这个风险。
+// configDir 是 cc 适配器的持久 config dir 路径，同样属于「本就该记下的」。
 const RECORD_FIELDS = [
   'id', 'adapter', 'agent', 'provider', 'model', 'cwd', 'toolTier', 'title',
-  'messages', 'piSessionId', 'ccSessionId',
+  'messages', 'piSessionId', 'ccSessionId', 'configDir',
 ];
 
 // createdAt/lastUsed 由 store 盖章，不在 RECORD_FIELDS 里，却是从 rec 直取，
@@ -51,6 +52,15 @@ export class TranscriptStore {
   }
 
   #path(id) { return join(this.dir, `${id}.json`); }
+
+  /**
+   * cc 适配器的持久 config dir 位置：与 json 并排，<id>.cc/。
+   * 它是一个路径（由 store 派生），不是记录里的值，故不占白名单名额。
+   * @returns {string|null} id 不合法时返回 null
+   */
+  companionDir(id) {
+    return this.#readableId(id) ? join(this.dir, `${id}.cc`) : null;
+  }
 
   // id 校验的两套失败模式，按「谁来写这个 id」区分：
   //   save 抛 TypeError —— id 由内部代码生成，写不进去是程序员 bug，响亮地炸；
@@ -80,9 +90,11 @@ export class TranscriptStore {
   }
 
   /**
-   * 写入或更新一条记录。createdAt 保持首次值。
-   * lastUsed 默认刷新为当前时间，但调用方显式给了就尊重那个值
-   * （导入既有记录 / 回填 / 测试造时间线需要）。
+   * 写入或更新一条记录。逐字段合并：本次没给的字段保留上次落盘的值。
+   * 两处写入方（网关记配置、适配器记自己的东西）因此可以各写各的字段，
+   * 不会互相抹掉。null 是「显式值」，不是「没给」——要清掉某字段请删记录。
+   * createdAt 保持首次值；lastUsed 缺省刷新为当前时间，
+   * 但调用方显式给了就尊重那个值（导入既有记录 / 回填 / 测试造时间线需要）。
    * @param {object} rec 至少含 id；其余字段见 spec 的单文件格式
    * @throws {TypeError} rec 缺 id，或 id 不满足 SAFE_ID
    */
@@ -96,6 +108,7 @@ export class TranscriptStore {
     const merged = { v: FORMAT_VERSION, createdAt: 0, lastUsed: 0 };
     for (const k of RECORD_FIELDS) {
       if (rec[k] !== undefined) merged[k] = rec[k];
+      else if (prev?.[k] !== undefined) merged[k] = prev[k];
     }
     merged.createdAt = num(prev?.createdAt) ?? num(rec.createdAt) ?? now;
     // 调用方显式给了 lastUsed 就尊重它（导入/迁移既有记录、测试造时间线）；
