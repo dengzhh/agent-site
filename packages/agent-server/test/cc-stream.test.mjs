@@ -14,6 +14,24 @@ test('result line carries session id and error state', () => {
   assert.deepEqual(parseCcLine(bad), { type: 'error', message: 'API Error: 403 ...', sessionId: 'abc-123' });
 });
 
+// 真实 CLI 常把结论放在 result 之外的 errors[] 里（resume 失败时 result 为空串，
+// errors: ["No conversation found with session ID: …"]）。只透传 result 会让用户
+// 看到一句没有任何信息的 "Claude Code error"——已实测复现。
+test('error result surfaces the errors[] detail when result is empty', () => {
+  const line = JSON.stringify({
+    type: 'result', subtype: 'error_during_execution', session_id: 's1', is_error: true,
+    result: '', errors: ['No conversation found with session ID: 11111111-2222-3333-4444-555555555555'],
+  });
+  const ev = parseCcLine(line);
+  assert.equal(ev.type, 'error');
+  assert.match(ev.message, /No conversation found with session ID: 11111111-2222-3333-4444-555555555555/);
+});
+
+test('error result keeps a fallback message when both result and errors[] are empty', () => {
+  const line = JSON.stringify({ type: 'result', is_error: true, result: '', errors: [], session_id: 's1' });
+  assert.equal(parseCcLine(line).message, 'Claude Code error');
+});
+
 test('ignores unrelated and malformed lines', () => {
   assert.equal(parseCcLine(JSON.stringify({ type: 'system', subtype: 'init' })), null);
   assert.equal(parseCcLine(JSON.stringify({ type: 'assistant', message: {} })), null);

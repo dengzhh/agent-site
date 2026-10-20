@@ -9,6 +9,7 @@
 | `cc-turn-holder.mjs` | cc 孤儿进程测试用（扮演持有一轮 turn 的网关） |
 | `cc-echo-argv.sh` | cc 适配器 argv 回显：每个参数回显为 `ARG=<值>` delta，断言 tier → 命令行参数映射 |
 | `fake-claude-perm.mjs` | cc 权限回合夹具（Task 11）：回合中点发 `control_request(can_use_tool)`，等 stdin 的 `control_response`，按 behavior 回 `RESP=<原始应答行>` + `allowed`/`denied` delta。`FAKE_PERM_ID/TOOL/INPUT` 控制请求内容；15s 无应答或 stdin 提前关闭回 error result |
+| `fake-anthropic.mjs` | 本地假 Anthropic 上游（`POST /v1/messages` → 固定 SSE 文本流）：让**真实** claude CLI 在无 key、不外网的情况下端到端跑完一轮，用于 cc 跨 turn resume 回归。端口写进 `FAKE_ANTHROPIC_PORT_FILE` 上报；请求体可选追加到 `FAKE_ANTHROPIC_LOG` |
 
 ## 各 agent ACP 实测记录（2026-10-07 / 10-09）
 
@@ -73,9 +74,15 @@
 | 防重/防御 | ✅ 双击 Deny 仅产生一次 `POST /permission`（网络日志证实）；结算后按钮替换为状态标签，陈旧卡结构性不可再点 |
 | 控制台 | ✅ 全程无应用 JS 错误（仅外部 Google Fonts 加载失败，与本站无关） |
 
-**已知问题（如实记录，非 Task 13 回归）**：cc 会话第 2 条消息立即报
-`[error] Claude Code error` —— 即已立项跟踪的「cc 跨 turn resume 修复」：
-每 run 新建并随即删除隔离 `CLAUDE_CONFIG_DIR`，却仍传 `--resume` 旧 id，resume
-必败。测试以「改配置重建会话」绕过。顺带观察：错误行无细节文本（可读性欠佳）；
-助手气泡把 markdown 反引号按字面渲染（既有外观问题）。
+**cc 跨 turn resume（2026-10-20 已修复）**：此前每 run 新建并随即删除隔离
+`CLAUDE_CONFIG_DIR`，却仍传 `--resume` 旧 id，resume 必败——CLI 2.1.302 实测报
+`No conversation found with session ID: …`，用户看到「第 2 条消息立即报错」。
+修法：隔离目录的生存期改绑**会话**（按 `sessionId` 缓存，与 `SessionStore` 同 TTL），
+`disposeSession(id)` 在会话被逐出时回收，进程退出兜底照旧扫描。回归用例
+`cc adapter keeps the isolated config dir across turns so --resume works`
+用 `fake-anthropic.mjs` 驱动真实 CLI，是本套件唯一需要本机装有 claude 的测试
+（未装则 skip）。顺带修掉错误行无细节的问题：`parseCcLine` 现在透传 CLI 的
+`errors[]`（真实结论常在那里，`result` 反而是空串）。
+
+**遗留（既有外观问题，未修）**：助手气泡把 markdown 反引号按字面渲染。
 

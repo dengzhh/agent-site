@@ -43,7 +43,13 @@ export function parseCcLine(line) {
   if (obj.type === 'result') {
     const sessionId = obj.session_id ?? null;
     if (obj.is_error) {
-      return { type: 'error', message: String(obj.result ?? 'Claude Code error'), sessionId };
+      // 真实 CLI 常把结论留在 result 之外的 errors[] 里（例如 resume 失败时
+      // "No conversation found with session ID: …"），result 反而空着。只透传
+      // result 会让用户看到一句没有信息的 "Claude Code error"（已实测复现）。
+      const detail = String(obj.result ?? '').trim()
+        || (Array.isArray(obj.errors) && obj.errors.length ? String(obj.errors[0]) : '')
+        || 'Claude Code error';
+      return { type: 'error', message: detail, sessionId };
     }
     return { type: 'turn_end', stopReason: obj.subtype === 'success' ? null : (obj.subtype ?? null), sessionId };
   }

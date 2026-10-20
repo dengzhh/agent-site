@@ -14,6 +14,53 @@ function isolatedConfigDir() {
   return mkdtempSync(join(tmpdir(), 'atbx-cc-'));
 }
 
+// ── 隔离配置目录的生存期：跟随 session，不是跟随 turn ────────────────────────
+// `claude --resume <id>` 只在 CLAUDE_CONFIG_DIR 里找 transcript
+// （<dir>/projects/<cwd-slug>/<id>.jsonl）。目录每轮新建、回合结束即删，
+// resume 必然失败——CLI 2.1.302 实测报 "No conversation found with session
+// ID: …"，用户看到的就是「第 2 条消息立即报错」（2026-10-20 复现确认）。
+// 修法是把目录的生存期绑到真正需要它的东西上：会话。
+// 键用 server.mjs 早已传入的 sessionId（它本就为 pi 的跨轮 Agent 缓存而传）。
+// 未传 sessionId 的调用方（测试/一次性调用）维持旧行为：本轮自建自删。
+const configDirs = new Map();        // sessionId → { dir, lastUsed }
+const CONFIG_DIR_TTL_MS = 30 * 60_000; // 与 SessionStore 的 TTL 对齐
+// 已知存活、尚未回收的隔离目录。与 liveChildren 同理：process 被信号终止时
+// 生成器的 finally 不会跑，得靠这个全局表在退出前扫掉。
+const liveConfigDirs = new Set();
+
+function dropConfigDir(id) {
+  const entry = configDirs.get(id);
+  if (!entry) return;
+  configDirs.delete(id);
+  liveConfigDirs.delete(entry.dir);
+  try { rmSync(entry.dir, { recursive: true, force: true }); } catch { /* 尽力而为 */ }
+}
+
+// 取本会话的隔离目录。返回 { dir, keep }：
+//   keep = true  → 目录已登记进 configDirs，归会话所有。调用方**不得**在单个
+//                  turn 结束时删它（下一轮 --resume 还要靠它找 transcript）；
+//                  回收只经由 disposeSession / TTL / 进程退出兜底。
+//   keep = false → 调用方没给 sessionId，没有归属，turn 结束就该删（旧行为）。
+function configDirFor(sessionId) {
+  const now = Date.now();
+  for (const [id, entry] of configDirs) {
+    if (now - entry.lastUsed > CONFIG_DIR_TTL_MS) dropConfigDir(id);
+  }
+  if (sessionId) {
+    const hit = configDirs.get(sessionId);
+    if (hit) {
+      configDirs.delete(sessionId);        // 重新插入 → 刷新 LRU 序
+      hit.lastUsed = now;
+      configDirs.set(sessionId, hit);
+      return { dir: hit.dir, keep: true };
+    }
+  }
+  const dir = isolatedConfigDir();
+  if (sessionId) configDirs.set(sessionId, { dir, lastUsed: now });
+  liveConfigDirs.add(dir);
+  return { dir, keep: Boolean(sessionId) };
+}
+
 
 function buildArgs({ allowedTools = [], resumeSessionId, streamInput = false }) {
   const args = ['-p', '--output-format=stream-json', '--include-partial-messages', '--verbose'];
@@ -64,9 +111,6 @@ function lastUserText(messages) {
 // 所有关闭路径（正常收尾 / 生成器提前 return / abort / 网关收到 SIGTERM·SIGINT）
 // 都必须走 killTree。
 const liveChildren = new Set();
-// 已建出、尚未回收的隔离目录。进程被信号终止时 process.exit() 会跳过生成器的
-// finally，目录就没人收了——所以全局兜底也要负责扫掉它们。
-const liveConfigDirs = new Set();
 const KILL_GRACE_MS = 5000;
 
 function killTree(child, sig) {
@@ -122,12 +166,13 @@ export function createCcAdapter({ cliPath = 'claude', env = {} } = {}) {
       const paths = (process.env.PATH ?? '').split(':');
       return paths.some((p) => p && existsSync(join(p, cliPath)));
     },
-    async *run({ messages, model, apiKey, baseUrl, anthropicApi, cwd, allowedTools = [], resumeSessionId, signal, toolTier, requestApproval }) {
+    async *run({ messages, model, apiKey, baseUrl, anthropicApi, cwd, allowedTools = [], resumeSessionId, signal, toolTier, requestApproval, sessionId }) {
       // full 级别 = 双向 stream-json：回合提示经 stdin 的 user 消息驱动，权限提示经
       // 控制通道往返（--permission-prompt-tool stdio）。其余级别与旧行为完全一致。
       const interactive = toolTier === 'full';
-      // 先在局部变量里建好隔离目录，finally 才能拿到引用清理——不能就地写进 env 里。
-      const configDir = isolatedConfigDir();
+      // 目录归会话所有：同一 sessionId 的后续 turn 复用同一目录，--resume 才找得到
+      // transcript（见上面 configDirFor 的说明）。只有无主目录才在 turn 结束时删。
+      const { dir: configDir, keep } = configDirFor(sessionId);
       let child;
       try {
         child = spawn(cliPath, buildArgs({ allowedTools, resumeSessionId, streamInput: interactive }), {
@@ -146,14 +191,15 @@ export function createCcAdapter({ cliPath = 'claude', env = {} } = {}) {
           detached: true, // 自成进程组，供 killTree(-pid) 整组清理（stdout/stderr 仍是管道）
         });
       } catch (err) {
-        // 同步 spawn 失败（参数非法等）：目录已建好，必须回收，否则泄漏。
-        rmSync(configDir, { recursive: true, force: true });
+        // 同步 spawn 失败（参数非法等）：无主目录必须回收，否则泄漏。
+        // 会话目录留给 disposeSession / TTL——此刻删掉会让后续 turn 的 resume
+        // 失去目标（正是本修复要消灭的失败模式）。
+        if (!keep) dropOwnedDir(configDir);
         yield { type: 'error', message: `failed to spawn claude: ${err.message}` };
         return;
       }
 
       liveChildren.add(child);
-      liveConfigDirs.add(configDir);
       installGlobalCleanup();
 
       // abort（/abort 路由或客户端断连）→ 立即 SIGTERM 整个进程组，宽限期后升级 SIGKILL。
@@ -282,9 +328,20 @@ export function createCcAdapter({ cliPath = 'claude', env = {} } = {}) {
         // 不在这里 delete(liveChildren)：交给 'close' 回调，避免「已发信号但未死透」
         // 期间从进程退出兜底钩子的视野里消失（见上面 close 监听）。
         terminate(child); // SIGTERM + 宽限后 SIGKILL，保证最终一定死
-        rmSync(configDir, { recursive: true, force: true });
-        liveConfigDirs.delete(configDir);
+        // 只删「无主」目录：归会话所有的要留给下一轮 resume（见 configDirFor）。
+        // 它仍登记在 liveConfigDirs 里，进程退出兜底会扫掉。
+        if (!keep) dropOwnedDir(configDir);
       }
     },
+    // 会话终结（TTL/容量逐出、客户端关抽屉）时由 server 调用，回收隔离目录。
+    // 不传 sessionId 的调用方没有可回收项，no-op。
+    disposeSession(id) { if (id) dropConfigDir(id); },
   };
+}
+
+// 回收一个「无主」（未绑定 sessionId）的隔离目录。有主的走 dropConfigDir，
+// 由 disposeSession / TTL 驱动，不能在单个 turn 结束时删。
+function dropOwnedDir(dir) {
+  liveConfigDirs.delete(dir);
+  try { rmSync(dir, { recursive: true, force: true }); } catch { /* 尽力而为 */ }
 }

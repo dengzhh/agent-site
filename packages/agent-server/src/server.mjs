@@ -189,8 +189,9 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
           // 待批权限审批表（reqId → resolve 回调），由 run ctx 的 requestApproval 写入
           pendingPerms: new Map(),
         };
-        // SessionStore 逐出（TTL/容量）时的自清理钩子
-        record.dispose = () => denyPendingPerms(record);
+        // SessionStore 逐出（TTL/容量）时的自清理钩子：挂起的审批按拒绝收敛，
+        // 并回收 cc 适配器为这个会话建的隔离配置目录（留着就是泄漏）。
+        record.dispose = () => { denyPendingPerms(record); adapter.disposeSession?.(id); };
         sessions.set(record);
         log('session', `+ ${id.slice(0, 8)} via ${acpAgentId ? `acp:${acpAgentId}` : adapter.id}` +
           ` provider=${body.provider} model=${body.model} cwd=${cwd ?? '-'} tier=${toolTier}`);

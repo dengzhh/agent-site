@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { readFileSync, rmSync } from 'node:fs';
+import { readFileSync, rmSync, mkdtempSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -245,4 +245,76 @@ test('cc adapter leaves no orphan when the host process is terminated', async ()
     if (pid && isAlive(pid)) { try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ } }
     rmSync(pidFile, { force: true });
   }
+});
+
+// ── 跨 turn resume（用户实见症状）────────────────────────────────────────────
+// 「点了 tool 让它干活，第一条正常，第二条立即报错」。根因：隔离
+// CLAUDE_CONFIG_DIR 每轮新建并删除，而 claude --resume <id> 只在这个目录里找
+// transcript（<dir>/projects/<slug>/<id>.jsonl）——全新空目录必然报
+// "No conversation found with session ID: …"（CLI 2.1.302 实测）。
+// 本用例是套件里唯一跑真实 claude CLI 的：用本地假上游喂它，既不打真实 API
+// 也不外网。未装 CLI 的环境 skip，不让 CI 因环境缺失而红。
+const startFakeAnthropic = async () => {
+  const portFile = join(tmpdir(), `atbx-fake-upstream-${process.pid}-${Date.now()}.port`);
+  const child = spawn(
+    process.execPath,
+    [join(dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-anthropic.mjs')],
+    { env: { ...process.env, FAKE_ANTHROPIC_PORT_FILE: portFile }, stdio: 'ignore', detached: true },
+  );
+  let port = null;
+  for (let i = 0; i < 60; i++) {
+    try {
+      const p = Number(readFileSync(portFile, 'utf8').trim());
+      if (p) { port = p; break; }
+    } catch { /* 夹具还没写完 */ }
+    await delay(100);
+  }
+  if (!port) { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* 已退出 */ } throw new Error('fake upstream never reported a port'); }
+  return {
+    baseUrl: `http://127.0.0.1:${port}`,
+    close: () => { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* 已退出 */ } rmSync(portFile, { force: true }); },
+  };
+};
+
+test('cc adapter keeps the isolated config dir across turns so --resume works', async (t) => {
+  const hasCli = await createCcAdapter().available();
+  if (!hasCli) { t.skip('claude CLI not installed'); return; }
+
+  const upstream = await startFakeAnthropic();
+  t.after(upstream.close);
+
+  const cc = createCcAdapter();
+  const cwd = mkdtempSync(join(tmpdir(), 'atbx-cc-resume-'));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  const run = (resumeSessionId) => collect(cc.run({
+    messages: [{ role: 'user', content: 'hi' }],
+    model: 'claude-sonnet-4-5', apiKey: 'k', baseUrl: upstream.baseUrl, cwd, allowedTools: [],
+    resumeSessionId, sessionId: 'sess-resume-1',
+  }));
+
+  const first = await withTimeout(run(null), 90000, 'first turn');
+  const firstSid = first.find((e) => e.sessionId)?.sessionId;
+  assert.ok(firstSid, 'first turn reports a session id');
+  assert.equal(first.at(-1).type, 'turn_end', 'first turn should complete');
+
+  const second = await withTimeout(run(firstSid), 90000, 'second turn');
+  assert.equal(second.at(-1).type, 'turn_end', `second turn errored: ${second.at(-1).message}`);
+  // resume 成功时 CLI 复用同一个 session_id（实测 2.1.302 行为）
+  assert.equal(second.find((e) => e.sessionId)?.sessionId, firstSid, 'resumed turn reuses the session id');
+});
+
+// 会话终结时适配器必须回收隔离目录：否则一次浏览器会话就永久泄漏一个
+// CLAUDE_CONFIG_DIR（含用户这一会话的 transcript）。
+test('cc adapter disposeSession reclaims the isolated config dir', async () => {
+  const cc = createCcAdapter({ cliPath: FIXTURE, env: { FAKE_CC_ECHO_CONFIG: '1' } });
+  const events = await collect(cc.run({
+    messages: [{ role: 'user', content: 'hi' }], model: 'm', apiKey: 'k',
+    baseUrl: 'https://openrouter.ai/api', cwd: '/tmp', allowedTools: [], sessionId: 'sess-dispose-1',
+  }));
+  const dir = events.find((e) => e.type === 'delta')?.text?.match(/CFG=(\S+)/)?.[1];
+  assert.ok(dir, 'fixture echoed the config dir');
+  assert.ok(existsSync(dir), 'dir still present after the turn (needed for --resume)');
+  cc.disposeSession('sess-dispose-1');
+  assert.ok(!existsSync(dir), 'disposeSession removed the dir');
 });
