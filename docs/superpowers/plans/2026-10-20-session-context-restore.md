@@ -1242,6 +1242,18 @@ Expected: FAIL — 5 条新用例全红
 
 - [ ] **Step 3: 改 `server.mjs`**
 
+3a'. 补 import（`server.mjs` 现有 import 里没有 `path`/`os`/`TranscriptStore`/`piSessionDir`，
+不补下面 3a 的代码连编译都过不去）：
+
+```js
+import { join } from 'node:path';
+import { homedir } from 'node:os';
+import { loadConfig, sessionTtlMs, piSessionDir } from './config.mjs';
+import { TranscriptStore } from './transcripts.mjs';
+```
+
+（`loadConfig` 现在由同一行引入，别再留单独那行 `import { loadConfig } from './config.mjs';`。）
+
 3a. `startServer` 签名加 `transcripts`，缺省自建（生产路径）：
 
 ```js
@@ -1335,13 +1347,72 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
 
 **注意顺序**：`GET /sessions` 必须放在 `POST /sessions` 判断之前或与之并列且用 method 区分——现有代码是 `if (req.method === 'POST' && url.pathname === '/sessions')`，两者不冲突，直接并列即可。
 
+3f. **另外三条路由的 id 正则也要改**（`[0-9a-f-]+` → `[A-Za-z0-9_-]{1,128}`）：
+
+```js
+      // /sessions/:id/messages、:id/permission、:id/abort
+```
+
+三处原本都用 `[0-9a-f-]+`，因为过去 id 只可能来自 `randomUUID()`（小写十六进制）。
+Task 6 之后 **id 可以来自请求体**（persistId 由前端存下、用户可改），不是小写十六进制
+的 id 会被这三条路由挡在门外 → 恢复出来的会话发第一条消息就 404。所以与 3e 的
+DELETE 一起，四处统一换成 `[A-Za-z0-9_-]{1,128}`（与 store 的 SAFE_ID 一致，
+UUID 自然仍匹配）。
+
+```js
+      const msgMatch = req.method === 'POST' && url.pathname.match(/^\/sessions\/([A-Za-z0-9_-]{1,128})\/messages$/);
+      const permMatch = req.method === 'POST' && url.pathname.match(/^\/sessions\/([A-Za-z0-9_-]{1,128})\/permission$/);
+      const abortMatch = req.method === 'POST' && url.pathname.match(/^\/sessions\/([A-Za-z0-9_-]{1,128})\/abort$/);
+```
+
+验证：只要 `POST /sessions` 用 `persistId:'resume-me'` 拿 200，紧接着往
+`/sessions/resume-me/messages` 发一条就必须不是 404。加一条测试钉住它：
+
+```js
+test('a resumed session accepts messages on its persistId', async (t) => {
+  const dir = freshDir();
+  try {
+    const store = new TranscriptStore({ dir });
+    const { json, faux } = await withFauxServer(t, ['http://localhost:4321'], undefined, store);
+    faux.setResponses([fauxAssistantMessage([fauxText('still here')])]);
+    store.save({
+      id: 'resume-me', adapter: 'pi', agent: 'pi', provider: 'faux', model: 'faux',
+      cwd: '/tmp', messages: [{ role: 'user', content: 'earlier', timestamp: 1 }],
+    });
+    const created = await json('/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+      body: JSON.stringify({ provider: 'faux', model: 'faux', persistId: 'resume-me' }),
+    });
+    assert.equal(created.status, 200);
+    const r = await fetch(`${baseOf(created)}/sessions/resume-me/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+      body: JSON.stringify({ text: 'and now?' }),
+    });
+    assert.notEqual(r.status, 404, 'resumed ids are not lowercase-hex; UUID-only regex 404s them');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+```
+
+（`baseOf` 用测试里现成的 `base`：`withFauxServer` 已返回它，把 `base` 也解构出来，
+直接 `fetch(base + '/sessions/resume-me/messages', …)`，不必新增 helper。这条用例
+要读 SSE，断言到状态码即可，读完记得 `r.body.cancel()`。）
+
 - [ ] **Step 4: 更新测试 helper**
 
-`withFauxServer` 签名加 `transcripts` 参数并传给 `startServer`：
+4a. `withFauxServer` 签名加 `transcripts`，并且——**这一处才是恢复能跑通的关键**——
+把同一个 store 也传给测试自己造的 pi 适配器：
 
 ```js
 async function withFauxServer(t, origins = ['http://localhost:4321'], acpProbe, transcripts) {
   ...
+  // ⚠️ store 必须同时进适配器：这里注入的 registry 会顶掉 startServer 里的
+  // 默认 registry（3b 那行只有测试不注入时才生效），而 adapter.restore() 是
+  // 适配器上的方法 —— 它内部 loadPersistedMessages 在 transcripts 为空时
+  // 直接返回 null（pi.mjs:113）。只把 store 交给 startServer，恢复测试会拿到
+  // resumed:false 而不是 true。
+  const registry = createRegistry([createPiAdapter({ models, resolve, transcripts: transcripts ?? null })]);
   const srv = await startServer({
     port: 0, allowedOrigins: origins, resolve, models, registry,
     acpProbe: acpProbe ?? (async () => false),
@@ -1349,7 +1420,14 @@ async function withFauxServer(t, origins = ['http://localhost:4321'], acpProbe, 
   });
 ```
 
-同时在文件顶部加 `const freshDir = () => mkdtempSync(join(tmpdir(), 'atbx-srv-'));` 及相应 import。
+4b. 文件顶部加：
+
+```js
+import { TranscriptStore } from '../src/transcripts.mjs';
+const freshDir = () => mkdtempSync(join(tmpdir(), 'atbx-srv-'));
+```
+
+（`mkdtempSync`/`tmpdir`/`join` 现有 import 已覆盖，只缺 `TranscriptStore`。）
 
 - [ ] **Step 5: 运行测试确认通过**
 
