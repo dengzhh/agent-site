@@ -101,6 +101,28 @@ export function buildPiSessionLines({ piSessionId, cwd, name, messages = [] }) {
   return lines;
 }
 
+/**
+ * 保证每条 assistant 消息都有 usage。**只在完全缺失时补零**：
+ * pi 的 calculateContextTokens 直接读 `usage.totalTokens`，usage 整个不存在就抛
+ * "Cannot read properties of undefined"（实测，库与真 CLI 0.84.3 一致）；而只缺
+ * totalTokens 的残缺 usage 是安全的，照抄即可——拿零去覆盖真实计数才是撒谎。
+ * user 消息本来就没有 usage，不动。
+ */
+export function withUsage(messages) {
+  return messages.map((m) => (
+    m.role === 'assistant' && m.usage === undefined
+      ? { ...m, usage: emptyUsage() }
+      : m
+  ));
+}
+
+function emptyUsage() {
+  return {
+    input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  };
+}
+
 /** 序列化成 JSONL 文本（末尾带换行，符合 CLI 的逐行读取）；空数组就是空文件。 */
 export function renderPiSession(lines) {
   return lines.map((l, i) => {

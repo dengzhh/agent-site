@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from '@earendil-works/pi-ai';
 import { createPiAdapter } from '../src/adapters/pi.mjs';
+import { withUsage } from '../src/pi-session-writer.mjs';
 import { TranscriptStore } from '../src/transcripts.mjs';
 
 const collect = async (iter) => { const out = []; for await (const e of iter) out.push(e); return out; };
@@ -257,13 +258,15 @@ function tmpSandbox() {
 
 // ── Task 4：跨进程持久化（transcripts store）与恢复 ──────────────────────────────
 
-// faux 响应工厂：拿到发给 provider 的 transcript（即 Agent 眼中的完整上下文）。
-const capture = (reply) => (ctx) => { capture.seen = ctx.messages; return fauxAssistantMessage([fauxText(reply)]); };
-capture.seen = [];
+// faux 响应工厂：ctx.messages 就是发给 provider 的 transcript（Agent 眼中的完整上下文）。
+const reply = (text, seen) => (ctx) => {
+  if (seen) seen.push(ctx.messages);
+  return fauxAssistantMessage([fauxText(text)]);
+};
 
 function piSetup(store, makeAgent) {
   const { models, faux } = fauxSetup();
-  faux.setResponses([capture('reply one'), capture('reply two')]);
+  faux.setResponses([reply('reply one'), reply('reply two')]);
   const opts = {
     models,
     resolve: () => ({ model: faux.getModel(), providerId: faux.provider.id }),
@@ -304,24 +307,48 @@ test('pi adapter persists the conversation on turn_end', async (t) => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('pi adapter does not persist a partial usage object', async (t) => {
+test('pi adapter preserves a partial usage object when persisting', async (t) => {
   const dir = freshDir();
   try {
     const store = new TranscriptStore({ dir });
-    // Agent 落在 transcript 里的 assistant 消息带残缺 usage（无 totalTokens）时，
-    // 持久化必须剥掉 usage：pi CLI resume 读到 usage.totalTokens 会崩
-    // （"Cannot read properties of undefined (reading 'totalTokens')"）。
+    // 残缺 usage（无 totalTokens）本身是安全的：pi 的 calculateContextTokens
+    // 只在 usage 整个缺失时才崩。零填充只补「缺」，绝不拿零覆盖真实计数。
     const { pi } = piSetup(store, () => stubAgent({
       messages: [
         { role: 'user', content: 'q' },
-        { role: 'assistant', content: [{ type: 'text', text: 'a' }], usage: { input: 1, output: 2 } },
+        { role: 'assistant', content: [{ type: 'text', text: 'a' }], usage: { input: 10, output: 5 } },
       ],
     }));
     await runTurn(pi, 'q');
     const rec = store.get('sess-pi-1');
     const asst = rec.messages.find((m) => m.role === 'assistant');
     assert.ok(asst, 'assistant message persisted');
-    assert.equal(asst.usage, undefined, 'partial usage stripped before persist');
+    assert.deepEqual(asst.usage, { input: 10, output: 5 }, 'real partial usage preserved unchanged');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// usage 整个缺失才是致命的：pi 的 calculateContextTokens 直接读
+// usage.totalTokens（实测库与真 CLI 0.84.3 都抛
+// "Cannot read properties of undefined"）。落盘时补零，恢复出来的历史才可喂回。
+test('pi adapter zero-fills an absent usage when persisting', async (t) => {
+  const dir = freshDir();
+  try {
+    const store = new TranscriptStore({ dir });
+    const { pi } = piSetup(store, () => stubAgent({
+      messages: [
+        { role: 'user', content: 'q' },
+        { role: 'assistant', content: [{ type: 'text', text: 'a' }] },
+      ],
+    }));
+    await runTurn(pi, 'q');
+    const rec = store.get('sess-pi-1');
+    const asst = rec.messages.find((m) => m.role === 'assistant');
+    assert.equal(asst.usage.totalTokens, 0, 'usage present with totalTokens');
+    assert.equal(asst.usage.input, 0);
+    assert.equal(asst.usage.cost.total, 0);
+    // user 消息本来就没有 usage，不该被塞一个
+    const user = rec.messages.find((m) => m.role === 'user');
+    assert.equal(user.usage, undefined, 'user messages untouched');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -504,6 +531,112 @@ test('persisting a turn preserves gateway-owned fields (no R2 clobber)', async (
     assert.ok(rec.messages.some((m) => JSON.stringify(m).includes('"a"')), 'messages rewritten this turn');
     assert.ok(!rec.messages.some((m) => JSON.stringify(m).includes('seed')), 'stale seed replaced');
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// 端到端：恢复的历史必须真的到达 provider ────────────────────────────────────
+// 上面所有恢复用例都只断言 makeAgent 的第 6 个参数——把播种整段掐掉，它们
+// 照样全绿（已实测）。所以这里走真实 defaultMakeAgent：第 1 轮跑完落盘 →
+// 换一个新的适配器实例（同一 store）→ 第 2 轮，断言 faux provider 实际收到
+// 的上下文里有第 1 轮的用户文本与助手回复。
+test('a new adapter instance restores history all the way to the provider', async (t) => {
+  const dir = freshDir();
+  try {
+    const store = new TranscriptStore({ dir });
+    const boot = (replies) => {
+      const seen = [];
+      const { models, faux } = fauxSetup();
+      faux.setResponses(replies.map((r) => reply(r, seen)));
+      const pi = createPiAdapter({
+        models,
+        resolve: () => ({ model: faux.getModel(), providerId: faux.provider.id }),
+        transcripts: store,
+      });
+      return { pi, seen };
+    };
+    const turn = (pi, text) => collect(pi.run({
+      messages: [{ role: 'user', content: text }],
+      request: { provider: 'faux', model: 'faux' },
+      apiKey: 'k', sessionId: 'sess-pi-1', cwd: '/tmp', toolTier: 'none',
+    }));
+
+    const first = boot(['reply one']);
+    await turn(first.pi, 'first question');
+    assert.ok(store.get('sess-pi-1'), 'turn one persisted');
+
+    const second = boot(['reply two']);
+    const events = await turn(second.pi, 'second question');
+    assert.ok(events.some((e) => e.type === 'turn_end'), 'turn two ended');
+    assert.equal(second.seen.length, 1, 'second turn made exactly one provider call');
+    const ctx = JSON.stringify(second.seen[0]);
+    assert.ok(ctx.includes('first question'), 'provider saw turn one user text');
+    assert.ok(ctx.includes('reply one'), 'provider saw turn one assistant reply');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// 落盘失败不得毁掉本轮：库会 await 订阅者，这里抛出去会变成第二个
+// turn_end{stopReason:'error'} 并写上 state.errorMessage，run 末尾的错误清理
+// 随即把缓存里的 Agent 逐出——磁盘满一次，整个会话的对话就没了。
+// 判据用真实 Agent：逐出会让第 2 轮拿到空白上下文（历史重置）。
+test('a failing transcript save does not corrupt or evict the turn', async (t) => {
+  const dir = freshDir();
+  try {
+    const store = new TranscriptStore({ dir });
+    store.save = () => { throw new Error('ENOSPC: disk full'); };
+    const seen = [];
+    const { models, faux } = fauxSetup();
+    faux.setResponses([reply('reply one', seen), reply('reply two', seen)]);
+    const pi = createPiAdapter({
+      models,
+      resolve: () => ({ model: faux.getModel(), providerId: faux.provider.id }),
+      transcripts: store,
+    });
+    const turn = (text) => collect(pi.run({
+      messages: [{ role: 'user', content: text }],
+      request: { provider: 'faux', model: 'faux' },
+      apiKey: 'k', sessionId: 'sess-pi-1', cwd: '/tmp', toolTier: 'none',
+    }));
+
+    const events = await turn('first question');
+    assert.equal(events.filter((e) => e.type === 'turn_end').length, 1, 'exactly one turn_end');
+    assert.equal(events.find((e) => e.type === 'turn_end').stopReason, 'stop', 'still a success');
+    assert.ok(!events.some((e) => e.type === 'error'), 'no error event surfaced to the client');
+
+    await turn('second question');
+    assert.equal(seen.length, 2);
+    assert.ok(JSON.stringify(seen[1]).includes('first question'),
+      'cached Agent survived (no eviction) — its in-memory history is intact');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// cache=false 的一次性 Agent（failover）只见到本轮——它的单轮 transcript
+// 若写进共享记录，等于用一turn历史覆盖掉真会话。
+test('a cache:false run does not write the shared record', async (t) => {
+  const dir = freshDir();
+  try {
+    const store = new TranscriptStore({ dir });
+    store.save({ id: 'sess-pi-1', adapter: 'pi', agent: 'pi', messages: [{ role: 'user', content: 'real history' }] });
+    const before = store.get('sess-pi-1');
+    const { pi } = piSetup(store, () => stubAgent({
+      messages: [{ role: 'user', content: 'throwaway' }, { role: 'assistant', content: [{ type: 'text', text: 'x' }] }],
+    }));
+    await runTurn(pi, 'throwaway', { cache: false });
+    assert.deepEqual(store.get('sess-pi-1'), before, 'throwaway run must not touch the record');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// withUsage 的单元口径（Task 5 的镜像写盘共用同一个 helper）
+test('withUsage zero-fills only absent usage', async () => {
+  const partial = { input: 10, output: 5 };
+  const out = withUsage([
+    { role: 'user', content: 'q' },
+    { role: 'assistant', content: [], usage: partial },
+    { role: 'assistant', content: [] },
+  ]);
+  assert.equal(out[0].usage, undefined, 'user message untouched');
+  assert.equal(out[1].usage, partial, 'partial usage preserved by reference');
+  assert.deepEqual(Object.keys(out[2].usage).sort(),
+    ['cacheRead', 'cacheWrite', 'cost', 'input', 'output', 'totalTokens']);
+  assert.equal(out[2].usage.totalTokens, 0);
 });
 
 function abortSignalNow() {
