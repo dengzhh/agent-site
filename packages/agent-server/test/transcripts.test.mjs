@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TranscriptStore } from '../src/transcripts.mjs';
@@ -82,10 +82,15 @@ test('remove deletes the file and the companion .cc dir', () => {
     const store = new TranscriptStore({ dir });
     store.save(base());
     store.save(base({ id: 'p-2', adapter: 'cc' }));
+    // cc 会话带一个持久 config dir（--resume 依赖它），删除时要连目录一起收。
+    // 造一个假的 .cc 目录来验证这条路径，别只靠「不抛异常」蒙过去。
+    mkdirSync(join(dir, 'p-2.cc'), { recursive: true });
     store.remove('p-1');
     assert.equal(existsSync(join(dir, 'p-1.json')), false);
-    // cc 会话带一个持久 config dir，删除时要连目录一起收
-    assert.equal(store.remove('p-2'), false, 'no .cc dir yet — still not a crash');
+    assert.equal(store.remove('p-2'), true, 'the record existed, so it was removed');
+    assert.equal(existsSync(join(dir, 'p-2.json')), false, 'json gone');
+    assert.equal(existsSync(join(dir, 'p-2.cc')), false, 'companion .cc dir gone');
+    assert.equal(store.remove('p-2'), false, 'second call is a no-op');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

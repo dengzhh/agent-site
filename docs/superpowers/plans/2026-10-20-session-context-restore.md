@@ -123,10 +123,15 @@ test('remove deletes the file and the companion .cc dir', () => {
     const store = new TranscriptStore({ dir });
     store.save(base());
     store.save(base({ id: 'p-2', adapter: 'cc' }));
+    // cc 会话带一个持久 config dir（--resume 依赖它），删除时要连目录一起收。
+    // 造一个假的 .cc 目录来验证这条路径，别只靠「不抛异常」蒙过去。
+    mkdirSync(join(dir, 'p-2.cc'), { recursive: true });
     store.remove('p-1');
     assert.equal(existsSync(join(dir, 'p-1.json')), false);
-    // cc 会话带一个持久 config dir，删除时要连目录一起收
-    assert.equal(store.remove('p-2'), false, 'no .cc dir yet — still not a crash');
+    assert.equal(store.remove('p-2'), true, 'the record existed, so it was removed');
+    assert.equal(existsSync(join(dir, 'p-2.json')), false, 'json gone');
+    assert.equal(existsSync(join(dir, 'p-2.cc')), false, 'companion .cc dir gone');
+    assert.equal(store.remove('p-2'), false, 'second call is a no-op');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -234,7 +239,10 @@ export class TranscriptStore {
       v: FORMAT_VERSION,
       ...rec,
       createdAt: prev?.createdAt ?? rec.createdAt ?? now,
-      lastUsed: now,
+      // 调用方给了 lastUsed 就尊重它（记录导入 / 回填 / 测试注入时间）；
+      // 否则才打当前时间。无条件覆盖会让外部时间戳失效——sweep 的测试正是
+      // 靠显式 lastUsed 造出一条「已过期」记录的。
+      lastUsed: rec.lastUsed ?? now,
     };
     this.#writeFile(rec.id, merged);
     return merged;
@@ -305,6 +313,10 @@ export class TranscriptStore {
     for (const id of ids) this.remove(id);
     return ids.length;
   }
+
+  // 已知小瑕疵（实现时确认过，属可接受）：`.corrupt.json` 也以 .json 结尾，
+  // 因此 list() 每次都会尝试读隔离文件并再次 rename 到自身（try/catch 吞掉，
+  // 无实际效果）。代价是每轮多几次 stat，不值得为它加排除规则。
 
   /**
    * TTL 清扫：删掉 lastUsed 超期的记录。网关启动时调一次。
