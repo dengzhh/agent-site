@@ -36,3 +36,18 @@ export function revokeDir(targetDir, configPath = DEFAULT_CONFIG_PATH) {
   save(configPath, cfg);
   return cfg.grantedDirs;
 }
+
+// 会话相关配置。默认值与 pi CLI / CC 自己的约定对齐，用户不改任何配置即可互通。
+const DEFAULT_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+export function sessionTtlMs() {
+  const days = Number(process.env.ATBX_SESSION_TTL_DAYS);
+  return Number.isFinite(days) && days > 0 ? days * 86400_000 : DEFAULT_SESSION_TTL_MS;
+}
+
+// 网站开的 pi 会话镜像到这个目录，本机 `pi --session-dir <此处> --session <id>` 打开。
+// 缺省用 pi CLI 自己的默认位置，保证开箱互通。
+export function piSessionDir() {
+  return process.env.ATBX_PI_SESSION_DIR
+    ?? join(homedir(), '.pi', 'agent', 'sessions');
+}

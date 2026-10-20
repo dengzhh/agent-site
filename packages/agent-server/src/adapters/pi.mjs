@@ -8,8 +8,11 @@
 // 成功的回合已落盘到 TranscriptStore，冷启动会把记录重新播种给新 Agent。
 import { Agent } from '@earendil-works/pi-agent-core';
 import { readOnlyTools, fullTools } from './pi-tools.mjs';
-import { withUsage } from '../pi-session-writer.mjs';
+import { withUsage, buildPiSessionLines, renderPiSession } from '../pi-session-writer.mjs';
 import { logErr } from '../log.mjs';
+import { randomUUID } from 'node:crypto';
+import { mkdirSync, writeFileSync, chmodSync } from 'node:fs';
+import { join } from 'node:path';
 // 免费模型推理排队慢（OpenRouter 免费档高峰可等数分钟），OpenAI SDK 默认 10 分钟超时
 // 会被 undici 的 300s headersTimeout 先打断（"Request timed out"）。修法两层：
 // ① streamSimple 传大 timeoutMs（SDK 侧）；② 传 undici 包的 fetch + 长超时 dispatcher
@@ -29,6 +32,18 @@ const streamDispatcher = new UndiciAgent({
   bodyTimeout: STREAM_TIMEOUT_MS,
 });
 const longTimeoutFetch = (url, init) => undiciFetch(url, { ...init, dispatcher: streamDispatcher });
+
+// pi CLI 原生格式要求每条消息的 content 是**数组**（[{type:'text',text:…}]），
+// 而 Agent 状态的 user 消息 content 是纯字符串。CLI 读的是数组形状，
+// 直接喂字符串会解析不出内容（实测 CLI 能读但内容为空/报错）——统一转成数组。
+// system 消息（Agent 的 systemPrompt）不参与对话，CLI 会自己带 system 行。
+function conversationMessages(messages = []) {
+  return messages
+    .filter((m) => m && typeof m === 'object' && m.role !== 'system')
+    .map((m) => (Array.isArray(m.content)
+      ? m
+      : { ...m, content: [{ type: 'text', text: String(m.content ?? '') }] }));
+}
 
 // 取最后一条 user 消息的文本作为本轮 prompt，与 server.mjs 的
 // `body.text` / cc 适配器的 lastUserText 语义一致。
@@ -61,7 +76,7 @@ function defaultMakeAgent(models, model, sessionId, apiKey, tools, restoredMessa
   });
 }
 
-export function createPiAdapter({ models, resolve, makeAgent = defaultMakeAgent, capacity = 16, transcripts = null } = {}) {
+export function createPiAdapter({ models, resolve, makeAgent = defaultMakeAgent, capacity = 16, transcripts = null, piSessionDir = null } = {}) {
   // sessionId → { agent, cacheKey }。LRU 容量与 server 的 SessionStore 对齐（16）；
   // 被淘汰的会话下一次发言时从 transcripts 里的持久记录重新播种（缓存未命中
   // 且 store 有该会话的历史），而不是从空白对话开始。
@@ -187,6 +202,38 @@ export function createPiAdapter({ models, resolve, makeAgent = defaultMakeAgent,
                 });
               } catch (err) {
                 logErr('pi', `transcript save failed for ${sessionId}: ${err?.message ?? err}`);
+              }
+              // 镜像一份 pi CLI 原生格式到共享目录：本机
+              //   pi --session-dir <共享目录> --session <piSessionId>
+              // 就能打开这个会话。四条实测约束（2026-10-21，真实 pi CLI 0.84.3）：
+              //   · 平铺在 piSessionDir 里——显式 --session-dir 时 CLI 非递归扫描
+              //     （listSessionsFromDir 只 readdir 一层），放进 <cwdSlug>/ 子目录
+              //     会 "No session found matching"；
+              //   · piSessionId 首次生成后固定存进记录，同一个会话始终是同一个 id
+              //     （网关的 sessionId 只被转发给 provider，与 CLI 会话 id 无关）；
+              //   · 文件名固定（不含时间戳）→ 每轮覆写同一个文件，目录里不会堆 N 份副本；
+              //   · assistant 的 usage 在 build 之前补零（缺失会让 CLI 崩在 totalTokens 上）。
+              // 失败绝不影响回合——互通是增益，不是依赖。
+              if (piSessionDir) {
+                try {
+                  const rec = transcripts.get(sessionId) ?? {};
+                  const piSessionId = rec.piSessionId ?? randomUUID();
+                  const lines = buildPiSessionLines({
+                    piSessionId,
+                    cwd: cwd ?? process.cwd(),
+                    name: rec.title ?? 'AgentToolbox',
+                    messages: withUsage(conversationMessages(agent.state.messages)),
+                  });
+                  mkdirSync(piSessionDir, { recursive: true, mode: 0o700 });
+                  // 固定名：同一个会话始终这一个文件，每轮整体覆写。
+                  // 0600：和 transcript 一个口径，里面是 full tier 的工具输出。
+                  const file = join(piSessionDir, `${piSessionId}.jsonl`);
+                  writeFileSync(file, renderPiSession(lines), { mode: 0o600 });
+                  chmodSync(file, 0o600);
+                  transcripts.save({ id: sessionId, piSessionId });
+                } catch (err) {
+                  logErr('pi:mirror', String(err?.message ?? err).slice(0, 120));
+                }
               }
             }
           }
