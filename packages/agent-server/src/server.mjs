@@ -4,13 +4,16 @@
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { statSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 import { resolveModel } from './providers.mjs';
 import { createRegistry } from './adapters/registry.mjs';
 import { createPiAdapter } from './adapters/pi.mjs';
 import { createCcAdapter } from './adapters/cc.mjs';
 import { createAcpAdapter } from './adapters/acp.mjs';
 import { listAgentIds, getAgentDef } from './adapters/acp-agents.mjs';
-import { loadConfig } from './config.mjs';
+import { loadConfig, sessionTtlMs, piSessionDir } from './config.mjs';
+import { TranscriptStore } from './transcripts.mjs';
 import { SessionStore } from './sessions.mjs';
 import { encodeSSE } from './sse.mjs';
 import { VERSION } from './version.mjs';
@@ -54,13 +57,16 @@ function denyPendingPerms(session) {
   for (const cb of cbs) cb(false);
 }
 
-export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOrigins = DEFAULT_ORIGINS, resolve = resolveModel, models, registry, acpProbe, approvalTimeoutMs = 120_000 }) {
+export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOrigins = DEFAULT_ORIGINS, resolve = resolveModel, models, registry, acpProbe, approvalTimeoutMs = 120_000, transcripts = null, sessionTtlMs: ttlMs }) {
+  // 磁盘 transcript：跨重启/跨逐出的历史。缺省自建（生产路径），测试注入临时目录。
+  const store = transcripts ?? new TranscriptStore({ dir: join(homedir(), '.config', 'agenttoolbox', 'sessions'), ttlMs: ttlMs ?? sessionTtlMs() });
+  store.sweep();   // 启动时清掉超期历史
   // ACP 适配器承接 hermes/openclaw/opencode/codex/dsh 五个子 agent。
   // acpProbe 可注入：测试用它拿到确定性的可用性，避免 shell 出去跑 `which`。
   const acpAdapter = createAcpAdapter(acpProbe ? { probe: acpProbe } : {});
   const reg = registry ?? createRegistry([
-    createPiAdapter({ models, resolve }),
-    createCcAdapter(),
+    createPiAdapter({ models, resolve, transcripts: store, piSessionDir: piSessionDir() }),
+    createCcAdapter({ transcripts: store }),
     acpAdapter,
   ]);
   const sessions = new SessionStore();
@@ -143,6 +149,17 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
         });
       }
 
+      // 历史列表：某配置下的会话，newest first，只带元数据（见 TranscriptStore.list）。
+      // 筛选四维与 pi 的 cacheKey 一致：换模型不该串到别的模型的历史里。
+      if (req.method === 'GET' && url.pathname === '/sessions') {
+        const filter = {};
+        for (const k of ['agent', 'cwd', 'provider', 'model']) {
+          const v = url.searchParams.get(k);
+          if (v != null && v !== '') filter[k] = v;
+        }
+        return json(200, { sessions: store.list(filter) });
+      }
+
       if (req.method === 'POST' && url.pathname === '/sessions') {
         const body = await readJson(req);
         if (body == null || typeof body !== 'object') return json(400, { error: 'JSON object body required' });
@@ -172,7 +189,16 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
         } else {
           adapter = await reg.pick(body.agents ?? ['pi']);
         }
-        const id = randomUUID();
+        // persistId：带上 = 恢复既有会话（内存 session id 与它一致，前端好认）；
+        // 不带 = 新建。已有活跃内存会话的同 id → 409（两个标签页不能共用一份
+        // transcript，后写的会覆盖前写的）。
+        const persistId = typeof body.persistId === 'string' && body.persistId.trim() ? body.persistId.trim() : null;
+        // 恢复材料先取出来：成功与否都要写进响应（resumed），前端据此决定要不要
+        // 渲染历史。拿不到（记录没了/目录没了/agent 不支持）→ resumed:false，
+        // 但 id 仍是 persistId，让前端别假装有历史。
+        const material = persistId ? (adapter.restore?.(persistId) ?? null) : null;
+        if (persistId && sessions.peek(persistId)) return json(409, { error: 'session already active' });
+        const id = persistId ?? randomUUID();
         // 不再预建 Agent：适配器在 /messages 时才构造运行时，会话只存运行所需输入。
         const record = {
           id,
@@ -195,10 +221,37 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
         sessions.set(record);
         log('session', `+ ${id.slice(0, 8)} via ${acpAgentId ? `acp:${acpAgentId}` : adapter.id}` +
           ` provider=${body.provider} model=${body.model} cwd=${cwd ?? '-'} tier=${toolTier}`);
-        return json(200, { sessionId: id, adapter: adapter.id, provider: body.provider, model: body.model, cwd, toolTier });
+        return json(200, {
+          sessionId: id, adapter: adapter.id,
+          resumed: Boolean(material),
+          provider: body.provider, model: body.model, cwd, toolTier,
+          ...(material?.messages ? { messages: material.messages } : {}),
+        });
       }
 
-      const msgMatch = req.method === 'POST' && url.pathname.match(/^\/sessions\/([0-9a-f-]+)\/messages$/);
+      // 删单条历史（含 cc 的持久 config dir）。
+      // **id 的正则必须与 store 的 SAFE_ID 对齐**：`[0-9a-f-]+` 只认小写十六进制，
+      // 会把 `bye`/`dup`/`resume-me` 这类 id 挡在门外（404 而不是 204）。
+      const delMatch = req.method === 'DELETE' && url.pathname.match(/^\/sessions\/([A-Za-z0-9_-]{1,128})$/);
+      if (delMatch) {
+        store.remove(delMatch[1]);
+        return res.writeHead(204, cors).end();
+      }
+
+      // 按范围清空。刻意不提供全局清空——一键抹掉所有历史的权力属于终端
+      // （`agenttoolbox-agent sessions --clear`），网页不该有。
+      // store.clear() 对空筛选直接抛 TypeError：路由若忘了转发筛选，
+      // 宁可炸也不要默默抹掉用户全部历史。全量清空走 store.clearAll()。
+      if (req.method === 'POST' && url.pathname === '/sessions/clear') {
+        const body = await readJson(req);
+        const filter = {};
+        for (const k of ['agent', 'cwd', 'provider', 'model']) {
+          if (typeof body?.[k] === 'string' && body[k]) filter[k] = body[k];
+        }
+        return json(200, { cleared: store.clear(filter) });
+      }
+
+      const msgMatch = req.method === 'POST' && url.pathname.match(/^\/sessions\/([A-Za-z0-9_-]{1,128})\/messages$/);
       if (msgMatch) {
         const session = sessions.get(msgMatch[1]);
         if (!session) { log('turn', `${msgMatch[1].slice(0, 8)} ✗ unknown session`); return json(404, { error: 'unknown session' }); }
@@ -313,7 +366,7 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
 
       // 审批应答：前端抽屉点允许/拒绝 → 这里唤醒挂起的 requestApproval。
       // 未知会话 / 未知或已收敛的 reqId 都是 404（幂等重放按不存在处理）。
-      const permMatch = req.method === 'POST' && url.pathname.match(/^\/sessions\/([0-9a-f-]+)\/permission$/);
+      const permMatch = req.method === 'POST' && url.pathname.match(/^\/sessions\/([A-Za-z0-9_-]{1,128})\/permission$/);
       if (permMatch) {
         const session = sessions.get(permMatch[1]);
         if (!session) return json(404, { error: 'unknown session' });
@@ -325,7 +378,7 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
         return json(200, { ok: true });
       }
 
-      const abortMatch = req.method === 'POST' && url.pathname.match(/^\/sessions\/([0-9a-f-]+)\/abort$/);
+      const abortMatch = req.method === 'POST' && url.pathname.match(/^\/sessions\/([A-Za-z0-9_-]{1,128})\/abort$/);
       if (abortMatch) {
         const session = sessions.get(abortMatch[1]);
         if (!session) return json(404, { error: 'unknown session' });

@@ -1,13 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from '@earendil-works/pi-ai';
 import { createRegistry } from '../src/adapters/registry.mjs';
 import { createPiAdapter } from '../src/adapters/pi.mjs';
+import { TranscriptStore } from '../src/transcripts.mjs';
+
+const freshDir = () => mkdtempSync(join(tmpdir(), 'atbx-srv-'));
 
 
 // /health 的 grantedDirs 来自网关配置文件。重定向到临时路径，断言才不依赖开发者本机
@@ -19,16 +22,20 @@ const { startServer } = await import('../src/server.mjs');
 // 每个测试起独立 server + faux provider。
 // 显式注入 registry（只含承接 faux 的 pi 适配器）：默认 registry 里的 cc 适配器会探活
 // 真实的 claude 二进制，测试要的是确定性的 faux 路由，不能依赖宿主机是否装了 claude。
-async function withFauxServer(t, origins = ['http://localhost:4321'], acpProbe) {
+async function withFauxServer(t, origins = ['http://localhost:4321'], acpProbe, transcripts) {
   const models = createModels();
   const faux = fauxProvider();
   models.setProvider(faux.provider);
   const resolve = () => ({ model: faux.getModel(), providerId: faux.provider.id });
-  const registry = createRegistry([createPiAdapter({ models, resolve })]);
+  // ⚠️ store 必须同时进适配器：这里注入的 registry 会顶掉 startServer 里的
+  // 默认 registry，而 adapter.restore() 是适配器上的方法 —— 它内部
+  // loadPersistedMessages 在 transcripts 为空时直接返回 null。
+  const registry = createRegistry([createPiAdapter({ models, resolve, transcripts: transcripts ?? null })]);
   // acpProbe 缺省返回 false：测试不该 shell 出去跑 `which`，探活必须确定。
   const srv = await startServer({
     port: 0, allowedOrigins: origins, resolve, models, registry,
     acpProbe: acpProbe ?? (async () => false),
+    ...(transcripts ? { transcripts } : {}),
   });
   t.after(() => srv.close());
   const base = `http://127.0.0.1:${srv.port}`;
@@ -804,4 +811,118 @@ test('abort resolves pending permissions as denied and the session stays usable'
   assert.deepEqual(await next2(), { type: 'delta', text: 'approved' });
   assert.equal((await next2()).type, 'turn_end');
   assert.equal((await next2()).type, 'done');
+});
+
+// ── Task 6：历史路由 + persistId 恢复 ─────────────────────────────────────────
+
+test('GET /sessions lists history for the given config, newest first', async (t) => {
+  const dir = freshDir();
+  try {
+    const store = new TranscriptStore({ dir });
+    const { json } = await withFauxServer(t, ['http://localhost:4321'], undefined, store);
+    store.save({ id: 'old', agent: 'pi', cwd: '/tmp/x', provider: 'faux', model: 'faux', lastUsed: 1, title: '旧' });
+    store.save({ id: 'new', agent: 'pi', cwd: '/tmp/x', provider: 'faux', model: 'faux', lastUsed: 2, title: '新' });
+    const { status, body } = await json('/sessions?agent=pi&cwd=%2Ftmp%2Fx');
+    assert.equal(status, 200);
+    assert.deepEqual(body.sessions.map((s) => s.id), ['new', 'old']);
+    assert.equal(body.sessions[0].messages, undefined, 'list payload stays metadata-only');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('POST /sessions with a persistId resumes instead of creating', async (t) => {
+  const dir = freshDir();
+  try {
+    const store = new TranscriptStore({ dir });
+    const { json } = await withFauxServer(t, ['http://localhost:4321'], undefined, store);
+    store.save({
+      id: 'resume-me', adapter: 'pi', agent: 'pi', provider: 'faux', model: 'faux',
+      cwd: '/tmp', toolTier: 'none', messages: [{ role: 'user', content: 'earlier', timestamp: 1 }],
+    });
+    const r = await json('/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+      body: JSON.stringify({ provider: 'faux', model: 'faux', persistId: 'resume-me' }),
+    });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.sessionId, 'resume-me', 'memory session id == persistId when resuming');
+    assert.equal(r.body.resumed, true, 'tells the client this is a resume, not a fresh chat');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('resuming a persistId that is already live is refused with 409', async (t) => {
+  const dir = freshDir();
+  try {
+    const store = new TranscriptStore({ dir });
+    const { json } = await withFauxServer(t, ['http://localhost:4321'], undefined, store);
+    store.save({ id: 'dup', adapter: 'pi', agent: 'pi', provider: 'faux', model: 'faux', cwd: '/tmp', messages: [{ role: 'user', content: 'x', timestamp: 1 }] });
+    const first = await json('/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+      body: JSON.stringify({ provider: 'faux', model: 'faux', persistId: 'dup' }),
+    });
+    assert.equal(first.status, 200);
+    const second = await json('/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+      body: JSON.stringify({ provider: 'faux', model: 'faux', persistId: 'dup' }),
+    });
+    assert.equal(second.status, 409, 'two tabs must not share one transcript');
+    assert.match(second.body.error, /already active/i);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('DELETE /sessions/:id removes the history', async (t) => {
+  const dir = freshDir();
+  try {
+    const store = new TranscriptStore({ dir });
+    const { json } = await withFauxServer(t, ['http://localhost:4321'], undefined, store);
+    store.save({ id: 'bye', agent: 'pi', cwd: '/tmp', provider: 'faux', model: 'faux' });
+    const r = await json('/sessions/bye', { method: 'DELETE', headers: { Origin: 'http://localhost:4321' } });
+    assert.equal(r.status, 204);
+    assert.equal(store.get('bye'), null);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('POST /sessions/clear clears only the given filter scope', async (t) => {
+  const dir = freshDir();
+  try {
+    const store = new TranscriptStore({ dir });
+    const { json } = await withFauxServer(t, ['http://localhost:4321'], undefined, store);
+    store.save({ id: 'a', agent: 'pi', cwd: '/tmp/x', provider: 'faux', model: 'faux' });
+    store.save({ id: 'b', agent: 'pi', cwd: '/tmp/y', provider: 'faux', model: 'faux' });
+    const r = await json('/sessions/clear', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+      body: JSON.stringify({ cwd: '/tmp/x' }),
+    });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.cleared, 1, 'only the matching scope');
+    assert.equal(store.get('b')?.id, 'b', 'other cwd untouched');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a resumed session accepts messages on its persistId', async (t) => {
+  const dir = freshDir();
+  try {
+    const store = new TranscriptStore({ dir });
+    const { json, base, faux } = await withFauxServer(t, ['http://localhost:4321'], undefined, store);
+    faux.setResponses([fauxAssistantMessage([fauxText('still here')])]);
+    store.save({
+      id: 'resume-me', adapter: 'pi', agent: 'pi', provider: 'faux', model: 'faux',
+      cwd: '/tmp', messages: [{ role: 'user', content: 'earlier', timestamp: 1 }],
+    });
+    const created = await json('/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+      body: JSON.stringify({ provider: 'faux', model: 'faux', persistId: 'resume-me' }),
+    });
+    assert.equal(created.status, 200);
+    const r = await fetch(`${base}/sessions/resume-me/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+      body: JSON.stringify({ text: 'and now?' }),
+    });
+    assert.notEqual(r.status, 404, 'resumed ids are not lowercase-hex; UUID-only regex 404s them');
+    await r.body.cancel();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
