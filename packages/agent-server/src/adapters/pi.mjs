@@ -31,11 +31,18 @@ function lastUserText(messages = []) {
   return '';
 }
 
-function defaultMakeAgent(models, model, sessionId, apiKey, tools) {
+function defaultMakeAgent(models, model, sessionId, apiKey, tools, restoredMessages) {
   return new Agent({
     // tools（tier=read 时的只读三件套）会成为 Agent 的 leading system message，
     // 属于 Agent 身份的一部分：tier/cwd 变更必须重建 Agent（见 cacheKey）。
-    initialState: { systemPrompt: SYSTEM_PROMPT, model, ...(tools ? { tools } : {}) },
+    // restoredMessages 存在时作为初始 transcript：这是 pi-agent-core 唯一的
+    // 恢复入口——库本身不落盘，跨进程续命只能靠把历史喂回 initialState.messages。
+    initialState: {
+      systemPrompt: SYSTEM_PROMPT,
+      model,
+      ...(tools ? { tools } : {}),
+      ...(restoredMessages?.length ? { messages: restoredMessages } : {}),
+    },
     streamFn: (m, context, options) => models.streamSimple(m, context, {
       ...options,
       timeoutMs: STREAM_TIMEOUT_MS,
@@ -46,7 +53,7 @@ function defaultMakeAgent(models, model, sessionId, apiKey, tools) {
   });
 }
 
-export function createPiAdapter({ models, resolve, makeAgent = defaultMakeAgent, capacity = 16 } = {}) {
+export function createPiAdapter({ models, resolve, makeAgent = defaultMakeAgent, capacity = 16, transcripts = null } = {}) {
   // sessionId → { agent, cacheKey }。LRU 容量与 server 的 SessionStore 对齐（16），
   // 被淘汰的会话下一次发言会从空 transcript 重新开始（与「会话已被回收」同义）。
   const agents = new Map();
@@ -60,7 +67,7 @@ export function createPiAdapter({ models, resolve, makeAgent = defaultMakeAgent,
   // 缓存条目：{ agent, cacheKey, approvals }。approvals 是可变审批引用（见 run 内
   // 注释）：full 级别的工具闭包经它间接调用「当轮」的审批函数，Agent 跨轮缓存时
   // 每轮只换 current，工具数组本身不重建。
-  function agentFor(model, sessionId, apiKey, cwd, toolTier, tools, approvals) {
+  function agentFor(model, sessionId, apiKey, cwd, toolTier, tools, approvals, restored) {
     const key = cacheKey(model, apiKey, cwd, toolTier);
     const hit = agents.get(sessionId);
     if (hit && hit.cacheKey === key) {
@@ -68,11 +75,34 @@ export function createPiAdapter({ models, resolve, makeAgent = defaultMakeAgent,
       agents.set(sessionId, hit);
       return hit.agent;
     }
-    const agent = makeAgent(models, model, sessionId, apiKey, tools);
+    const agent = makeAgent(models, model, sessionId, apiKey, tools, restored);
     agents.delete(sessionId);
     agents.set(sessionId, { agent, cacheKey: key, approvals });
     while (agents.size > capacity) agents.delete(agents.keys().next().value);
     return agent;
+  }
+
+  // 残缺的 usage 不能落盘：pi CLI resume 读 usage.totalTokens，缺字段直接崩
+  // （"Cannot read properties of undefined (reading 'totalTokens')"，已实测）。
+  // 整个剥掉而不是补零——省略 usage 是安全的，伪造的 usage 不是。
+  function stripPartialUsage(messages) {
+    return messages.map((m) => {
+      if (m.role !== 'assistant' || m.usage === undefined
+        || (typeof m.usage === 'object' && m.usage !== null && Number.isFinite(m.usage.totalTokens))) {
+        return m;
+      }
+      const { usage: _partial, ...rest } = m;
+      return rest;
+    });
+  }
+
+  // 从 store 取恢复材料。只有 adapter 字段也对得上才认：pi 拿 cc 的历史去
+  // 播种，模型看到的会是一份自己没说过的「回复」，比丢历史更糟。
+  function restoreMessages(sessionId) {
+    if (!transcripts || !sessionId) return null;
+    const rec = transcripts.get(sessionId);
+    if (rec?.adapter !== 'pi' || !Array.isArray(rec.messages) || rec.messages.length === 0) return null;
+    return rec.messages;
   }
 
   return {
@@ -102,8 +132,15 @@ export function createPiAdapter({ models, resolve, makeAgent = defaultMakeAgent,
         toolTier === 'full' && cwd ? fullTools(cwd, ask)
         : toolTier === 'read' && cwd ? readOnlyTools(cwd)
         : undefined;
+      // 冷启动播种：缓存未命中（网关重启 / LRU 逐出 / 新进程）且 store 里有这个
+      // 会话的历史时，经 makeAgent 的第 6 参把消息喂进 initialState.messages
+      // （pi-agent-core 唯一的恢复入口）。去重判据是缓存命中本身——命中说明
+      // 内存里的 Agent 就是这些历史的持有者，再喂一遍历史就会翻倍，故只在
+      // cached === null（真的新建 Agent）才取历史；cache=false 的一次性 Agent
+      // （failover 路径）刻意不播种：那趟运行不写缓存也不该读共享历史。
+      const restored = !cached && cache && sessionId ? restoreMessages(sessionId) : null;
       const agent = cache && sessionId
-        ? agentFor(model, sessionId, apiKey, cwd, toolTier, tools, approvals)
+        ? agentFor(model, sessionId, apiKey, cwd, toolTier, tools, approvals, restored)
         : makeAgent(models, model, sessionId, apiKey, tools);
       approvals.current = typeof requestApproval === 'function' ? requestApproval : null;
 
@@ -124,11 +161,26 @@ export function createPiAdapter({ models, resolve, makeAgent = defaultMakeAgent,
         if (ev.type === 'message_update' && ev.assistantMessageEvent.type === 'text_delta') {
           push({ type: 'delta', text: ev.assistantMessageEvent.delta });
         } else if (ev.type === 'turn_end') {
-          push({ type: 'turn_end', stopReason: ev.message.stopReason ?? null });
+          push({ type: 'turn_end', stopReason: ev.message.stopReason ?? null, sessionId });
           // agent.prompt 不 reject provider 错误：失败编码为 stopReason:'error' +
           // errorMessage。不转发的话客户端只会看到空白回复。
           if (ev.message.stopReason === 'error') {
             push({ type: 'error', message: ev.message.errorMessage ?? 'provider error' });
+          } else {
+            // 成功的终结回合才落盘：把 Agent 眼中的完整对话（含本轮）原样存下——
+            // 与 initialState.messages 同一形状，恢复时无需重整。cwd/provider/
+            // model/title 由网关记（逐字段合并，两边不会互踩），适配器只写自己
+            // 独有的字段。piSessionId 就是 Agent 构造时用的 sessionId（库把它
+            // 作为 provider 侧的会话标识），记录里存一份供 Task 5 镜像到
+            // ~/.pi/agent/sessions 时对得上号。失败/中止轮留脏上下文，与缓存
+            // 逐出同一理由不落盘。
+            if (transcripts && sessionId && Array.isArray(agent.state?.messages)) {
+              transcripts.save({
+                id: sessionId, adapter: 'pi', agent: 'pi',
+                piSessionId: sessionId,
+                messages: stripPartialUsage(agent.state.messages),
+              });
+            }
           }
         }
       });
@@ -168,6 +220,17 @@ export function createPiAdapter({ models, resolve, makeAgent = defaultMakeAgent,
         // state.errorMessage 由 runWithLifecycle 在每轮开始时清零，成功轮不会误逐。
         if (cache && sessionId && agent.state?.errorMessage) agents.delete(sessionId);
       }
+    },
+    // 会话终结（TTL/容量逐出、客户端关抽屉）由 server 经 record.dispose 调到这里。
+    // 只释放内存（LRU 里的 Agent 由 agents Map 自管，此处无需动作）——**不删**
+    // transcript 记录：sessions.mjs 在 LRU 逐出时也会走 disposeSession，删了记录
+    // 「逐出后重启还能恢复」就成了空话。磁盘回收只经由 store 的 remove()/sweep()。
+    disposeSession() {},
+    // 恢复材料：重启/逐出后由 server（Task 5 的接线）调用。返回 null 表示
+    // 「没有诚实可恢复的历史」，上层开新会话——绝不拿空数组冒充历史。
+    restore(sessionId) {
+      const messages = restoreMessages(sessionId);
+      return messages ? { messages } : null;
     },
   };
 }
