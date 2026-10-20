@@ -858,10 +858,21 @@ git commit -m "feat(agent-server): pi adapter rebuilds from a persisted transcri
 
 把 pi 的 transcript 额外写一份 pi CLI 原生格式到共享目录。这是「本机能打开网站会话」的落地。
 
-> **实测依据（2026-10-21，真实 pi CLI，本次专门验证）**——三条都与原计划写法相反，照做才能真 resume：
-> 1. **文件不能平铺在 sessions 根目录下**。把 `xxx.jsonl` 直接放 `~/.pi/agent/sessions/` 里，`pi --session xxx` 报 `No session found matching 'xxx'`。CLI 按 **cwd slug 子目录** 找：`<sessions>/<slug>/<stamp>_<uuid>.jsonl`。
-> 2. **slug 的格式**：cwd 去掉前导 `/`、其余 `/` 换成 `-`、两端包 `--`。实测一段：`/tmp/slug/my-proj_2` → `--tmp-slug-my-proj_2--`（下划线原样保留，不转义）。这条来自实际跑一轮 `pi -p` 后看落盘路径，**不要凭猜测写 slug 函数**——写一个 `cwdSlug()` 并给它配单元测试（用例至少含 `/home/dengzh/AI`、`/tmp/slug/my-proj_2`）。
-> 3. **`piSessionId` 必须另外生成**，不能用网关的 sessionId：库只把它带给 provider（`agent.js:308`），与 CLI 的会话 id 无关。文件名里的 `<uuid>` 就是它，CLI 用 `--session <id>` 匹配。
+> **实测依据（2026-10-21，真实 pi CLI 0.84.3 + 读 CLI 源码，本次专门验证）**——三条都与原计划写法相反，照做才能真 resume：
+> 1. **布局取决于「用哪个目录」，不是一律 slug 子目录**。CLI 源码 `SessionManager.list(cwd, sessionDir)`：
+>    ```js
+>    let dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd),
+>    ```
+>    而 `listSessionsFromDir(dir)` 是**非递归**的（只 `readdir(dir).filter(f => f.endsWith('.jsonl'))`）。
+>    因此：**显式给了 `--session-dir`（或 env / 配置）→ 文件必须平铺在该目录下**，放进 `<cwdSlug>/` 子目录会 `No session found matching`（实测 A 组）；**只有走内建默认目录**时才解析成 `<sessions>/<cwdSlug>/`（实测默认目录 + slug 子目录命中，+ 平铺不命中）。
+>    本任务**始终显式传 `--session-dir`**，所以统一写**平铺**：`<piSessionDir>/<stamp>_<piSessionId>.jsonl`。
+>    （附带：`sessionDir !== undefined && dir !== getDefaultSessionDirPath(cwd)` 时会按 cwd 再过滤一层，故文件内 `session.cwd` 仍要写对。）
+> 2. **slug 函数只在「用户没显式给 dir、走默认目录」时才需要**，本任务用不到；若将来用到，格式是 cwd 去前导 `/`、其余 `/` 换 `-`、两端包 `--`（`/tmp/slug/my-proj_2` → `--tmp-slug-my-proj_2--`，下划线保留）。别凭猜测写——要配单元测试。
+> 3. **`piSessionId` 必须另外生成**，不能用网关的 sessionId：库只把它带给 provider（`agent.js:308`），与 CLI 的会话 id 无关。文件名里的 `<uuid>` 就是它，CLI 用 `--session <id>` 匹配（也接受前缀）。
+>
+> **文件名策略**：`<stamp>_<piSessionId>.jsonl` 每轮一个新戳是安全的——实测同一 id 的多个文件里 **mtime 最新的胜出**（两个文件同一 id、暗号不同 → 返回后写的那个）。但一个 20 轮的会话会留 20 份副本。**实现请固定戳**（首次生成后存进记录复用），每轮**覆写**同一个文件：实测不带戳的 `<id>.jsonl` 也能被 resume 且 CLI 自行 append。
+>
+> **⚠️ usage 必须是「补零」不是「剥掉」（推翻 Task 4 的 `stripPartialUsage`）**：实测 assistant 消息的 usage **三种都能** resume 成功——`{input:10,output:5}`（无 totalTokens）✅、`{...全 0}` ✅、完整 ✅；**只有 usage 整个缺失才崩**（`Cannot read properties of undefined (reading 'totalTokens')`，来自 `calculateContextTokens` 的 `usage.totalTokens`；带齐 api/provider/model 也照崩）。所以正确方向是**缺失时补一个 `createEmptyUsage()` 形状的全零 usage**，把已有的 partial 原样保留。**本任务的镜像写入要先过这道补零**（`pi.mjs` 里 Task 4 那个 `stripPartialUsage` 的语义要一并改成补零，见「Task 4 的连带修正」）。
 >
 > 权限：sessions 根是 0755、各 jsonl 是 0644（实测），但**我们写的文件要 0600**（transcript 含 full tier 输出），子目录 0700。
 
@@ -875,14 +886,14 @@ git commit -m "feat(agent-server): pi adapter rebuilds from a persisted transcri
 ```js
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createPiAdapter } from '../src/adapters/pi.mjs';
 import { TranscriptStore } from '../src/transcripts.mjs';
 
 // 网站开的 pi 会话必须落到本机 pi CLI 能找到的地方，且带上 cwd
-// （CLI 靠 cwd 判断是否同一个 project，不符就要 fork）。
+// （显式 --session-dir 时 CLI 非递归扫描，平铺才命中；cwd 用于 project 判定）。
 test('pi adapter mirrors the session into the shared dir in CLI-native format', async (t) => {
   const storeDir = mkdtempSync(join(tmpdir(), 'atbx-store-'));
   const sharedDir = mkdtempSync(join(tmpdir(), 'atbx-shared-'));
@@ -895,22 +906,87 @@ test('pi adapter mirrors the session into the shared dir in CLI-native format', 
       sessionId: 'sess-mirror-1', cwd: '/tmp/work', toolTier: 'none',
     }));
 
-    // 不是平铺在 sharedDir 根下：CLI 只认 <sessions>/<cwdSlug>/ 子目录
-    const slugDir = join(sharedDir, '--tmp-work--');
-    assert.ok(existsSync(slugDir), 'written into the cwd-slug subdirectory');
-    const files = readdirSync(slugDir).filter((f) => f.endsWith('.jsonl'));
-    assert.equal(files.length, 1, 'one CLI-native session file written');
-    const lines = readFileSync(join(slugDir, files[0]), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    // 平铺在 sharedDir 根下：显式 --session-dir 时 CLI 只扫描这一层
+    const files = readdirSync(sharedDir).filter((f) => f.endsWith('.jsonl'));
+    assert.equal(files.length, 1, 'one CLI-native session file written, flat in the shared dir');
+    // 反证：放进 cwd-slug 子目录就找不到了（CLI 的 listSessionsFromDir 非递归）
+    assert.equal(readdirSync(sharedDir).filter((f) => f.endsWith('.jsonl')).length, 1);
+    const lines = readFileSync(join(sharedDir, files[0]), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
     assert.equal(lines[0].type, 'session');
     assert.equal(lines[0].cwd, '/tmp/work', 'cwd preserved for the CLI project check');
     // 0600：里面是 full tier 的工具输出，和 transcript 一个口径
-    assert.equal(statSync(join(slugDir, files[0])).mode & 0o777, 0o600, 'mirror file is owner-only');
+    assert.equal(statSync(join(sharedDir, files[0])).mode & 0o777, 0o600, 'mirror file is owner-only');
     assert.ok(lines.some((l) => l.type === 'message' && JSON.stringify(l.message).includes('菠萝')),
       'user text present');
 
     const rec = store.get('sess-mirror-1');
     assert.ok(rec.piSessionId, 'piSessionId recorded so the UI can show the resume command');
     assert.equal(lines[0].id, rec.piSessionId, 'CLI file id matches the recorded one');
+  } finally {
+    rmSync(storeDir, { recursive: true, force: true });
+    rmSync(sharedDir, { recursive: true, force: true });
+  }
+});
+
+// 缺失 usage 会让真 CLI 崩（Cannot read properties of undefined (reading 'totalTokens')），
+// 所以镜像里的 assistant 消息 usage 必须是「补零」而不是「剥掉」。
+// 注意：stubAgent 是 pi-adapter.test.mjs 里的局部 helper，本文件要用就在文件头
+// 自己抄一份（见下方），不要跨文件 import。
+const stubAgent = (state = {}) => ({
+  state: { messages: [], ...state },
+  subscribe: (fn) => { stubAgent.lastSubscribe = fn; return () => {}; },
+  prompt: async () => {},
+  abort: () => {},
+});
+
+test('mirrored assistant messages always carry a totalTokens-bearing usage', async (t) => {
+  const storeDir = mkdtempSync(join(tmpdir(), 'atbx-store-'));
+  const sharedDir = mkdtempSync(join(tmpdir(), 'atbx-shared-'));
+  try {
+    const store = new TranscriptStore({ dir: storeDir });
+    const pi = createPiAdapter({
+      models, resolve, transcripts: store, piSessionDir: sharedDir,
+      // 造一条「没有 usage」的 assistant 消息：库在这种形状下不会自己补
+      makeAgent: () => stubAgent({ messages: [
+        { role: 'user', content: [{ type: 'text', text: 'q' }], timestamp: 1 },
+        { role: 'assistant', content: [{ type: 'text', text: 'a' }], timestamp: 2 },  // 无 usage
+      ] }),
+    });
+    await collect(pi.run({
+      messages: [{ role: 'user', content: 'q' }],
+      request: { provider: 'faux', model: 'faux' }, apiKey: 'k',
+      sessionId: 'sess-usage', cwd: '/tmp/work', toolTier: 'none',
+    }));
+    const files = readdirSync(sharedDir).filter((f) => f.endsWith('.jsonl'));
+    assert.equal(files.length, 1, 'mirror written');
+    const lines = readFileSync(join(sharedDir, files[0]), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const assistants = lines.filter((x) => x.type === 'message' && x.message.role === 'assistant');
+    assert.ok(assistants.length > 0, 'at least one assistant message mirrored');
+    for (const l of assistants) {
+      assert.ok(l.message.usage, 'assistant usage present (absence crashes the CLI)');
+      assert.equal(typeof l.message.usage.totalTokens, 'number', 'totalTokens always present');
+    }
+  } finally {
+    rmSync(storeDir, { recursive: true, force: true });
+    rmSync(sharedDir, { recursive: true, force: true });
+  }
+});
+
+// 每轮换一个新戳会在目录里堆 N 份同一会话的副本（mtime 最新的胜出，不丢内容但很脏）
+test('the mirror file is rewritten in place, not recreated per turn', async (t) => {
+  const storeDir = mkdtempSync(join(tmpdir(), 'atbx-store-'));
+  const sharedDir = mkdtempSync(join(tmpdir(), 'atbx-shared-'));
+  try {
+    const store = new TranscriptStore({ dir: storeDir });
+    const pi = createPiAdapter({ models, resolve, transcripts: store, piSessionDir: sharedDir });
+    const runOnce = () => collect(pi.run({
+      messages: [{ role: 'user', content: 'hi' }],
+      request: { provider: 'faux', model: 'faux' }, apiKey: 'k',
+      sessionId: 'sess-stamp', cwd: '/tmp/work', toolTier: 'none', cache: false,
+    }));
+    await runOnce(); await runOnce(); await runOnce();
+    const files = readdirSync(sharedDir).filter((f) => f.endsWith('.jsonl'));
+    assert.equal(files.length, 1, 'one file per session, not one per turn');
   } finally {
     rmSync(storeDir, { recursive: true, force: true });
     rmSync(sharedDir, { recursive: true, force: true });
@@ -968,11 +1044,13 @@ export function createPiAdapter({ models, resolve, makeAgent = defaultMakeAgent,
 4b. 在 Task 4 步骤 3d 的 `transcripts.save(...)` 之后接镜像逻辑：
 
 ```js
-        // 镜像一份 pi CLI 原生格式到共享目录：本机 `pi --session <piSessionId>`
-        // 就能打开这个会话。三条实测约束（见本节开头）：
-        //   · 必须落在 <sessions>/<cwdSlug>/ 子目录里，平铺在根下 CLI 找不到；
-        //   · slug = cwd 去前导 '/'、其余 '/' → '-'、两端包 '--'；
-        //   · piSessionId 首次生成后固定存进记录，同一个会话始终是同一个 id。
+        // 镜像一份 pi CLI 原生格式到共享目录：本机 `pi --session-dir <dir> --session <piSessionId>`
+        // 就能打开这个会话。四条实测约束（见本节开头）：
+        //   · 平铺在 piSessionDir 里——显式 --session-dir 时 CLI 非递归扫描，
+        //     放进 <cwdSlug>/ 子目录会 No session found matching；
+        //   · piSessionId 首次生成后固定存进记录，同一个会话始终是同一个 id；
+        //   · 文件名固定（不含时间戳）→ 每轮覆写同一个文件，目录里不会堆 N 份副本；
+        //   · assistant 的 usage 在 build 之前补零（缺失会让 CLI 崩在 totalTokens 上）。
         // 失败绝不影响回合——互通是增益，不是依赖。
         if (piSessionDir) {
           try {
@@ -980,13 +1058,12 @@ export function createPiAdapter({ models, resolve, makeAgent = defaultMakeAgent,
             const piSessionId = rec.piSessionId ?? randomUUID();
             const lines = buildPiSessionLines({
               piSessionId, cwd: cwd ?? process.cwd(), name: rec.title ?? 'AgentToolbox',
-              messages: agent.state.messages ?? [],
+              messages: withUsage(agent.state.messages ?? []),
             });
-            const slugDir = join(piSessionDir, cwdSlug(cwd ?? process.cwd()));
-            mkdirSync(slugDir, { recursive: true, mode: 0o700 });
-            const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+            mkdirSync(piSessionDir, { recursive: true, mode: 0o700 });
+            // 固定名：同一个会话始终这一个文件，每轮整体覆写
             // 0600：和 transcript 一个口径，里面是 full tier 的工具输出
-            writeFileSync(join(slugDir, `${stamp}_${piSessionId}.jsonl`),
+            writeFileSync(join(piSessionDir, `${piSessionId}.jsonl`),
               renderPiSession(lines), { mode: 0o600 });
             transcripts.save({ id: sessionId, piSessionId });
           } catch (err) {
@@ -995,19 +1072,38 @@ export function createPiAdapter({ models, resolve, makeAgent = defaultMakeAgent,
         }
 ```
 
-4b'. `cwdSlug()` 放 `pi-session-writer.mjs` 里导出（纯函数，好测）：
+4b'. **`withUsage()` 取代 Task 4 的 `stripPartialUsage()`**，放在 `pi-session-writer.mjs` 里导出（纯函数，好测）：
 
 ```js
-/**
- * cwd → pi CLI 的会话子目录名。实测：/tmp/slug/my-proj_2 → --tmp-slug-my-proj_2--
- * （前导 / 去掉，其余 / 变 -，两端包 --；下划线等字符原样保留）。
- */
-export function cwdSlug(cwd) {
-  return `--${String(cwd).replace(/^\//, '').replace(/\//g, '-')}--`;
+// 真 CLI 在 assistant 消息缺 usage 时直接崩：calculateContextTokens 读
+// usage.totalTokens（实测 "Cannot read properties of undefined (reading
+// 'totalTokens')"，带齐 api/provider/model 也照崩）。
+// 而**残缺的 usage 反而是安全的**——实测 {input,output} 缺 totalTokens 也能正常
+// resume（回忆出暗号成功）。所以方向是「缺失 → 补零」，不是「剥掉」：
+// 剥离会把本来能用的 partial 变成致命的 absent。这条推翻了 Task 4 的
+// stripPartialUsage，两处（落盘 transcript、镜像文件）必须一起改。
+const EMPTY_USAGE = () => ({
+  input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+});
+
+export function withUsage(messages) {
+  return messages.map((m) => (
+    m.role === 'assistant' && m.usage === undefined
+      ? { ...m, usage: EMPTY_USAGE() }
+      : m
+  ));
 }
 ```
 
-给它配至少两个测试（`/home/dengzh/AI` → `--home-dengzh-AI--`、`/tmp/slug/my-proj_2` → `--tmp-slug-my-proj_2--`）。这是纯约定，抄错了 CLI 静默找不到会话，所以必须用测试钉住。
+给它配测试：assistant 消息无 usage → 补出 `totalTokens: 0`；已有 `{input:10,output:5}` → **原样保留**（不许补零覆盖真数据）；user 消息不动。
+
+> **Task 4 的连带修正（必须同时做，否则镜像与 transcript 口径不一致）**：
+> `pi.mjs` 里的 `stripPartialUsage` 整个换成 `withUsage`（改名 + 换语义），
+> 落盘那处 `messages: stripPartialUsage(agent.state.messages)` 改成
+> `messages: withUsage(agent.state.messages)`；`test/pi-adapter.test.mjs` 里
+> 针对「剥掉 usage」的那条断言改成「补零」，注释里「残缺 usage 不能落盘」的
+> 说法一并修正（它是错的：残缺没事，缺失才崩）。
 
 4c. 文件顶部加 import：
 
@@ -1015,14 +1111,17 @@ export function cwdSlug(cwd) {
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { buildPiSessionLines, renderPiSession } from '../pi-session-writer.mjs';
+import { buildPiSessionLines, renderPiSession, withUsage } from '../pi-session-writer.mjs';
 import { VERBOSE, logErr } from '../log.mjs';
 ```
 
 - [ ] **Step 5: 运行测试确认通过**
 
 Run: `cd packages/agent-server && node --test test/pi-session-interop.test.mjs`
-Expected: PASS, 2 tests
+Expected: PASS, 4 tests（mirror 格式 / usage 补零 / 覆写不堆积 / 写失败不影响回合）
+
+再跑 `node --test test/pi-adapter.test.mjs`（Task 4 的连带修正后应仍全绿）与
+`node --test "test/**/*.test.mjs"`（全量）。
 
 - [ ] **Step 6: Commit**
 
