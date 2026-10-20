@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, statSync, writeFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, chmodSync, rmSync, existsSync, readFileSync, statSync, writeFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TranscriptStore } from '../src/transcripts.mjs';
@@ -41,15 +41,21 @@ test('save refreshes lastUsed but keeps createdAt', async () => {
 });
 
 test('file and dir are owner-only (0600 / 0700)', () => {
-  const dir = freshDir();
+  // mkdtempSync 本来就建出 0700，直接断言等于什么都没测。
+  // 先故意把目录放宽，再让构造函数去收紧——这才是在测它的行为。
+  const parent = freshDir();
+  const dir = join(parent, 'loose');
   try {
+    mkdirSync(dir, { recursive: true });
+    chmodSync(dir, 0o755);
+    assert.equal(statSync(dir).mode & 0o777, 0o755, 'precondition: dir really is loose');
     const store = new TranscriptStore({ dir });
     store.save(base());
     const mode = statSync(join(dir, 'p-1.json')).mode & 0o777;
     assert.equal(mode, 0o600, `transcript must be 0600, got ${mode.toString(8)}`);
     const dirMode = statSync(dir).mode & 0o777;
-    assert.equal(dirMode, 0o700, `sessions dir must be 0700, got ${dirMode.toString(8)}`);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+    assert.equal(dirMode, 0o700, `constructor must tighten dir to 0700, got ${dirMode.toString(8)}`);
+  } finally { rmSync(parent, { recursive: true, force: true }); }
 });
 
 test('list filters by agent/cwd/provider/model and sorts by lastUsed desc', () => {
@@ -146,10 +152,30 @@ test('a traversal id cannot write outside the store dir', () => {
   const dir = join(parent, 'sub');
   try {
     const store = new TranscriptStore({ dir });
-    assert.throws(() => store.save(base({ id: '../../ESCAPED' })), TypeError,
+    // ../VICTIM 正好落在 parent/VICTIM.json——canary 必须放在「真写会落的地方」，
+    // 否则断言的是一个没人会碰的路径，等于没测
+    writeFileSync(join(parent, 'VICTIM.json'), 'CANARY');
+    assert.throws(() => store.save(base({ id: '../VICTIM' })), TypeError,
       'save fails loud on a programmer-error id');
-    assert.equal(existsSync(join(parent, 'ESCAPED.json')), false, 'nothing written outside dir');
+    assert.equal(readFileSync(join(parent, 'VICTIM.json'), 'utf8'), 'CANARY',
+      'the file a real write would have clobbered is untouched');
     assert.deepEqual(readdirSync(dir), [], 'nothing written inside dir either');
+  } finally { rmSync(parent, { recursive: true, force: true }); }
+});
+
+// 上一条只测了 save。这条给 get/remove 配一个真实存在的受害文件：
+// 只断言「查无此项」的话，把 #readableId 改成 return true 也照样全绿。
+test('traversal on get/remove cannot reach a real file outside the dir', () => {
+  const parent = freshDir();
+  const dir = join(parent, 'sub');
+  try {
+    const store = new TranscriptStore({ dir });
+    const victim = join(parent, 'x.json');
+    writeFileSync(victim, JSON.stringify({ v: 1, id: 'x', secret: 'CANARY' }));
+    assert.equal(store.get('../x'), null, 'get must not read outside the dir');
+    assert.equal(store.remove('../x'), false, 'remove must report nothing done');
+    assert.equal(readFileSync(victim, 'utf8').includes('CANARY'), true,
+      'the outside file survived both calls');
   } finally { rmSync(parent, { recursive: true, force: true }); }
 });
 
@@ -164,7 +190,7 @@ test('bad ids: save throws, get/remove return empty (route input is not an excep
     // 同一个 id 走读/删路径只该「查无此项」，不该把异常抛到 HTTP 层
     assert.equal(store.get('../x'), null);
     assert.equal(store.get('a/b'), null);
-    assert.equal(store.remove('../x'), false);
+    assert.equal(store.remove('a/b'), false);
     // 合法 id 不受影响：UUID 形态要放行
     const uuid = '3f2504e0-4f89-41d3-9a0c-0305e82c3301';
     store.save(base({ id: uuid }));
@@ -194,7 +220,7 @@ test('a planted traversal payload id cannot drive clear() outside the dir', () =
     // 绕过 save/get/remove，直接在盘上放一个「payload id 带 traversal」的文件。
     // list() 过去的版本会把它原样吐出来，clear() 于是拿它去拼路径删到 dir 外。
     writeFileSync(join(dir, 'planted.json'), JSON.stringify({
-      v: 1, id: '../../VICTIM', agent: 'pi', lastUsed: 1, title: 'planted',
+      v: 1, id: '../VICTIM', agent: 'pi', lastUsed: 1, title: 'planted',
     }));
     const canary = join(parent, 'VICTIM.json');
     writeFileSync(canary, 'CANARY');
@@ -271,5 +297,50 @@ test('a failed rename leaves no stale .tmp behind', () => {
     assert.throws(() => store.save(base({ id: 'blocked' })));
     assert.deepEqual(readdirSync(dir), ['blocked.json', 'p-1.json'], 'no .tmp residue');
     assert.equal(store.get('p-1').title, '写一个贪吃蛇', 'pre-existing record undamaged');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// createdAt/lastUsed 不在白名单里，却是直接取自 rec 赋值——于是这两个字段
+// 成了绕过白名单的暗道。任何对象塞进去都会原样落盘。
+test('the timestamp fields cannot smuggle a value onto disk', () => {
+  const dir = freshDir();
+  try {
+    const store = new TranscriptStore({ dir });
+    store.save(base({ createdAt: { apiKey: 'sk-C1' }, lastUsed: { authorization: 'Bearer sk-L1' } }));
+    const raw = readFileSync(join(dir, 'p-1.json'), 'utf8');
+    assert.ok(!raw.includes('sk-C1'), `createdAt must not carry a payload: ${raw}`);
+    assert.ok(!raw.includes('sk-L1'), `lastUsed must not carry a payload: ${raw}`);
+    // 兜底：两个字段必须是数字，不能是对象
+    const got = store.get('p-1');
+    assert.equal(typeof got.createdAt, 'number');
+    assert.equal(typeof got.lastUsed, 'number');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// NaN 比较恒为 false，所以一个 lastUsed 不是数字的记录永远不会过期。
+// 那等于一条永生记录，TTL 形同虚设。
+test('a non-numeric lastUsed cannot make a record immortal', () => {
+  const dir = freshDir();
+  try {
+    const store = new TranscriptStore({ dir, ttlMs: 1000 });
+    store.save(base({ id: 'garbage', lastUsed: 'not-a-number' }));
+    store.save(base({ id: 'obj', lastUsed: { evil: true } }));
+    const now = Date.now();
+    assert.deepEqual(store.sweep(now + 5000).sort(), ['garbage', 'obj'],
+      'both fall back to a real timestamp and expire normally');
+    assert.equal(store.get('garbage'), null);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// 时间戳回填（导入/迁移）仍须被接受——num() 只挡非数字，不是不要显式值。
+test('numeric timestamp overrides are still honoured', () => {
+  const dir = freshDir();
+  try {
+    const store = new TranscriptStore({ dir, ttlMs: 1000 });
+    store.save(base({ id: 'back', createdAt: 1000, lastUsed: 2000 }));
+    const got = store.get('back');
+    assert.equal(got.createdAt, 1000, 'explicit numeric createdAt kept');
+    assert.equal(got.lastUsed, 2000, 'explicit numeric lastUsed kept');
+    assert.deepEqual(store.sweep(4000), ['back'], 'and it expires on its own schedule');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

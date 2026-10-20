@@ -27,6 +27,14 @@ const RECORD_FIELDS = [
   'messages', 'piSessionId', 'ccSessionId',
 ];
 
+// createdAt/lastUsed 由 store 盖章，不在 RECORD_FIELDS 里，却是从 rec 直取，
+// 所以它们是绕过白名单的暗道：传个对象进去，嵌套的凭据就原样落盘了。
+// 更糟的是传个非数字，sweep() 里 now - lastUsed 得 NaN，比较恒 false——
+// 一条永生记录，TTL 直接失效。只收有限数字，两个问题一起解决。
+function num(x) {
+  return typeof x === 'number' && Number.isFinite(x) ? x : undefined;
+}
+
 export class TranscriptStore {
   /**
    * @param {object} opts
@@ -89,10 +97,10 @@ export class TranscriptStore {
     for (const k of RECORD_FIELDS) {
       if (rec[k] !== undefined) merged[k] = rec[k];
     }
-    merged.createdAt = prev?.createdAt ?? rec.createdAt ?? now;
+    merged.createdAt = num(prev?.createdAt) ?? num(rec.createdAt) ?? now;
     // 调用方显式给了 lastUsed 就尊重它（导入/迁移既有记录、测试造时间线）；
     // 没给才盖当前时间。永远用 now 会把导入的历史全部「刷新」成当下。
-    merged.lastUsed = rec.lastUsed ?? now;
+    merged.lastUsed = num(rec.lastUsed) ?? now;
     this.#writeFile(rec.id, merged);
     return merged;
   }
@@ -175,7 +183,11 @@ export class TranscriptStore {
     return existed;
   }
 
-  /** 按筛选范围清空（不提供全局清空——那是 CLI 的权力，spec 非目标）。 */
+  /**
+   * 按筛选范围清空，返回删掉的条数。
+   * `clear({})` 是全局清空，留给 CLI（终端里的「清空全部历史」）；
+   * web 路由只允许传非空筛选——那是产品上「只删这一组配置的历史」的承诺。
+   */
   clear(filter = {}) {
     const ids = this.list(filter).map((r) => r.id);
     for (const id of ids) this.remove(id);
