@@ -319,4 +319,3 @@ export class TranscriptStore {
     return dropped;
   }
 }
-

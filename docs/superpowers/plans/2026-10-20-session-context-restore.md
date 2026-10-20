@@ -1171,6 +1171,8 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
 
       // 按范围清空。刻意不提供全局清空——一键抹掉所有历史的权力属于终端
       // （`agenttoolbox-agent sessions --clear`），网页不该有。
+      // store.clear() 对空筛选直接抛 TypeError：路由若忘了转发筛选，
+      // 宁可炸也不要默默抹掉用户全部历史。全量清空走 store.clearAll()。
       if (req.method === 'POST' && url.pathname === '/sessions/clear') {
         const body = await readJson(req);
         const filter = {};
@@ -1773,7 +1775,9 @@ if (sub === 'sessions') {
       process.exit(1);
     }
     const store = new TranscriptStore({ dir });
-    const n = store.clear({});
+    // 全量清空是 CLI 的权力：store.clear() 要求非空筛选（网页只允许删某一
+    // 组配置的历史），全局抹除走 clearAll()。
+    const n = store.clearAll();
     console.log(`cleared ${n} session(s)`);
     process.exit(0);
   }
