@@ -650,15 +650,20 @@ function configDirFor(transcripts, sessionId) {
 ```js
 // 回合成功结束才登记：失败的轮次不该占着一个可 resume 的目录
 // （否则下次 resume 会打到一个没有有效 transcript 的目录）。
+// 适配器不知道 provider/model/toolTier，也不在这里传 cwd——cwd 由网关建会话
+// 时记。save() 是逐字段合并（Task 1），没给的键保留原值；显式传 null 反而
+// 会把网关记下的 cwd 冲掉，所以宁可不带。
 if (transcripts && sessionId && ev.sessionId) {
   transcripts.save({
     id: sessionId, adapter: 'cc', agent: 'cc',
-    cwd: cwd ?? null, configDir, ccSessionId: ev.sessionId,
+    configDir, ccSessionId: ev.sessionId,
   });
 }
 ```
 
-注意 `save()` 是**按字段合并**的（见 Task 1）：只有 `rec` 里**显式出现**的键才覆盖已有值；值为 `null` 同样是「显式值」，会把旧的 `cwd` 冲成 null。cc 适配器不知道真实 cwd 时就不要带这个键，别传 `cwd: null`。`configDir` 必须在 `RECORD_FIELDS` 里，否则会被白名单丢掉、`restore()` 永远返回 null。
+3c'. **`disposeSession` 不再 `transcripts.remove()`**（原写法与 Task 5 的「逐出只丢内存、历史留盘」直接冲突：LRU 逐出就会调 dispose，一调就把历史连同 config dir 删了，跨重启恢复恰好失效）。改成：只放掉内存里的 cc 目录缓存（已删）、保持记录；`remove` 留给用户显式删除历史 / TTL 清扫。对应的测试在 Task 3 Step 1 里，`sess-cc-3` 那条改为断言「记录仍在、config dir 仍在」。
+
+3c''. **revive 时必须重写 `ccSessionId`**：`configDirFor` 在目录缺失时会新建一个空目录，但若记录里旧的 `ccSessionId` 还在，`restore()` 会拿「新目录 + 旧 id」去 resume，而新目录里没有那份 transcript —— 必然失败，且是假阳性的 restore。所以在 `configDirFor` 新建目录的那条分支里，同时写 `transcripts.save({ id: sessionId, configDir: dir, ccSessionId: null })`（`null` 是显式值，正合用途），让 `restore()` 在下一轮成功结束前诚实返回 null。
 
 注意：`run()` 的 ctx 里没有 provider/model/toolTier，那些由 server 在建会话时写（见 Task 5），适配器只补自己知道的字段。`save()` 是合并语义（保留已有字段），所以两条路径可以分别写。
 
