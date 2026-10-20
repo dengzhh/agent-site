@@ -367,6 +367,8 @@ git commit -m "feat(agent-server): transcript store for cross-session restore"
 - Test: `packages/agent-server/test/pi-session-writer.test.mjs`
 
 > **实测依据（2026-10-20，真实 pi CLI）**：最小可 resume 的事件集是 `session` + `session_info` + N×`message`，每条带 `parentId` 指向上一条。**不需要** `model_change` / `thinking_level_change`——手写一个只含上述三种行的文件，`pi --session-dir <dir> --session <id>` 与 `--fork <id>` 都成功恢复并正确回忆上下文。格式抓准了，测试把它固化成回归。
+>
+> **补充实测（Task 2 完成后用真实 CLI 复验）**：本机所有 pi 会话文件里都没有 `session_info` 行（都是 `session → model_change → thinking_level_change → message` 起头），`parentId: null` 照样能 resume。另外，**assistant 消息只要有 `usage` 就必须带 `totalTokens`**，否则 CLI 直接崩（`Cannot read properties of undefined (reading 'totalTokens')`）；完全没有 `usage` 则正常。所以 Task 5 写盘时：要么给完整的 usage，要么不给——绝不给半截。
 
 - [ ] **Step 1: 写失败测试**
 
