@@ -197,7 +197,7 @@ test('a planted traversal payload id cannot drive clear() outside the dir', (t) 
   const canary = join(parent, 'VICTIM.json');
   writeFileSync(canary, 'CANARY');
   assert.deepEqual(store.list({}), [], 'malformed id must not reach the caller');
-  assert.equal(store.clear({}), 0, 'nothing to clear — nothing attempted');
+  assert.equal(store.clearAll(), 0, 'nothing to clear — nothing attempted');
   assert.equal(readFileSync(canary, 'utf8'), 'CANARY', 'file outside dir untouched');
   // 坏 id 是「损坏」的一种，处置方式应与已知策略一致：隔离而非原地留着被反复读
   assert.deepEqual(readdirSync(dir), ['planted.corrupt.json'], 'quarantined');
@@ -329,6 +329,24 @@ test('unknown fields never come back out of get()/list()', (t) => {
 });
 
 // 身份以文件名为准：payload 自报的 id 与文件名不一致，说明这份文件被人动过。
+test('a record whose payload id disagrees with its filename is quarantined', (t) => {
+  const { dir, store } = tmpStore(t);
+  store.save(base({ id: 'p-1', title: '真身' }));
+  writeFileSync(join(dir, 'p-2.json'), JSON.stringify({
+    v: 1, id: 'p-1', title: '冒名', createdAt: 1, lastUsed: 2,
+  }));
+  assert.deepEqual(store.list({}).map((r) => r.id), ['p-1'],
+    'the impostor must not surface');
+  assert.equal(store.get('p-2'), null, 'and it is not readable under its own name');
+  assert.equal(store.get('p-1').title, '真身', 'the real record is intact');
+  assert.ok(existsSync(join(dir, 'p-2.corrupt.json')), 'impostor quarantined');
+  // 冒名者若被采信，list() 会吐出两个 'p-1'，clear() 于是删两遍、报两个数
+  assert.equal(store.clearAll(), 1, 'the impostor is not counted as a record');
+  assert.equal(store.get('p-1'), null, 'the real record was cleared, once');
+});
+
+// 临时文件不是历史：既不进列表，也不被 sweep 顺手删掉（它可能是
+// 另一个进程正在写的）。
 test('save() merges per field: the two writers do not erase each other', (t) => {
   const { store } = tmpStore(t);
   // 网关那一侧：配置 + 消息
@@ -368,5 +386,46 @@ test('companionDir() gives the cc config dir, and refuses a bad id', (t) => {
   assert.equal(store.companionDir('sess-1'), join(dir, 'sess-1.cc'));
   assert.equal(store.companionDir('../x'), null, 'a traversal id gets no path');
   assert.equal(store.companionDir('a/b'), null);
+});
+
+test('remove() also deletes a config dir that lives outside the companion path', (t) => {
+  const { store } = tmpStore(t);
+  const elsewhere = mkdtempSync(join(tmpdir(), 'atbx-cc-'));
+  t.after(() => rmSync(elsewhere, { recursive: true, force: true }));
+  store.save({ id: 'cc-1', adapter: 'cc', agent: 'cc', configDir: elsewhere, ccSessionId: 'x' });
+  store.remove('cc-1');
+  assert.equal(existsSync(elsewhere), false, 'the config dir went with the record');
+});
+
+test('remove() survives a bogus configDir', (t) => {
+  const { store } = tmpStore(t);
+  store.save({ id: 'cc-2', adapter: 'cc', agent: 'cc', configDir: '/nonexistent/nope' });
+  assert.doesNotThrow(() => store.remove('cc-2'));
+  assert.equal(store.get('cc-2'), null, 'the record itself is gone');
+});
+
+// 记录文件是能被人手写的：它的 configDir 不能让 rmSync 指向任意路径。
+// 「不该删的目标」要放在 store 目录与系统临时目录之外——放在 $HOME 下一个
+// 一次性的空目录里：即便护栏失效，被删的也只是这个刚建的空目录。
+test('remove() will not delete a configDir outside the store and tmp roots', (t) => {
+  const outside = mkdtempSync(join(homedir(), 'atbx-precious-'));
+  t.after(() => rmSync(outside, { recursive: true, force: true }));
+  const { store } = tmpStore(t);
+  store.save({ id: 'cc-3', adapter: 'cc', agent: 'cc', configDir: outside });
+  store.remove('cc-3');
+  assert.ok(existsSync(outside), 'a hand-written path must not be rm -rf’d');
+});
+
+test('clear() needs a filter; clearAll() is the full wipe', (t) => {
+  const { store } = tmpStore(t);
+  store.save(base({ id: 'a', cwd: '/tmp/x' }));
+  store.save(base({ id: 'b', cwd: '/tmp/y' }));
+  assert.throws(() => store.clear({}), TypeError, 'an empty filter is not allowed');
+  assert.throws(() => store.clear(), TypeError);
+  assert.equal(store.clear({ cwd: '/tmp/x' }), 1, 'only the matching scope');
+  assert.equal(store.get('a'), null);
+  assert.equal(store.get('b')?.id, 'b', 'other cwd untouched');
+  assert.equal(store.clearAll(), 1, 'the CLI wipe takes the rest');
+  assert.equal(store.get('b'), null);
 });
 

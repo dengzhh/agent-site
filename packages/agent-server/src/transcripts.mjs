@@ -12,7 +12,8 @@ import {
   mkdirSync, writeFileSync, readFileSync, readdirSync,
   renameSync, rmSync, chmodSync, existsSync,
 } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, join, resolve, sep } from 'node:path';
+import { tmpdir } from 'node:os';
 
 const FORMAT_VERSION = 1;
 
@@ -213,6 +214,12 @@ export class TranscriptStore {
     return out.sort((a, b) => b.lastUsed - a.lastUsed);
   }
 
+  // 不带副作用地读一份原始 JSON：remove() 用它取 configDir，
+  // 又不想因为文件损坏而触发隔离（用户点名删的就是要删掉）。
+  #readRaw(path) {
+    try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; }
+  }
+
   /**
    * 删一条历史：json + cc 的持久 config dir（若有）。幂等。
    * @returns {boolean} 是否真的删掉过 json（用于区分「删了」与「本来就没有」）
@@ -222,21 +229,57 @@ export class TranscriptStore {
     const path = this.#path(id);
     // rmSync 的 force 只是不抛异常，不等于文件存在；返回值必须看存在性
     const existed = existsSync(path);
+    // 先取记录里的 configDir：cc 的 config dir 可能不在 <id>.cc（历史记录
+    // 指向别处），那也得一起收，否则 cc 的 transcript 留在盘上没人管。
+    const rec = this.#readRaw(path);
     rmSync(path, { force: true });
     // cc 会话带一个持久 config dir（--resume 依赖它），删除时要连目录一起收
-    rmSync(join(this.dir, `${id}.cc`), { recursive: true, force: true });
+    const companion = this.companionDir(id);
+    if (companion) rmSync(companion, { recursive: true, force: true });
+    const extra = typeof rec?.configDir === 'string' ? rec.configDir : null;
+    // 只删「我们造得出来的」目录：store 目录内或系统临时目录下的子目录。
+    // 记录文件是可以被人手写的，不能让它把 rmSync 指到任意路径。
+    if (extra && extra !== companion && this.#isDisposableDir(extra)) {
+      rmSync(extra, { recursive: true, force: true });
+    }
     return existed;
   }
 
   /**
    * 按筛选范围清空，返回删掉的条数。
-   * `clear({})` 是全局清空，留给 CLI（终端里的「清空全部历史」）；
-   * web 路由只允许传非空筛选——那是产品上「只删这一组配置的历史」的承诺。
+   * 必须给非空筛选：web 路由只允许删「某一组配置的历史」，
+   * 全量清空是 CLI 的权力（见 clearAll）。
+   * @throws {TypeError} filter 缺省或没有有效维度
    */
-  clear(filter = {}) {
+  clear(filter) {
+    if (!filter || typeof filter !== 'object'
+      || !Object.values(filter).some((v) => v != null)) {
+      throw new TypeError('clear() requires a non-empty filter; use clearAll() to wipe everything');
+    }
     const ids = this.list(filter).map((r) => r.id);
     for (const id of ids) this.remove(id);
     return ids.length;
+  }
+
+  /**
+   * 全量清空（CLI 的「清空全部历史」）。返回删掉的条数。
+   * 隔离区里的 .corrupt.json 不在其中——那是留给用户抢救的副本。
+   */
+  clearAll() {
+    const ids = this.list({}).map((r) => r.id);
+    for (const id of ids) this.remove(id);
+    return ids.length;
+  }
+
+  // extra 是不是「我们可以放心删的目录」：必须在 store 目录或系统临时目录
+  // 之下，且不能就是这两个根目录本身。
+  #isDisposableDir(p) {
+    const target = resolve(p);
+    for (const root of [resolve(this.dir), resolve(tmpdir())]) {
+      if (target === root) continue;
+      if (target.startsWith(root + sep)) return true;
+    }
+    return false;
   }
 
   /**
