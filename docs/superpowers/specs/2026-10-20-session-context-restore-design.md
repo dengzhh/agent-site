@@ -77,6 +77,8 @@
       → pi : 读 transcript.json → new Agent({initialState:{messages}})   上下文回来
       → cc : 保留的 config dir 还在 → --resume <ccSessionId>
       → acp: restore 返回 null → 开新会话，列表里那条标「不支持恢复」
+      → 恢复成功时响应带 {resumed:true, messages, title}——前端不必再发一次
+        请求去取历史（省一轮往返，也让「恢复中…」占位有明确的结束点）
   → 前端把历史消息渲染进日志区（先显示「恢复中…」）
   → 用户发消息 → 每轮 turn_end 后同步追加写盘
 ```
@@ -88,7 +90,7 @@
 | 接口 | 用途 |
 |---|---|
 | `GET /sessions?agent=&cwd=&provider=&model=` | 列出某配置下的历史会话 |
-| `POST /sessions` 增可选字段 `persistId` | 带 = 恢复该会话；不带 = 新建 |
+| `POST /sessions` 增可选字段 `persistId` | 带 = 恢复该会话（响应加 `resumed`/`messages`/`title`）；不带 = 新建。该 id 已有活跃内存会话 → 409 |
 | `DELETE /sessions/:persistId` | 删单条历史（文件 + cc 目录） |
 | `POST /sessions/clear` | 按 body 给定的筛选范围清空（不提供全局清空） |
 
@@ -98,8 +100,9 @@
 
 每个 adapter 实现两个方法，能力差异自然落地：
 
-- `restore(persistId)` → 返回该 adapter 需要的恢复材料：pi 返回 `{messages}`；cc 返回 `{configDir, ccSessionId}`；acp 返回 `null`（不支持）。
-- `persist(persistId, messages)` → 把本轮新增内容写盘。
+- `restore(sessionId)` → 返回该 adapter 需要的恢复材料：pi 返回 `{messages}`；cc 返回 `{configDir, ccSessionId}`；拿不到（记录没了 / 依赖物没了 / agent 不支持）一律返回 `null`，由上层开新会话。
+- `disposeSession(sessionId)` → 会话终结时回收磁盘记录（含 cc 的 config dir）。
+- 持久化没有独立钩子：适配器在每轮 `turn_end` 后自行调 `store.save()`（它才知道自己这轮产出了什么），失败只记日志不影响回合。
 
 ## 存储格式
 
@@ -238,7 +241,7 @@ transcript 含敏感内容（full tier 的工具输出、截图、代码），�
 
 - **apiKey 永不落盘**，这一性质没有任何松动。key 只走 浏览器 → 请求体 → 内存。
 - transcript 明文落盘意味着**接受敏感内容落盘**：full tier 的工具输出、读过的文件内容、跑过的命令、截图。缓解是 7 天 TTL + 单条删除 + 按范围清空 + `0600` 权限。用户已在 brainstorming 中明确接受此取舍。
-- 落盘位置在 `~/.config/agenttoolbox/`，与 `config.json`（grantedDirs）同目录，同受 `ATBX_CONFIG_PATH` 覆盖（测试重定向亦靠它）。
+- 落盘位置在 `~/.config/agenttoolbox/`，与 `config.json`（grantedDirs）同目录。三个环境变量：`ATBX_SESSION_TTL_DAYS`（TTL 天数）、`ATBX_PI_SESSION_DIR`（pi 共享镜像目录）、`ATBX_SESSION_DIR`（覆盖 sessions 目录本身，测试与终端子命令靠它重定向）。
 
 ## 测试策略
 
