@@ -6,11 +6,13 @@
 // 文件、截图，故文件 0600 / 目录 0700。凭据永不进这里：save() 按字段白名单
 // 组装记录（见 RECORD_FIELDS），黑名单式的「记得别把 apiKey 传进来」已经
 // 被证明拦不住——嵌套一层、大小写一变、塞进 env 就都溜过去了。
+// 读回时同样按白名单裁剪：写路径封死了入口，读路径就不该把来路不明的
+// 字段（哪怕是手写的盘外文件）原样端给调用方。
 import {
   mkdirSync, writeFileSync, readFileSync, readdirSync,
   renameSync, rmSync, chmodSync, existsSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 const FORMAT_VERSION = 1;
 
@@ -28,12 +30,24 @@ const RECORD_FIELDS = [
   'messages', 'piSessionId', 'ccSessionId', 'configDir',
 ];
 
+// 存盘时额外盖的三个字段：格式版本与两个时间戳。
+const STAMP_FIELDS = ['v', 'createdAt', 'lastUsed'];
+
 // createdAt/lastUsed 由 store 盖章，不在 RECORD_FIELDS 里，却是从 rec 直取，
 // 所以它们是绕过白名单的暗道：传个对象进去，嵌套的凭据就原样落盘了。
 // 更糟的是传个非数字，sweep() 里 now - lastUsed 得 NaN，比较恒 false——
 // 一条永生记录，TTL 直接失效。只收有限数字，两个问题一起解决。
 function num(x) {
   return typeof x === 'number' && Number.isFinite(x) ? x : undefined;
+}
+
+// 只留白名单里的字段。写、读两条路径共用一个口径。
+function pick(obj, fields) {
+  const out = {};
+  for (const k of fields) {
+    if (obj[k] !== undefined) out[k] = obj[k];
+  }
+  return out;
 }
 
 export class TranscriptStore {
@@ -100,7 +114,7 @@ export class TranscriptStore {
    */
   save(rec) {
     this.#assertId(rec?.id);
-    const prev = this.#read(this.#path(rec.id));
+    const prev = this.#read(this.#path(rec.id), rec.id);
     const now = Date.now();
     // 显式按白名单挑字段，而不是 {...rec} 再删几个键：黑名单永远少一种拼法
     // （大小写、嵌套一层、塞进 env），白名单则天然封死——只要不在这张表上，
@@ -118,7 +132,10 @@ export class TranscriptStore {
     return merged;
   }
 
-  #read(path) {
+  // 读一条记录，任何不合规都按「损坏」处置：隔离后返回 null。
+  // expectedId 是文件名里的 id：payload 自报的 id 与文件名不一致说明这份
+  // 文件被人动过或曾经被复制，不能拿它当身份用。
+  #read(path, expectedId) {
     let raw;
     try { raw = readFileSync(path, 'utf8'); } catch { return null; }
     let obj;
@@ -131,14 +148,24 @@ export class TranscriptStore {
       this.#quarantine(path);
       return null;
     }
-    // payload 里的 id 同样要过白名单。list()/clear()/sweep() 是从目录里
-    // 拿文件名、再拿 payload.id 去拼删除路径的，不在这里挡住，一个手写的
-    // 坏文件就能把删除操作指到 dir 之外——之前那句 typeof string 等于没设防。
-    if (!SAFE_ID.test(obj.id)) {
+    // 身份以文件名为准：payload 自报的 id 与文件名不一致说明这份
+    // 文件被人动过或曾经被复制，不能拿它当身份用。这一条同时替掉了
+    // 「payload.id 也要过 SAFE_ID」——文件名那份已经过了白名单，
+    // 两边对不上就是坏文件。
+    if (expectedId !== undefined && obj.id !== expectedId) {
       this.#quarantine(path);
       return null;
     }
-    return obj;
+    // 时间戳必须是有限数字：非数字的 lastUsed 会让 sweep 的 NaN 比较恒为假，
+    // 那等于一条永生记录，TTL 形同虚设。写路径已经挡了，读路径也得挡——
+    // 否则一个手写的文件就能在 store 之外给自己续命。
+    if (!Number.isFinite(obj.createdAt) || !Number.isFinite(obj.lastUsed)) {
+      this.#quarantine(path);
+      return null;
+    }
+    // 读回时按同一张白名单裁剪：写路径封死了入口，读路径就不该把
+    // 来路不明的字段（哪怕是手写的盘外文件）原样端给调用方。
+    return { ...pick(obj, STAMP_FIELDS), ...pick(obj, RECORD_FIELDS) };
   }
 
   // 隔离而非删除：文件可能只是被一次崩溃写坏了，用户还想抢救里面的内容。
@@ -152,7 +179,7 @@ export class TranscriptStore {
 
   get(id) {
     if (!this.#readableId(id)) return null;
-    return this.#read(this.#path(id));
+    return this.#read(this.#path(id), id);
   }
 
   /**
@@ -169,7 +196,12 @@ export class TranscriptStore {
       if (!name.endsWith('.json') || name.endsWith('.tmp')) continue;
       // 隔离区不是历史：用户没修好之前它不该出现在列表里，也不该被再次隔离
       if (name.endsWith('.corrupt.json')) continue;
-      const rec = this.#read(join(this.dir, name));
+      const id = basename(name, '.json');
+      if (!SAFE_ID.test(id)) {
+        this.#quarantine(join(this.dir, name));
+        continue;
+      }
+      const rec = this.#read(join(this.dir, name), id);
       if (!rec) continue;
       if (filter.agent != null && rec.agent !== filter.agent) continue;
       if (filter.cwd != null && rec.cwd !== filter.cwd) continue;

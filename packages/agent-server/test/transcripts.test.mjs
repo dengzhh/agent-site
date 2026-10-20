@@ -301,6 +301,34 @@ test('numeric timestamp overrides are still honoured', (t) => {
 
 // 写路径挡了非数字 lastUsed，读路径也得挡：否则一个手写的盘外文件
 // 可以给自己续命（NaN 比较恒为 false），TTL 直接失效。
+test('a hand-written record with a non-numeric lastUsed cannot be immortal', (t) => {
+  const { dir, store } = tmpStore(t, { ttlMs: 1000 });
+  writeFileSync(join(dir, 'immortal.json'), JSON.stringify({
+    v: 1, id: 'immortal', title: 'x', createdAt: 1, lastUsed: 'never',
+  }));
+  assert.equal(store.get('immortal'), null, 'a bogus timestamp reads as absent');
+  assert.deepEqual(store.sweep(Date.now() + 1e9), [], 'and it never expires');
+  assert.deepEqual(readdirSync(dir), ['immortal.corrupt.json'], 'quarantined');
+});
+
+// 读回也按同一张白名单裁剪：写路径封死了入口，读路径就不该把
+// 来路不明的字段原样端给调用方（list 的响应会直接把它送上网）。
+test('unknown fields never come back out of get()/list()', (t) => {
+  const { dir, store } = tmpStore(t);
+  writeFileSync(join(dir, 'x.json'), JSON.stringify({
+    v: 1, id: 'x', title: 't', createdAt: 1, lastUsed: 2,
+    apiKey: 'sk-LEAK', env: { ANTHROPIC_API_KEY: 'sk-LEAK2' },
+  }));
+  const got = store.get('x');
+  assert.equal(got.apiKey, undefined, 'get() must not echo unknown fields');
+  assert.equal(got.env, undefined, 'and neither must their nested payload');
+  const [hit] = store.list({});
+  assert.equal(hit.apiKey, undefined, 'list() must not echo unknown fields');
+  assert.equal(hit.env, undefined);
+  assert.equal(hit.title, 't', 'the allowed fields still come through');
+});
+
+// 身份以文件名为准：payload 自报的 id 与文件名不一致，说明这份文件被人动过。
 test('save() merges per field: the two writers do not erase each other', (t) => {
   const { store } = tmpStore(t);
   // 网关那一侧：配置 + 消息
