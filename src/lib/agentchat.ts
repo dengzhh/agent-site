@@ -216,8 +216,12 @@ export async function listSessions(
   return ((await res.json()) as SessionListResponse).sessions ?? [];
 }
 
-export async function deleteSession(persistId: string, baseUrl = AGENT_URL): Promise<void> {
-  await fetch(`${baseUrl}/sessions/${persistId}`, { method: 'DELETE' }).catch(() => {});
+/** 删一条历史。返回 false 表示网关没删（如会话仍活跃 → 409）。网络错误也算 false。 */
+export async function deleteSession(persistId: string, baseUrl = AGENT_URL): Promise<boolean> {
+  try {
+    const res = await fetch(`${baseUrl}/sessions/${encodeURIComponent(persistId)}`, { method: 'DELETE' });
+    return res.ok;
+  } catch { return false; }
 }
 
 /** 按当前筛选范围清空。返回删掉的条数。 */

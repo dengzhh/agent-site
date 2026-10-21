@@ -601,8 +601,14 @@ const fmtCtx = (n: number) =>
       del.setAttribute('aria-label', '删除这条历史');
       del.addEventListener('click', async (e) => {
         e.stopPropagation(); // 别触发 item 的恢复
-        await deleteSession(s.id);
+        const ok = await deleteSession(s.id);
+        if (!ok) { chatMsg('hint', '没能删除：这条会话可能还在运行，先关掉它再来。'); return; }
         sessionSummaries = sessionSummaries.filter((x) => x.id !== s.id);
+        // 删掉的恰好是当前会话：它的 transcript 已经不在了，下一轮会把它
+        // 整份写回来（等于删了又活）。解绑并重建一个全新会话；若它是正在
+        // 跑的那条，网关会拒绝（409）——那就只更新列表，别动现场。
+        const c = chat;
+        if (c && c.sessionId === s.id && !c.streaming) { c.sessionId = null; c.persistId = null; resetSession(); }
         if (activePersistId === s.id) activePersistId = undefined;
         renderSessionList();
       });
@@ -635,6 +641,9 @@ const fmtCtx = (n: number) =>
   async function refreshSessionList(): Promise<void> {
     const c = chat;
     if (!c) return;
+    // 工作目录为空时网关按「不过滤」处理（空串被丢掉），会返回**所有目录**的
+    // 历史；列表本身照常显示（用户看得见它们不属于当前目录），但自动恢复
+    // 不能用它（见 openChat 的判断）——那会把用户带到别的项目的会话里。
     sessionSummaries = await listSessions({ agent: c.agent ?? c.agents[0] ?? 'pi', cwd: c.cwd, provider: c.provider, model: c.model });
     sessionShowAll = false;
     renderSessionList();
@@ -676,7 +685,10 @@ const fmtCtx = (n: number) =>
       // 工具级别（read/full）才带 cwd；级别/目录任一变化都建新会话（见 applyConfig）
       cwd: c.toolTier === 'none' ? null : (c.cwd || null),
       toolTier: c.toolTier,
-      persistId: c.persistId ?? undefined,
+      // 原样转发：null = 用户明确要新对话，undefined = 没决定。
+      // 不能写成 `?? undefined`——那会把 null 也折成 undefined，
+      // 「明确新建」的意图就丢了。
+      persistId: c.persistId,
     });
     // 建会话期间配置变了（连点两次/换模型）：迟到的 sessionId 属于旧配置，丢弃
     if (gen !== configGen || chat !== c) return;
@@ -841,7 +853,9 @@ const fmtCtx = (n: number) =>
       // 真拿它去恢复，provider/model/cwd 都被当成「这次的值」，历史记录会被
       // 工作目录为空、级别 none 的参数冲掉。恢复只发生在 ensureSession() 里，
       // 那时 cwd/tier 已从 UI 读回（见 4d 的写法）。
-      activePersistId = sessionSummaries[0]?.id ?? null;
+      // 只有「列表确实按本目录筛过」才默认恢复：没填工作目录时列表是所有
+      // 目录混在一起的，最近一条很可能属于另一个项目。
+      activePersistId = c0.cwd ? (sessionSummaries[0]?.id ?? null) : null;
     });
     openDrawer(bothDrawers(), $('chat-drawer'));
     void tryGoChat();
