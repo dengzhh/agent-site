@@ -112,6 +112,46 @@ test('session + message round-trip streams SSE', async (t) => {
   assert.equal(events.at(-1).type, 'done');
 });
 
+// 自建 store（没注入 transcripts）时目录必须经 sessionStoreDir()：CLI 与网关看
+// 同一处历史，靠的就是这一个来源。不做这个断言的话，一处改路径另一处没改，
+// 两个功能各自「全绿」——网页写的会话 CLI 永远列不出来。用真的一轮写入钉
+// （无 store 的 server 落到开发者真实会话目录的风险由上面的静态守卫挡）。
+test('a store-less server persists into ATBX_SESSION_DIR (same dir the CLI lists)', async (t) => {
+  const dir = freshDir();
+  const saved = process.env.ATBX_SESSION_DIR;
+  process.env.ATBX_SESSION_DIR = dir;
+  t.after(() => {
+    if (saved === undefined) delete process.env.ATBX_SESSION_DIR; else process.env.ATBX_SESSION_DIR = saved;
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const models = createModels();
+  const faux = fauxProvider();
+  models.setProvider(faux.provider);
+  const resolve = () => ({ model: faux.getModel(), providerId: faux.provider.id });
+  // 刻意不传 transcripts：测的就是 startServer 自建 store 的那条分支。
+  const srv = await startServer({
+    port: 0, allowedOrigins: ['http://localhost:4321'], resolve, models,
+    registry: createRegistry([createPiAdapter({ models, resolve, transcripts: null })]),
+    acpProbe: async () => false,
+  });
+  t.after(() => srv.close());
+  const base = `http://127.0.0.1:${srv.port}`;
+  const created = await (await fetch(`${base}/sessions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ provider: 'faux', model: 'faux' }),
+  })).json();
+  const res = await fetch(`${base}/sessions/${created.sessionId}/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ text: 'hi' }),
+  });
+  await res.text();
+  assert.ok(readdirSync(dir).includes(`${created.sessionId}.json`), `turn was not persisted into ATBX_SESSION_DIR (saw: ${readdirSync(dir).join(', ')})`);
+  // 同一目录能被 CLI 用的 store 读出——这是「终端 list 看得到网页的会话」的最小证明
+  assert.equal(new TranscriptStore({ dir }).get(created.sessionId)?.id, created.sessionId);
+});
+
 test('unknown session 404, malformed JSON 400', async (t) => {
   const { json } = await withFauxServer(t);
   assert.equal((await json('/sessions/nope/messages', {
