@@ -1160,3 +1160,24 @@ test('POST /sessions never lets a credential or nested object onto disk', async 
   assert.equal(okRec.provider, 'faux');
   assert.equal(okRec.model, 'faux');
 });
+
+// 恢复一条已有记录时，请求里「每次都会带」的字段（前端固定发 toolTier，cwd
+// 是当前界面状态）不能把记录自己的配置降级：一条 full 档的会话被以 none
+// 打开，盘上就变成 none，下次从列表按 cwd/tier 找就对不上了。
+test('restoring a record does not downgrade its own provider/model/cwd/toolTier', async (t) => {
+  const store = mkStore(t);
+  const { json } = await withFauxServer(t, ['http://localhost:4321'], undefined, store);
+  store.save({ id: 'full-one', adapter: 'pi', agent: 'pi', provider: 'zai', model: 'glm', cwd: '/tmp/proj', toolTier: 'full' });
+  const r = await json('/sessions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ adapter: 'pi', provider: 'faux', model: 'faux', toolTier: 'none', persistId: 'full-one' }),
+  });
+  assert.equal(r.status, 200);
+  const rec = store.get('full-one');
+  assert.equal(rec.provider, 'faux', 'what the run actually uses is recorded');
+  assert.equal(rec.cwd, '/tmp/proj', 'no cwd in the request: keep the record\'s own');
+  // 前端每次都发 toolTier；恢复时它是「这次运行用什么」的请求，不是对记录的
+  // 声明——记录写的是「这条会话是怎么跑过的」，所以不覆盖。
+  assert.equal(rec.toolTier, 'full', 'toolTier is not rewritten on restore');
+});

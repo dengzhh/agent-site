@@ -586,7 +586,9 @@ const fmtCtx = (n: number) =>
       const item = document.createElement('div');
       item.className = 'chat-session-item';
       item.setAttribute('role', 'option');
-      if (s.id === activePersistId) item.classList.add('is-active');
+      // 高亮「真正恢复的那条」。用 activePersistId 会把「被自动选中但没恢复」
+      // 的那条也标成当前（默认恢复要等配置读回，见 ensureSession）。
+      if (s.id === chat?.sessionId) item.classList.add('is-active');
       const main = document.createElement('span');
       main.className = 'chat-session-item-main';
       main.textContent = s.title || '(无标题)';
@@ -613,7 +615,9 @@ const fmtCtx = (n: number) =>
         renderSessionList();
       });
       item.append(main, time, del);
-      const cmd = localResumeCommand(s);
+      // 没 key 时本机命令先不给：下面会切到填 key 面板，复制出去也跑不起来，
+      // 还让人看不到要填的东西。
+      const cmd = keyStorage.get(chat?.provider ?? '') ? localResumeCommand(s) : null;
       if (cmd) {
         const resume = document.createElement('button');
         resume.type = 'button';
@@ -638,14 +642,15 @@ const fmtCtx = (n: number) =>
     sessionMoreBtn.textContent = sessionShowAll ? '收起' : `显示更多（${sessionSummaries.length - SESSION_PAGE}）`;
   }
 
-  async function refreshSessionList(): Promise<void> {
+  async function refreshSessionList(opts: { collapse?: boolean } = {}): Promise<void> {
     const c = chat;
     if (!c) return;
     // 工作目录为空时网关按「不过滤」处理（空串被丢掉），会返回**所有目录**的
     // 历史；列表本身照常显示（用户看得见它们不属于当前目录），但自动恢复
     // 不能用它（见 openChat 的判断）——那会把用户带到别的项目的会话里。
     sessionSummaries = await listSessions({ agent: c.agent ?? c.agents[0] ?? 'pi', cwd: c.cwd, provider: c.provider, model: c.model });
-    sessionShowAll = false;
+    // 只在「换了配置重新打开」时收起；每轮结束的刷新保持用户选过的展开状态。
+    if (opts.collapse) sessionShowAll = false;
     renderSessionList();
   }
 
@@ -675,7 +680,26 @@ const fmtCtx = (n: number) =>
     const c = chat!;
     if (c.sessionId) return;
     const gen = configGen;
-    const res = await createSession({
+    const stale = () => gen !== configGen || chat !== c;
+
+    // 「没决定」（undefined）时在这里挑默认要恢复的那条——**只能在这里**：此刻
+    // cwd/tier 已从 UI 读回（tryGoChat ← openChat 里的 readConfigFromUi），
+    // 不会被抽屉初值（'' / none）冲掉。条件缺一不可：
+    //  · 有工作目录：空目录时网关不过滤 cwd，会捞到别的项目的会话；
+    //  · 只挑可恢复的（acp 恢复不了，选它等于空开一个）。
+    let target = c.persistId;
+    if (target === undefined) {
+      target = null;
+      if (c.cwd) {
+        try {
+          const list = await listSessions({ agent: c.agent ?? c.agents[0] ?? 'pi', cwd: c.cwd, provider: c.provider, model: c.model });
+          if (stale()) return;
+          target = list.find(canRestore)?.id ?? null;
+        } catch { target = null; } // 查不到就新建，不该因为列表挂了连会话都建不了
+      }
+    }
+
+    const send = (persistId: string | null) => createSession({
       provider: c.provider, model: c.model, baseUrl: c.base || null,
       apiKey: keyStorage.get(c.provider),
       name: c.name, contextWindow: c.ctx, maxOutput: c.maxOut,
@@ -685,13 +709,29 @@ const fmtCtx = (n: number) =>
       // 工具级别（read/full）才带 cwd；级别/目录任一变化都建新会话（见 applyConfig）
       cwd: c.toolTier === 'none' ? null : (c.cwd || null),
       toolTier: c.toolTier,
-      // 原样转发：null = 用户明确要新对话，undefined = 没决定。
-      // 不能写成 `?? undefined`——那会把 null 也折成 undefined，
-      // 「明确新建」的意图就丢了。
-      persistId: c.persistId,
+      // 原样转发：null = 明确新对话，undefined 不会到这里（上面已折成 id 或 null）。
+      persistId,
     });
+
+    if (target) { chatLog.textContent = ''; chatMsg('hint', '恢复中…'); }
+    let res;
+    try {
+      res = await send(target);
+    } catch (e) {
+      // 409：这条历史正被另一个标签页的会话占着（内存里活跃）。别把抽屉卡在
+      // 「没有会话」——转开新会话并说明，历史本身不动。
+      if (target && (e as { status?: number }).status === 409) {
+        if (stale()) return;
+        chatMsg('hint', '这条会话正在另一个标签页里使用，已改为开始新对话。');
+        res = await send(null);
+        c.persistId = null;
+      } else {
+        if (!stale()) chatLog.textContent = '';
+        throw e;
+      }
+    }
     // 建会话期间配置变了（连点两次/换模型）：迟到的 sessionId 属于旧配置，丢弃
-    if (gen !== configGen || chat !== c) return;
+    if (stale()) return;
     c.sessionId = res.sessionId;
     // res.resumed 为 true 时网关已把历史消息一起给了（Task 6 的 3c）。
     // 没有历史（resumed:false 或消息为空）就别画分隔线——空对话不需要它。
@@ -709,6 +749,14 @@ const fmtCtx = (n: number) =>
           : String(m.content ?? '');
         chatMsg(m.role as 'user' | 'assistant', text);
       }
+    } else if (target) {
+      // 占位要撤掉，否则「恢复中…」永远挂在空白对话上。cc 正常就是这条路
+      // （它的 restore 只回 configDir/ccSessionId，历史由 CLI --resume 续）；
+      // 但那是「接着上次的上下文」，不是「没有历史」。
+      chatLog.textContent = '';
+      chatMsg('hint', res.adapter === 'cc'
+        ? '已接上本机的 Claude Code 会话（历史不在网页里显示，下一轮会接着它的上下文）。'
+        : '这条会话还没有可显示的消息。');
     }
   }
 
@@ -845,7 +893,7 @@ const fmtCtx = (n: number) =>
     // 记住「还没决定」，由 refreshSessionList 完成后挑最近一条。
     activePersistId = opts.persistId;
     const c0 = chat;
-    void refreshSessionList().then(() => {
+    void refreshSessionList({ collapse: true }).then(() => {
       if (!chat || chat !== c0) return;
       if (activePersistId !== undefined) return; // 已明确：某条 or 新对话
       // ⚠️ 不要在这里把最近一条塞进 chat.persistId：openChat 末尾的 tryGoChat

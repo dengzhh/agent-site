@@ -263,8 +263,17 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
           store.save({
             id,
             ...(existing ? {} : { adapter: adapter.id, agent: acpAgentId ? `acp:${acpAgentId}` : adapter.id }),
-            provider: body.provider ?? undefined, model: body.model ?? undefined,
-            cwd: cwd ?? undefined, toolTier,
+            // 恢复既有记录时也只写「这次确实给了」的配置：toolTier 每次都在、
+            // cwd 在前端是当前界面状态，全写会把记录自己的参数降级（如把
+            // full 档的会话恢复成 none）。归属与配置都以盘上为准，只在请求
+            // 显式给出时才更新。
+            ...(existing ? {
+              provider: body.provider ?? undefined, model: body.model ?? undefined,
+              cwd: cwd ?? undefined,
+            } : {
+              provider: body.provider ?? undefined, model: body.model ?? undefined,
+              cwd: cwd ?? undefined, toolTier,
+            }),
           });
         } catch (err) {
           log('session', `transcript save failed for ${id.slice(0, 8)}: ${preview(err?.message ?? err, 120)}`);

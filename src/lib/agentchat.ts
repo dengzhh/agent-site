@@ -103,7 +103,8 @@ export async function createSession(body: SessionRequest, baseUrl = AGENT_URL): 
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`session create failed: ${res.status} ${await res.text()}`);
+  // 状态码单独挂在 error 上：调用方要按 409 分流，不该去正则匹配消息文本。
+  if (!res.ok) throw Object.assign(new Error(`session create failed: ${res.status} ${await res.text()}`), { status: res.status });
   return (await res.json()) as SessionResponse;
 }
 
