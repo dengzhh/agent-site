@@ -906,16 +906,16 @@ const fmtCtx = (n: number) =>
   sessionClearBtn.addEventListener('click', async () => {
     const c = chat;
     if (!c) return;
-    // 正在跑的会话不参与：网关会把它跳过（记录保留），别动现场。
-    const keepLive = Boolean(c.sessionId && c.streaming);
     const n = await clearSessions({ agent: c.agent ?? c.agents[0] ?? 'pi', cwd: c.cwd, provider: c.provider, model: c.model });
-    chatMsg('hint', keepLive ? `已清空 ${n} 条历史（正在使用的会话保留）。` : `已清空 ${n} 条历史。`);
-    // 清空范围包含当前会话：同单条删除——它的记录没了，不解绑的话下一轮会把
-    // 整份写回来（删了又活）。fresh = 解绑后明确开全新对话，别自动恢复下一条。
-    if (c.sessionId && !c.streaming) {
-      const left = await listSessions({ agent: c.agent ?? c.agents[0] ?? 'pi', cwd: c.cwd, provider: c.provider, model: c.model });
-      if (!left.some((x) => x.id === c.sessionId)) { resetSession({ fresh: true }); return; }
-    }
+    // 一句话说清现状：当前会话的记录还在不在（网关会跳过活跃会话，流恰好在这期间
+    // 结束时也照样保留）。查一次既用于提示，也决定要不要解绑——不去猜 c.streaming。
+    const left = await listSessions({ agent: c.agent ?? c.agents[0] ?? 'pi', cwd: c.cwd, provider: c.provider, model: c.model });
+    if (chat !== c) return; // 期间换了会话/关了抽屉：这轮结果作废
+    const kept = Boolean(c.sessionId && left.some((x) => x.id === c.sessionId));
+    chatMsg('hint', kept ? `已清空 ${n} 条历史（正在使用的会话保留）。` : `已清空 ${n} 条历史。`);
+    // 清空范围包含当前会话且它没被保留：同单条删除——记录没了，不解绑的话下一轮
+    // 会把它整份写回来（删了又活）。fresh = 明确开全新对话，别自动恢复下一条。
+    if (c.sessionId && !kept) { resetSession({ fresh: true }); return; }
     await refreshSessionList();
   });
   $('chat-close').addEventListener('click', () => {
