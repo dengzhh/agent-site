@@ -157,7 +157,14 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
           const v = url.searchParams.get(k);
           if (v != null && v !== '') filter[k] = v;
         }
-        return json(200, { sessions: store.list(filter) });
+        // piSessionDir 不是记录字段（记录里只有镜像文件的 id），是网关配置——
+        // 由这里补进去：UI 的「本机续接命令」要靠它知道去哪个目录找镜像文件。
+        // 记录里没有它，所以不加的话界面拿到的是空目录，给出的命令必然找不到会话。
+        const dir = piSessionDir();
+        const list = store.list(filter).map((r) => (
+          r.adapter === 'pi' && dir ? { ...r, piSessionDir: dir } : r
+        ));
+        return json(200, { sessions: list });
       }
 
       if (req.method === 'POST' && url.pathname === '/sessions') {

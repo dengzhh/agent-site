@@ -18,6 +18,8 @@ const freshDir = () => mkdtempSync(join(tmpdir(), 'atbx-srv-'));
 // server.mjs（→ config.mjs）必须动态 import，让这次重定向先生效。
 process.env.ATBX_CONFIG_PATH = join(mkdtempSync(join(tmpdir(), 'atbx-srv-cfg-')), 'config.json');
 const { startServer } = await import('../src/server.mjs');
+// 同一个 config 模块实例：列表里的 piSessionDir 必须与这里读到的完全一致
+const { piSessionDir } = await import('../src/config.mjs');
 
 // 每个测试起独立 server + faux provider。
 // 显式注入 registry（只含承接 faux 的 pi 适配器）：默认 registry 里的 cc 适配器会探活
@@ -927,6 +929,41 @@ test('a resumed session accepts messages on its persistId', async (t) => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+// 恢复会话时 POST /sessions 必须把找到的历史原样带回（前端据此渲染历史），
+// 而记录不存在时必须 200 + resumed:false，id 仍是客户端给的 persistId——
+// 不能让「没历史」表现成报错，否则前端会把一个可用会话当成创建失败。
+// 变异验证：删掉响应里的 `messages` 或把 resumed 写死，本用例必红。
+test('POST /sessions returns restored messages, or resumed:false when there is none', async (t) => {
+  const dir = freshDir();
+  try {
+    const store = new TranscriptStore({ dir });
+    const { json } = await withFauxServer(t, ['http://localhost:4321'], undefined, store);
+    const seeded = [
+      { role: 'user', content: 'earlier', timestamp: 1 },
+      { role: 'assistant', content: [{ type: 'text', text: 'earlier reply' }], timestamp: 2 },
+    ];
+    store.save({ id: 'has-history', adapter: 'pi', agent: 'pi', messages: seeded });
+    const ok = await json('/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+      body: JSON.stringify({ provider: 'faux', model: 'faux', persistId: 'has-history' }),
+    });
+    assert.equal(ok.status, 200);
+    assert.equal(ok.body.resumed, true);
+    assert.deepEqual(ok.body.messages, seeded, 'restored history is in the response');
+
+    const missing = await json('/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+      body: JSON.stringify({ provider: 'faux', model: 'faux', persistId: 'gone-for-good' }),
+    });
+    assert.equal(missing.status, 200, 'a missing record is not an error');
+    assert.equal(missing.body.resumed, false);
+    assert.equal(missing.body.sessionId, 'gone-for-good', 'the client keeps its id');
+    assert.equal(missing.body.messages, undefined, 'no fake empty history');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 // ── Task 6 补漏：配置字段必须真的落盘 ────────────────────────────────────────
 //
 // 上一批测试全在测试里手写 store.save({... provider:'faux' ...})，于是路由写对了、
@@ -965,6 +1002,10 @@ test('a real turn persists the fields the session list filters on', async (t) =>
     assert.equal(listed.status, 200);
     assert.ok(listed.body.sessions.some((s) => s.id === sessionId),
       'the list filter must actually match a real session');
+    // piSessionDir 不在记录里（记录只存镜像文件 id），由网关在列表里补上：
+    // UI 的「本机续接命令」拿它拼 --session-dir，缺了这条命令必然找不到会话。
+    const listedPi = listed.body.sessions.find((s) => s.id === sessionId);
+    assert.equal(listedPi.piSessionDir, piSessionDir(), 'pi records carry the mirror dir');
     // apiKey 绝不入盘
     assert.equal(rec.apiKey, undefined);
   } finally { rmSync(dir, { recursive: true, force: true }); }
