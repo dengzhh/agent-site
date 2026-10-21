@@ -1970,8 +1970,10 @@ git commit -m "feat(site): session history row in the chat drawer"
 >   目录 `<~/.pi/agent/sessions>/<cwdSlug>/`，而镜像平铺在别处——在**别的 cwd** 下跑
 >   会直接 `No session found matching`（实测 exit 1）。所以②钉两条：同 cwd + `--session`
 >   （原地续），跨 cwd + `--session-dir` + `--fork`（用户粘贴 Task 9 那条命令的场景）。
-> - `--print` 是 CLI 文档里的非交互开关，保留；再加 `--no-session`，否则探测运行会把
->   本轮追加成同一 id 的**新文件**（实测同一 id 多文件按 mtime 决胜），污染第二个用例。
+> - `--print` 是 CLI 文档里的非交互开关，保留。**不要加 `--no-session`**（实测：加了
+>   之后 CLI 根本读不到会话——答「没有任何关于暗号的信息」，且同一命令第一次还 180s
+>   超时；去掉后 4s 答出暗号）。运行会把本轮写成同一 id 的新文件，无害；文件存在性
+>   也别断言（`piSessionId.jsonl` 之外允许 CLI 自己的文件）。
 > - **不要用 `execFile` 的 `timeout`**：超时被杀后回调里 stdout/stderr 可能全空、code=0，
 >   看起来像「CLI 没说话」。用 `sh -c '"$@" > file 2>&1 </dev/null'` 重定向到文件，
 >   超时由外层 `withTimeout` 兜。
@@ -2101,8 +2103,8 @@ test('a session file we write can be resumed by the real pi CLI', async (t) => {
   });
   writeFileSync(join(shared, `${piSessionId}.jsonl`), renderPiSession(lines), { mode: 0o600 });
 
-  // 跑 pi：输出重定向到文件再读（见文件头的 timeout 说明）。--no-session：探测运行
-  // 不写盘，否则 shared/ 会多出同 id 的新文件，污染下面那条断言。
+  // 跑 pi：输出重定向到文件再读（见文件头的 timeout 说明）。刻意不加 --no-session：
+  // 它会让 CLI 读不到会话（实测答「没有暗号」，还偶发卡死）。
   const ask = (argv, runCwd, outFile) => new Promise((resolve) => {
     execFile('sh', ['-c', `"$@" > "${outFile}" 2>&1 </dev/null`, 'sh', ...argv],
       { cwd: runCwd, timeout: 180_000 }, () => resolve(readFileSync(outFile, 'utf8')));
@@ -2111,7 +2113,7 @@ test('a session file we write can be resumed by the real pi CLI', async (t) => {
 
   // ②a 同 cwd + --session：原地续（功能里的实际用法）
   const same = await withTimeout(
-    ask(['pi', '--session-dir', shared, '--session', piSessionId, '--no-session', '--print', '暗号是什么'], cwd, join(shared, 'out-same.log')),
+    ask(['pi', '--session-dir', shared, '--session', piSessionId, '--print', '暗号是什么'], cwd, join(shared, 'out-same.log')),
     190_000, 'pi same-cwd resume');
   assert.match(same, /木瓜/, `pi --session did not recall the seeded context. output: ${same.slice(-300)}`);
 
@@ -2121,7 +2123,7 @@ test('a session file we write can be resumed by the real pi CLI', async (t) => {
   const other = mkdtempSync(join(tmpdir(), 'atbx-e2e-other-'));
   t.after(() => rmSync(other, { recursive: true, force: true }));
   const forked = await withTimeout(
-    ask(['pi', '--session-dir', shared, '--fork', piSessionId, '--no-session', '--print', '暗号是什么'], other, join(other, 'out-fork.log')),
+    ask(['pi', '--session-dir', shared, '--fork', piSessionId, '--print', '暗号是什么'], other, join(other, 'out-fork.log')),
     190_000, 'pi cross-cwd fork');
   assert.match(forked, /木瓜/, `pi --fork did not recall the seeded context. output: ${forked.slice(-300)}`);
 });
