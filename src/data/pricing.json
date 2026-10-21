@@ -1,5 +1,5 @@
 {
-  "syncedAt": "2026-10-20T08:42:56.038Z",
+  "syncedAt": "2026-10-21T08:43:38.632Z",
   "source": "models.dev",
   "providers": [
     {
@@ -531,6 +531,15 @@
       "id": "google",
       "name": "Google",
       "models": [
+        {
+          "id": "gemini-pro-latest",
+          "label": "Gemini Pro Latest",
+          "context": 1048576,
+          "input": 2,
+          "output": 12,
+          "cacheRead": 0.2,
+          "cacheWrite": null
+        },
         {
           "id": "gemini-flash-lite-latest",
           "label": "Gemini Flash-Lite Latest",
