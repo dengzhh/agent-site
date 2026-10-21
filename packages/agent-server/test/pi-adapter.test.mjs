@@ -533,6 +533,24 @@ test('persisting a turn preserves gateway-owned fields (no R2 clobber)', async (
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+// 标题只写一次：首轮按首条 user 消息派生，之后用户（或网关）改过的标题
+// 不能被后续轮次按「本轮的 state.messages」重新派生冲掉。stub 的 prompt 整体
+// 替换 state.messages，于是第 2 轮的派生结果必然不同于第 1 轮——把
+// `rec?.title ??` 守卫改成无条件派生，本用例立刻红（已做变异复验）。
+test('a later turn never re-derives a title that is already set', async (t) => {
+  const dir = freshDir();
+  try {
+    const store = new TranscriptStore({ dir });
+    const { pi } = piSetup(store);
+    await runTurn(pi, 'first question');
+    assert.equal(store.get('sess-pi-1').title, 'first question', 'title derived on the first turn');
+    // 用户改过标题（或网关写过）：后续轮次必须原样保留
+    store.save({ id: 'sess-pi-1', title: '用户改过的标题' });
+    await runTurn(pi, 'a completely different second question');
+    assert.equal(store.get('sess-pi-1').title, '用户改过的标题', 'renamed title survived a later turn');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 // 端到端：恢复的历史必须真的到达 provider ────────────────────────────────────
 // 上面所有恢复用例都只断言 makeAgent 的第 6 个参数——把播种整段掐掉，它们
 // 照样全绿（已实测）。所以这里走真实 defaultMakeAgent：第 1 轮跑完落盘 →
