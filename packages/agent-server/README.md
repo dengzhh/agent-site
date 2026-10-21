@@ -172,6 +172,30 @@ didn't choose, nothing is granted and nothing remembered.
 - `error` `{message}` — something failed (bad key, gated model, adapter error)
 - `done` — always the final frame; the stream closes after it
 
+## Session history
+
+Conversations are persisted to `~/.config/agenttoolbox/sessions/` so they
+survive drawer closes, reloads and gateway restarts (7-day TTL by default;
+override with `ATBX_SESSION_TTL_DAYS`). Records are `0600`, the directory
+`0700` — transcripts can contain file contents, command output and
+screenshots from `full` tier runs. **API keys are never written to disk.**
+
+Website-created sessions are also mirrored into pi CLI's native format
+(`ATBX_PI_SESSION_DIR`, default `~/.pi/agent/sessions/`), so you can continue
+one locally. Always pass `--session-dir`, and use `--fork` when running from
+a different directory than the session's cwd:
+
+    pi --session-dir <ATBX_PI_SESSION_DIR> --fork <piSessionId> "…"
+
+The drawer shows that exact command with a copy button. `cc` sessions resume
+locally with `claude --resume <ccSessionId>`. Sessions you start in the
+terminal yourself are not listed in the web UI — that direction is one-way.
+
+Terminal management (the web UI can only clear the current directory's scope):
+
+    npx agenttoolbox-agent sessions list           # metadata only, never message text
+    npx agenttoolbox-agent sessions clear --yes    # deletes every transcript
+
 ## Directory grants
 
 The `cc` adapter is **chat-only by default**: in `none`/`read` tiers, with no

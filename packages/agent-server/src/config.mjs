@@ -45,6 +45,12 @@ export function sessionTtlMs() {
   return Number.isFinite(days) && days > 0 ? days * 86400_000 : DEFAULT_SESSION_TTL_MS;
 }
 
+// 会话转录的落盘目录（网关与 CLI 共用，CLI 用 ATBX_SESSION_DIR 指向同一处）。
+export function sessionStoreDir() {
+  return process.env.ATBX_SESSION_DIR
+    ?? join(homedir(), '.config', 'agenttoolbox', 'sessions');
+}
+
 // 网站开的 pi 会话镜像到这个目录，本机 `pi --session-dir <此处> --session <id>` 打开。
 // 缺省用 pi CLI 自己的默认位置，保证开箱互通。
 export function piSessionDir() {

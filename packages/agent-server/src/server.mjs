@@ -4,15 +4,13 @@
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { statSync } from 'node:fs';
-import { join } from 'node:path';
-import { homedir } from 'node:os';
 import { resolveModel } from './providers.mjs';
 import { createRegistry } from './adapters/registry.mjs';
 import { createPiAdapter } from './adapters/pi.mjs';
 import { createCcAdapter } from './adapters/cc.mjs';
 import { createAcpAdapter } from './adapters/acp.mjs';
 import { listAgentIds, getAgentDef } from './adapters/acp-agents.mjs';
-import { loadConfig, sessionTtlMs, piSessionDir } from './config.mjs';
+import { loadConfig, sessionTtlMs, piSessionDir, sessionStoreDir } from './config.mjs';
 import { TranscriptStore, SAFE_ID, ID_SOURCE } from './transcripts.mjs';
 import { SessionStore } from './sessions.mjs';
 import { encodeSSE } from './sse.mjs';
@@ -71,7 +69,7 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
   // store 归调用方管（测试的临时目录、bin 自己的实例）。之前无条件 sweep 让
   // 每个没注入 store 的测试 fixtures 都去删开发者真实目录里超期的会话。
   const ownsStore = transcripts == null;
-  const store = transcripts ?? new TranscriptStore({ dir: join(homedir(), '.config', 'agenttoolbox', 'sessions'), ttlMs: ttlMs ?? sessionTtlMs() });
+  const store = transcripts ?? new TranscriptStore({ dir: sessionStoreDir(), ttlMs: ttlMs ?? sessionTtlMs() });
   if (ownsStore) store.sweep();
   // ACP 适配器承接 hermes/openclaw/opencode/codex/dsh 五个子 agent。
   // acpProbe 可注入：测试用它拿到确定性的可用性，避免 shell 出去跑 `which`。

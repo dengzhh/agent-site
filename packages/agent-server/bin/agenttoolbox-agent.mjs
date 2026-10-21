@@ -3,7 +3,8 @@
 import { createModels } from '@earendil-works/pi-ai';
 import { startServer } from '../src/server.mjs';
 import { VERSION } from '../src/version.mjs';
-import { loadConfig, grantDir, revokeDir, DEFAULT_CONFIG_PATH } from '../src/config.mjs';
+import { TranscriptStore } from '../src/transcripts.mjs';
+import { loadConfig, grantDir, revokeDir, DEFAULT_CONFIG_PATH, sessionStoreDir, sessionTtlMs } from '../src/config.mjs';
 
 // CLI 子命令：grant / list / revoke。浏览器无法提供本地路径，故授权只能由终端发起。
 // 必须在 --port 解析之前处理（子命令是本进程的一次性动作，不启动服务器）。
@@ -29,6 +30,36 @@ if (sub === 'list') {
   const { grantedDirs } = loadConfig(CONFIG_PATH);
   console.log(grantedDirs.length ? grantedDirs.join('\n') : '(no granted dirs)');
   process.exit(0);
+}
+
+if (sub === 'sessions') {
+  // 会话历史的终端管理。安全边界：
+  // - list 只输出元数据（id/时间/agent/cwd/标题），绝不打印消息文本——转录里可能有
+  //   文件内容、命令输出、截图引用，甚至敏感串，不适合直接倒进终端。
+  // - clearAll 是"清光所有历史"的终局操作（web UI 只能清当前目录范围），故必须 --yes。
+  const action = process.argv[3];
+  const dir = sessionStoreDir();
+  if (action === 'list') {
+    // list() 本身按 lastUsed 降序（newest first），直接沿用。
+    const rows = new TranscriptStore({ dir, ttlMs: sessionTtlMs() }).list({});
+    if (!rows.length) { console.log('(no sessions)'); process.exit(0); }
+    for (const r of rows) {
+      const when = new Date(r.lastUsed).toISOString().slice(0, 16).replace('T', ' ');
+      console.log(`${r.id}  ${when}  ${r.agent}  ${r.cwd ?? '-'}  ${r.title ?? ''}`);
+    }
+    process.exit(0);
+  }
+  if (action === 'clear') {
+    if (!process.argv.slice(4).includes('--yes')) {
+      console.error('refusing to clear without --yes (this deletes every session transcript)');
+      process.exit(1);
+    }
+    const n = new TranscriptStore({ dir, ttlMs: sessionTtlMs() }).clearAll();
+    console.log(`cleared ${n} session(s)`);
+    process.exit(0);
+  }
+  console.error('usage: agenttoolbox-agent sessions <list|clear --yes>');
+  process.exit(1);
 }
 
 const args = process.argv.slice(2);
