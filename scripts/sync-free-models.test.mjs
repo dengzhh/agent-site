@@ -1,5 +1,32 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
-import { buildFreeModelsIndex, buildPricingIndex, PROVIDER_ALLOWLIST } from './sync-free-models.mjs';
+import { buildFreeModelsIndex, buildPricingIndex, PROVIDER_ALLOWLIST, PROVIDER_OVERRIDES } from './sync-free-models.mjs';
+
+// provider note 会直接印在页面上（free-models.astro 的 muted-note），所以它说的每个
+// 数字都得有出处。这里钉住两件事：数值必须是官方公布的那几个，且缺失/改坏会被抓到。
+// 背景：此 note 曾写作 "~20 req/min with a $10 credit"——20 是官方档位默认值没错，
+// 但被写成「买过 $10 才适用」，且 ~ 让它看起来像估算，实际两档 per-minute 都是 20。
+describe('provider notes carry only sourced numbers', () => {
+  const note = PROVIDER_OVERRIDES.openrouter.note;
+
+  it('states the published free-model limits and flags the unsourced one', () => {
+    expect(note).toMatch(/20 requests\/min/);
+    expect(note).toMatch(/50 requests\/day/);
+    expect(note).toMatch(/1000\/day/);
+    // per-minute 官方不按账号上报，必须写明它是档位默认值而不是账号实测值
+    expect(note).toMatch(/published tier default/);
+  });
+
+  it('has no vague or unsourced figures', () => {
+    expect(note).not.toMatch(/~/); // "~20" 这类估算写法：官方表给的是确定值
+  });
+
+  // 手改 JSON 后忘了改脚本（或反之）会让下次 daily sync 把修正冲掉。
+  it('ships the same note the sync script would write', () => {
+    const onDisk = JSON.parse(readFileSync(new URL('../src/data/free-models.json', import.meta.url), 'utf8'));
+    expect(onDisk.providers.find((p) => p.id === 'openrouter').note).toBe(note);
+  });
+});
 
 // 与 models.dev api.json 同构的最小 fixture
 const md = (pid, models, extra = {}) => ({

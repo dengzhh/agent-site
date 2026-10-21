@@ -10,7 +10,7 @@
       "envKey": "OPENROUTER_API_KEY",
       "npm": "@openrouter/ai-sdk-provider",
       "doc": "https://openrouter.ai/models",
-      "note": "Free (:free) models are rate-limited: 50 requests/day normally, 1000/day once you have bought ≥10 credits; the per-minute cap is not published per-account.",
+      "note": "Free (:free) models are rate-limited: 20 requests/min, plus 50 requests/day normally or 1000/day once you have bought ≥10 credits. The per-minute figure is a published tier default — the API does not report it per account.",
       "anthropicApi": "https://openrouter.ai/api",
       "models": [
         {
