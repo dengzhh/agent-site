@@ -913,7 +913,32 @@ test('POST /sessions/clear clears only the given filter scope', async (t) => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-// 以下四条钉的是路由的守卫。每条都对应「不守卫会怎样」的具体后果。
+// 活跃会话（内存里还在跑）的记录不删——下一轮会把整份历史重新写回去，
+// 删了等于没删。clear 跳过它们，cleared 只数真删的（同 DELETE 的 409 原则）。
+test('POST /sessions/clear keeps the active session\'s record', async (t) => {
+  const store = mkStore(t);
+  const { json } = await withFauxServer(t, ['http://localhost:4321'], undefined, store);
+  // 注册一个内存里的活跃会话（faux 适配器），再补上它的盘上记录
+  const created = await json('/sessions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ adapter: 'pi', provider: 'faux', model: 'faux' }),
+  });
+  assert.equal(created.status, 200);
+  const liveId = created.body.sessionId;
+  store.save({ id: liveId, agent: 'pi', cwd: '/tmp/x', provider: 'faux', model: 'faux' });
+  store.save({ id: 'gone', agent: 'pi', cwd: '/tmp/x', provider: 'faux', model: 'faux' });
+  const r = await json('/sessions/clear', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ cwd: '/tmp/x' }),
+  });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.cleared, 1, 'only the inactive record counts');
+  assert.equal(store.get('gone'), null, 'inactive record is gone');
+  assert.equal(store.get(liveId)?.id, liveId, 'active session\'s record survives');
+});
+
 test('clear with no usable filter is a 400, not a crash or a wipe-everything', async (t) => {
   const store = mkStore(t);
   const { json } = await withFauxServer(t, ['http://localhost:4321'], undefined, store);

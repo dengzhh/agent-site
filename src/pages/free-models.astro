@@ -601,13 +601,15 @@ const fmtCtx = (n: number) =>
       del.addEventListener('click', async (e) => {
         e.stopPropagation(); // 别触发 item 的恢复
         const ok = await deleteSession(s.id);
-        if (!ok) { chatMsg('hint', '没能删除：这条会话可能还在运行，先关掉它再来。'); return; }
+        // 删除失败原因不定（网络错/404/409），措辞覆盖各种情况。
+        if (!ok) { chatMsg('hint', '没能删除这条历史，可以稍后再试；若它还在运行，先关掉它。'); return; }
         sessionSummaries = sessionSummaries.filter((x) => x.id !== s.id);
-        // 删掉的恰好是当前会话：它的 transcript 已经不在了，下一轮会把它
-        // 整份写回来（等于删了又活）。解绑并重建一个全新会话；若它是正在
-        // 跑的那条，网关会拒绝（409）——那就只更新列表，别动现场。
+        // 删掉的恰好是当前会话：它的 transcript 已经不在了，不解绑的话下一轮
+        // 会把它整份写回来（等于删了又活）。解绑并开一个全新对话（fresh = 明确
+        // 新建，别自动恢复下一条）；若它是正在跑的那条，网关已拒绝（409，上面
+        // 的 ok 检查挡住）——只更新列表，别动现场。
         const c = chat;
-        if (c && c.sessionId === s.id && !c.streaming) { c.sessionId = null; c.persistId = null; resetSession(); }
+        if (c && c.sessionId === s.id && !c.streaming) resetSession({ fresh: true });
         renderSessionList();
       });
       item.append(main, time, del);
@@ -651,7 +653,7 @@ const fmtCtx = (n: number) =>
 
   // 配置重置唯一入口（换 agent / 改 cwd / 改级别都汇到这里）：作废旧会话并重建。
   // 旧会话的在途流先中止，否则 send 卡在 disabled、Stop 按钮指向一个死会话。
-  function resetSession(): void {
+  function resetSession({ fresh = false } = {}): void {
     const c = chat;
     if (!c) return;
     if (c.streaming && c.streamAbort) c.streamAbort.abort();
@@ -662,7 +664,8 @@ const fmtCtx = (n: number) =>
     // ensureSession 里拿新参数去恢复旧记录（会把记录的 cwd/tier 冲掉，
     // 日志里又是旧历史，两边对不上）。要回去点列表里那条即可。
     // undefined（而非 null）：让下一次 openChat 仍走「自动选最近一条」。
-    c.persistId = undefined;
+    // fresh（删/清空了当前会话）：明确开全新对话，绝不自动恢复别的记录。
+    c.persistId = fresh ? null : undefined;
     configGen++; // 在途的建会话/额度结果因此作废（见各 await 后的核对）
     usageEl.hidden = true;
     usageEl.textContent = '';
@@ -838,8 +841,9 @@ const fmtCtx = (n: number) =>
     }
     // 建会话失败（典型：read 级别给了不存在的 cwd → 网关 400）留在主面板：
     // 错误进日志才看得见——跳 key 面板会把 chatLog 连同错误一起藏掉。
+    // 清掉「恢复中…」占位（409 转新建也可能失败），别让它挂在错误上方。
     // 配置已换则这轮的错误属于旧参数，不展示（新一轮自会报自己的）。
-    catch (e) { if (!stale()) { chatMsg('error', String((e as Error).message)); showPane('main'); } }
+    catch (e) { if (!stale()) { chatLog.textContent = ''; chatMsg('error', String((e as Error).message)); showPane('main'); } }
   }
 
   let currentPickEl: HTMLElement | null = null;
@@ -861,8 +865,8 @@ const fmtCtx = (n: number) =>
       agent: null,
       cwd: '', toolTier: 'none',
       sessionId: null, streaming: false,
-      // persistId：显式给的（用户点了某条历史 / 新对话）；否则 undefined =
-      // 让 refreshSessionList 之后决定默认恢复哪条（最近一条）。
+      // persistId：显式给的（用户点了某条历史 / 新对话）直接用；否则 undefined =
+      // 由 ensureSession（配置从 UI 读回之后）自动挑默认要恢复的那条。
       persistId: opts.persistId,
     };
     $('chat-model-name').textContent = chat.name;
@@ -902,13 +906,15 @@ const fmtCtx = (n: number) =>
   sessionClearBtn.addEventListener('click', async () => {
     const c = chat;
     if (!c) return;
+    // 正在跑的会话不参与：网关会把它跳过（记录保留），别动现场。
+    const keepLive = Boolean(c.sessionId && c.streaming);
     const n = await clearSessions({ agent: c.agent ?? c.agents[0] ?? 'pi', cwd: c.cwd, provider: c.provider, model: c.model });
-    chatMsg('hint', `已清空 ${n} 条历史。`);
+    chatMsg('hint', keepLive ? `已清空 ${n} 条历史（正在使用的会话保留）。` : `已清空 ${n} 条历史。`);
     // 清空范围包含当前会话：同单条删除——它的记录没了，不解绑的话下一轮会把
-    // 整份写回来（删了又活）。正在跑的会话先不动现场（同删除 409 的处理）。
+    // 整份写回来（删了又活）。fresh = 解绑后明确开全新对话，别自动恢复下一条。
     if (c.sessionId && !c.streaming) {
       const left = await listSessions({ agent: c.agent ?? c.agents[0] ?? 'pi', cwd: c.cwd, provider: c.provider, model: c.model });
-      if (!left.some((x) => x.id === c.sessionId)) { c.sessionId = null; c.persistId = null; resetSession(); return; }
+      if (!left.some((x) => x.id === c.sessionId)) { resetSession({ fresh: true }); return; }
     }
     await refreshSessionList();
   });

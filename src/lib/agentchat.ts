@@ -217,7 +217,7 @@ export async function listSessions(
   return ((await res.json()) as SessionListResponse).sessions ?? [];
 }
 
-/** 删一条历史。返回 false 表示网关没删（如会话仍活跃 → 409）。网络错误也算 false。 */
+/** 删一条历史。返回 false 表示网关没删（409 = 会话仍活跃；也可能是网络错/404）。 */
 export async function deleteSession(persistId: string, baseUrl = AGENT_URL): Promise<boolean> {
   try {
     const res = await fetch(`${baseUrl}/sessions/${encodeURIComponent(persistId)}`, { method: 'DELETE' });

@@ -304,16 +304,24 @@ export class TranscriptStore {
    * 按筛选范围清空，返回删掉的条数。
    * 必须给非空筛选：web 路由只允许删「某一组配置的历史」，
    * 全量清空是 CLI 的权力（见 clearAll）。
+   * @param {{ skipActive?: (id: string) => boolean }} [opts]
+   *   skipActive：返回 true 的 id 不删（活跃会话的记录，见 server 的 /sessions/clear）。
+   * @returns {number} 实际删掉的条数
    * @throws {TypeError} filter 缺省或没有有效维度
    */
-  clear(filter) {
+  clear(filter, { skipActive } = {}) {
     if (!filter || typeof filter !== 'object'
       || !Object.values(filter).some((v) => v != null)) {
       throw new TypeError('clear() requires a non-empty filter; use clearAll() to wipe everything');
     }
     const ids = this.list(filter).map((r) => r.id);
-    for (const id of ids) this.remove(id);
-    return ids.length;
+    let n = 0;
+    for (const id of ids) {
+      if (skipActive?.(id)) continue;
+      this.remove(id);
+      n++;
+    }
+    return n;
   }
 
   /**

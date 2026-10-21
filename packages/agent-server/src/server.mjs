@@ -314,7 +314,10 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
         // 转发空筛选会让 store.clear() 抛 TypeError（500），而把非法筛选悄悄
         // 丢掉再清全部更糟——按「请求有问题」明确拒掉。
         if (!Object.keys(filter).length) return json(400, { error: 'at least one of agent/cwd/provider/model is required' });
-        return json(200, { cleared: store.clear(filter) });
+        // 与 DELETE 的 409 同一原则：活跃会话的记录不删（内存里还攥着运行时，
+        // 下一轮会把整份历史重新写回去）。跳过它们，返回的 cleared 只数真删的。
+        const cleared = store.clear(filter, { skipActive: (id) => sessions.peek(id) });
+        return json(200, { cleared });
       }
 
       const msgMatch = req.method === 'POST' && url.pathname.match(SESSION_ROUTE['/messages']);
