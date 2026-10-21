@@ -130,8 +130,9 @@ export function createPiAdapter({ models, resolve, makeAgent = defaultMakeAgent,
   return {
     id: 'pi',
     async available() { return true; },
-    // cache=false → 本轮走一次性 Agent（不读也不写缓存），供不共享运行时状态的
-    // 适配器进行 failover（例如 cc builder 失败后回落到 pi）。
+    // cache=false → 本轮走一次性 Agent（不读也不写缓存）。目前没有调用方传它
+    // （registry 不做 failover）；保留是因为它定义了「不碰共享状态的一趟运行」
+    // 的语义，下面播种/落盘的分支必须与它对称。
     async *run({ messages, request, apiKey = null, sessionId, signal, cache = true, toolTier, cwd, requestApproval } = {}) {
       const { model } = resolve(models, request);
       // 工具按本轮 cwd/tier 现场解析（闭包绑定 cwd）；cwd/tier 任一变更都体现在
@@ -159,7 +160,7 @@ export function createPiAdapter({ models, resolve, makeAgent = defaultMakeAgent,
       // （pi-agent-core 唯一的恢复入口）。去重判据是缓存命中本身——命中说明
       // 内存里的 Agent 就是这些历史的持有者，再喂一遍历史就会翻倍，故只在
       // cached === null（真的新建 Agent）才取历史；cache=false 的一次性 Agent
-      // （failover 路径）刻意不播种：那趟运行不写缓存也不该读共享历史。
+      // 刻意不播种：那趟运行不写缓存也不该读共享历史。
       const restored = !cached && cache && sessionId ? loadPersistedMessages(sessionId) : null;
       const agent = cache && sessionId
         ? agentFor(model, sessionId, apiKey, cwd, toolTier, tools, approvals, restored)
@@ -200,7 +201,7 @@ export function createPiAdapter({ models, resolve, makeAgent = defaultMakeAgent,
             // RECORD_FIELDS 白名单中）。失败/中止轮留占位 assistant 消息，
             // 与缓存逐出同一理由不落盘。
             //
-            // cache=false 与播种对称：那趟是一次性 Agent（failover），它的
+            // cache=false 与播种对称：那趟是一次性 Agent，它的
             // transcript 只有本轮，若写进共享记录等于用单轮历史覆盖真会话。
             // 落盘失败只记日志：库会 await 监听器，这里抛出去会变成第二个
             // turn_end{stopReason:'error'} 并写上 state.errorMessage，进而被

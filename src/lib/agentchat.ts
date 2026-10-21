@@ -190,7 +190,8 @@ export interface SessionSummary {
   provider: string;
   model: string;
   cwd: string | null;
-  toolTier: 'none' | 'read' | 'full';
+  /** 可缺：恢复路径不改写记录的 tier，早期记录也可能没有。 */
+  toolTier?: 'none' | 'read' | 'full';
   title: string;
   createdAt: number;
   lastUsed: number;
