@@ -115,8 +115,11 @@ export function buildFreeModelsIndex(modelsdev, openrouterApi) {
     if (models.length === 0) continue;
     if (pid === 'openrouter' && openrouterApi !== null) {
       // openrouterApi === null 表示官方 API 拉取失败（main 里已降级），此时保留主源数据。
-      // 已知漏收：OpenRouter 上确有 4 个零价但 id 不带 :free 后缀的模型会被此过滤掉——
-      // openrouter/free、stealth/space-bunny-alpha、google/lyria-*（见交叉源 api/v1/models）。
+      // 已知漏收（2026-10-22 实测 api/v1/models 复核，注释曾写作"4 个"且不点名，已按实测更正）：
+      // 零价但 id 不带 :free 后缀的共 3 个 —— openrouter/free（聚合路由，非具体模型，
+      // 无 context/maxOutput，列出会误导）、google/lyria-3-pro-preview、
+      // google/lyria-3-clip-preview（后两者是音频输出模型，不属于本页的聊天模型清单）。
+      // 三者均不适合作为"免费文本模型"列出，故过滤是有意的，不是缺陷。
       models = models.filter((m) => orFreeIds.has(m.id));
     }
     const verified = ENDPOINT_VERIFIED_PROVIDERS[pid];
