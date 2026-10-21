@@ -33,6 +33,8 @@ export interface SessionRequest {
   cwd?: string | null;
   /** 工具级别：none=纯对话（默认）| read=只读工具（需 cwd）| full=读+写/执行（需 cwd，动作逐个确认）。 */
   toolTier?: 'none' | 'read' | 'full';
+  /** 恢复某条历史：传该记录的持久 id；不传/undefined = 新建。 */
+  persistId?: string | null;
 }
 
 /** 把 SSE 字节流按 \n\n 分块；返回已解析事件与未完成的尾部（下次拼接）。 */
@@ -89,6 +91,10 @@ export interface SessionResponse {
   model: string;
   cwd: string | null;
   toolTier: 'none' | 'read' | 'full';
+  /** true = 命中 persistId 恢复了已有会话；历史消息见 messages。 */
+  resumed?: boolean;
+  /** 恢复时网关一并回的历史消息（Task 6 的 3c）。 */
+  messages?: { role: string; content: unknown }[];
 }
 
 export async function createSession(body: SessionRequest, baseUrl = AGENT_URL): Promise<SessionResponse> {
@@ -173,4 +179,88 @@ export async function fetchOpenRouterQuota(apiKey: string, baseUrl = AGENT_URL):
     if (!res.ok) return null;
     return (await res.json()) as OpenRouterQuota;
   } catch { return null; }
+}
+
+/** 历史列表的一条记录（网关只回元数据，不回 messages）。 */
+export interface SessionSummary {
+  id: string;
+  adapter: string;
+  agent: string;
+  provider: string;
+  model: string;
+  cwd: string | null;
+  toolTier: 'none' | 'read' | 'full';
+  title: string;
+  createdAt: number;
+  lastUsed: number;
+  /** pi 专属：本机 `pi --fork <piSessionId>` 用它续上。 */
+  piSessionId?: string | null;
+  /** pi 专属：镜像文件所在目录（网关的 ATBX_PI_SESSION_DIR）。删掉记录前
+   *  它是空的；Task 9 只在这里有值时才给出可复制的命令。 */
+  piSessionDir?: string | null;
+  /** cc 专属：本机 `claude --resume <ccSessionId>` 用它续上。 */
+  ccSessionId?: string | null;
+}
+
+export interface SessionListResponse { sessions: SessionSummary[] }
+
+/** 列某配置下的历史。筛选四维与网关一致。 */
+export async function listSessions(
+  filter: { agent?: string; cwd?: string; provider?: string; model?: string },
+  baseUrl = AGENT_URL,
+): Promise<SessionSummary[]> {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(filter)) if (v) qs.set(k, v);
+  const res = await fetch(`${baseUrl}/sessions?${qs}`, { headers: { 'content-type': 'application/json' } });
+  if (!res.ok) return [];
+  return ((await res.json()) as SessionListResponse).sessions ?? [];
+}
+
+export async function deleteSession(persistId: string, baseUrl = AGENT_URL): Promise<void> {
+  await fetch(`${baseUrl}/sessions/${persistId}`, { method: 'DELETE' }).catch(() => {});
+}
+
+/** 按当前筛选范围清空。返回删掉的条数。 */
+export async function clearSessions(
+  filter: { agent?: string; cwd?: string; provider?: string; model?: string },
+  baseUrl = AGENT_URL,
+): Promise<number> {
+  try {
+    const res = await fetch(`${baseUrl}/sessions/clear`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(filter),
+    });
+    if (!res.ok) return 0;
+    return ((await res.json()) as { cleared: number }).cleared ?? 0;
+  } catch { return 0; }
+}
+
+// 单引号包裹 + 把内部的 ' 转义成 '\''：POSIX sh 通用。
+function shellQuote(s: string): string {
+  return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
+/**
+ * 本机续接命令：把「统一管理」落到用户手里的那一行。
+ * pi 需要 --session-dir（共享目录扁平存放，CLI 默认按 cwd 分子目录）；
+ * cc 用 --resume，跨目录时 CLI 自己会问要不要 fork。
+ */
+export function localResumeCommand(s: SessionSummary): string | null {
+  if (s.agent === 'pi' && s.piSessionId && s.piSessionDir) {
+    // 目录必须是镜像实际所在的 <piSessionDir>：指向 ~/.pi/agent/sessions 这种
+    // 「默认目录的父目录」时，listSessionsFromDir 只扫描这一层，而 CLI 自己的
+    // 会话在 <父>/--<cwdSlug>--/ 子目录里，只会得到 "No session found matching"。
+    // 命令里按 shell 规则加引号（路径可能含空格）。
+    const dir = shellQuote(s.piSessionDir);
+    const id = shellQuote(s.piSessionId);
+    // 用 --fork 而不是 --session：用户几乎总在**别的目录**里粘贴这条命令，
+    // 跨 cwd 时 --session 会停在 "Fork this session into current directory?
+    // [y/N]" 等输入（实测 0.84.3，非交互下直接静默退出）；--fork 直接续上。
+    return `pi --session-dir ${dir} --fork ${id}`;
+  }
+  if ((s.agent === 'cc' || s.adapter === 'cc') && s.ccSessionId) {
+    return `claude --resume ${s.ccSessionId}`;
+  }
+  return null; // acp 等：没有互通路径，UI 据此不显示复制按钮
 }

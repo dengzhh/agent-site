@@ -133,6 +133,17 @@ const fmtCtx = (n: number) =>
       <label for="chat-agent">Agent</label>
       <select id="chat-agent" class="chat-agent"></select>
     </div>
+    <div class="chat-session-row" id="chat-session-row">
+      <div class="chat-session-head">
+        <label for="chat-session-list">会话</label>
+        <button id="chat-new-session" type="button" class="cap-chip">＋ 新对话</button>
+      </div>
+      <div id="chat-session-list" class="chat-session-list" role="listbox" aria-label="历史会话"></div>
+      <div class="chat-session-foot">
+        <button id="chat-session-more" type="button" class="chat-sub" hidden>显示更多</button>
+        <button id="chat-session-clear" type="button" class="chat-sub">清空此目录的历史</button>
+      </div>
+    </div>
     <p id="chat-agent-hint" class="chat-agent-hint" hidden></p>
     <div class="chat-config-row" id="chat-config-row" hidden>
       <label for="chat-cwd">Work dir</label>
@@ -218,6 +229,25 @@ const fmtCtx = (n: number) =>
   .chat-head { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 1px solid var(--line); padding-bottom: .6rem; }
   .chat-sub { font-size: .8rem; color: var(--ink-soft); }
   .chat-agent-row { display: flex; align-items: center; gap: .5rem; margin-top: .6rem; font-size: .85rem; color: var(--ink-soft); }
+  .chat-session-row { border-top: 1px solid var(--line); padding-top: .6rem; margin-bottom: .6rem; }
+  .chat-session-head { display: flex; justify-content: space-between; align-items: center; gap: .5rem; }
+  .chat-session-head label { margin: 0; }
+  .chat-session-list { display: flex; flex-direction: column; gap: .3rem; margin: .5rem 0; max-height: 11rem; overflow-y: auto; }
+  .chat-session-item {
+    display: flex; align-items: center; gap: .4rem;
+    padding: .35rem .5rem; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--surface); cursor: pointer; font-size: .85rem; text-align: left;
+  }
+  .chat-session-item:hover { border-color: var(--cobalt); }
+  .chat-session-item.is-active { border-color: var(--cobalt); background: var(--cobalt-wash); }
+  .chat-session-item-main { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chat-session-time { flex: 0 0 auto; color: var(--ink-soft); font-size: .75rem; }
+  .chat-session-del { flex: 0 0 auto; background: transparent; border: 0; color: var(--ink-soft); cursor: pointer; padding: 0 .2rem; font-size: .9rem; }
+  .chat-session-resume { background: transparent; border: 0; color: var(--cobalt); cursor: pointer; padding: 0 .2rem; font-size: .78rem; }
+  .chat-session-foot { display: flex; justify-content: space-between; gap: .5rem; }
+  .chat-session-foot button { background: transparent; border: 0; color: var(--ink-soft); cursor: pointer; padding: .2rem 0; font-size: .8rem; font-weight: 500; }
+  .chat-session-foot button:hover { color: var(--cobalt); }
+  .chat-session-empty { color: var(--ink-soft); font-size: .82rem; margin: .3rem 0; }
   .chat-agent { flex: 1; background: var(--surface); color: inherit; border: 1px solid var(--line-strong); border-radius: 6px; padding: .3rem .5rem; font-size: .85rem; }
   .chat-agent-hint { font-size: .8rem; color: #f5a524; margin: -.3rem 0 0; }
   .chat-config-row { display: flex; align-items: center; gap: .5rem; margin-top: .6rem; font-size: .85rem; }
@@ -282,7 +312,7 @@ const fmtCtx = (n: number) =>
 <script>
   import data from '../data/free-models.json';
   import { generateConfig, type ConfigTarget } from '../lib/freeconfig';
-  import { probeHealth, createSession, streamMessage, abortSession, fetchOpenRouterQuota, answerPermission, keyStorage, type ChatEvent, type OpenRouterQuota } from '../lib/agentchat';
+  import { probeHealth, createSession, streamMessage, abortSession, fetchOpenRouterQuota, answerPermission, listSessions, deleteSession, clearSessions, localResumeCommand, type SessionSummary, keyStorage, type ChatEvent, type OpenRouterQuota } from '../lib/agentchat';
 
   import { openDrawer, closeDrawers, stopScroll } from '../lib/drawer';
 
@@ -410,6 +440,8 @@ const fmtCtx = (n: number) =>
     toolTier: 'none' | 'read' | 'full'; // 工具级别（full = 写/执行，动作逐个经权限卡确认）
     sessionId: string | null; streaming: boolean; probeTimer?: ReturnType<typeof setInterval>;
     streamAbort?: AbortController;
+    /** 持久身份：undefined = 还没决定；null = 明确新对话；string = 恢复该历史。 */
+    persistId?: string | null;
   };
   let chat: ChatState | null = null;
   // 配置代数令牌：换 agent / 改 cwd / 改级别 / 换模型 / 关抽屉都自增。在途的
@@ -517,6 +549,97 @@ const fmtCtx = (n: number) =>
     abortBtn.hidden = true;
   }
 
+  const sessionListEl = $('chat-session-list');
+  const sessionMoreBtn = $('chat-session-more') as HTMLButtonElement;
+  const sessionClearBtn = $('chat-session-clear') as HTMLButtonElement;
+  let sessionSummaries: SessionSummary[] = [];
+  let sessionShowAll = false;
+  // 当前会话的持久身份：undefined = 还没建过；null = 用户明确要新对话；
+  // string = 某条历史的 id（恢复它）。
+  let activePersistId: string | null | undefined = undefined;
+
+  const SESSION_PAGE = 5;
+
+  const fmtTime = (ts: number) => {
+    const d = Date.now() - ts;
+    if (d < 60_000) return '刚刚';
+    if (d < 3_600_000) return `${Math.floor(d / 60_000)} 分钟前`;
+    if (d < 86_400_000) return `${Math.floor(d / 3_600_000)} 小时前`;
+    return `${Math.floor(d / 86_400_000)} 天前`;
+  };
+
+  // 能恢复的才让点：acp 的记录点了也是空对话，标出来但不假装（spec 选项 A）。
+  const canRestore = (s: SessionSummary) => s.adapter === 'pi' || s.adapter === 'cc';
+
+  function renderSessionList(): void {
+    sessionListEl.textContent = '';
+    if (sessionSummaries.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'chat-session-empty';
+      empty.textContent = '这个目录下还没有历史对话。';
+      sessionListEl.append(empty);
+      sessionMoreBtn.hidden = true;
+      return;
+    }
+    const shown = sessionShowAll ? sessionSummaries : sessionSummaries.slice(0, SESSION_PAGE);
+    for (const s of shown) {
+      const item = document.createElement('div');
+      item.className = 'chat-session-item';
+      item.setAttribute('role', 'option');
+      if (s.id === activePersistId) item.classList.add('is-active');
+      const main = document.createElement('span');
+      main.className = 'chat-session-item-main';
+      main.textContent = s.title || '(无标题)';
+      if (!canRestore(s)) main.textContent = `⟲ ${main.textContent}`;
+      const time = document.createElement('span');
+      time.className = 'chat-session-time';
+      time.textContent = fmtTime(s.lastUsed);
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'chat-session-del';
+      del.textContent = '🗑';
+      del.setAttribute('aria-label', '删除这条历史');
+      del.addEventListener('click', async (e) => {
+        e.stopPropagation(); // 别触发 item 的恢复
+        await deleteSession(s.id);
+        sessionSummaries = sessionSummaries.filter((x) => x.id !== s.id);
+        if (activePersistId === s.id) activePersistId = undefined;
+        renderSessionList();
+      });
+      item.append(main, time, del);
+      const cmd = localResumeCommand(s);
+      if (cmd) {
+        const resume = document.createElement('button');
+        resume.type = 'button';
+        resume.className = 'chat-session-resume';
+        resume.textContent = '复制本机命令';
+        resume.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          try { await navigator.clipboard.writeText(cmd); resume.textContent = '已复制'; }
+          catch { resume.textContent = '复制失败'; }
+          setTimeout(() => { resume.textContent = '复制本机命令'; }, 1500);
+        });
+        item.append(resume);
+      }
+      item.addEventListener('click', () => {
+        if (!canRestore(s)) { chatMsg('hint', '这个 agent 无法恢复上下文，将开始新对话。'); activePersistId = null; return; }
+        activePersistId = s.id;
+        openChat(currentPickEl!, { persistId: s.id });
+      });
+      sessionListEl.append(item);
+    }
+    sessionMoreBtn.hidden = sessionSummaries.length <= SESSION_PAGE;
+    sessionMoreBtn.textContent = sessionShowAll ? '收起' : `显示更多（${sessionSummaries.length - SESSION_PAGE}）`;
+  }
+
+  async function refreshSessionList(): Promise<void> {
+    const c = chat;
+    if (!c) return;
+    sessionSummaries = await listSessions({ agent: c.agent ?? c.agents[0] ?? 'pi', cwd: c.cwd, provider: c.provider, model: c.model });
+    sessionShowAll = false;
+    renderSessionList();
+  }
+
   // 配置重置唯一入口（换 agent / 改 cwd / 改级别都汇到这里）：作废旧会话并重建。
   // 旧会话的在途流先中止，否则 send 卡在 disabled、Stop 按钮指向一个死会话。
   function resetSession(): void {
@@ -526,6 +649,12 @@ const fmtCtx = (n: number) =>
     c.streaming = false;
     resetStreamButtons();
     c.sessionId = null;
+    // 改了 agent/cwd/级别 = 用户要的已经不是那条历史了：解绑，别在
+    // ensureSession 里拿新参数去恢复旧记录（会把记录的 cwd/tier 冲掉，
+    // 日志里又是旧历史，两边对不上）。要回去点列表里那条即可。
+    // undefined（而非 null）：让下一次 openChat 仍走「自动选最近一条」。
+    c.persistId = undefined;
+    activePersistId = undefined;
     configGen++; // 在途的建会话/额度结果因此作废（见各 await 后的核对）
     usageEl.hidden = true;
     usageEl.textContent = '';
@@ -547,10 +676,28 @@ const fmtCtx = (n: number) =>
       // 工具级别（read/full）才带 cwd；级别/目录任一变化都建新会话（见 applyConfig）
       cwd: c.toolTier === 'none' ? null : (c.cwd || null),
       toolTier: c.toolTier,
+      persistId: c.persistId ?? undefined,
     });
     // 建会话期间配置变了（连点两次/换模型）：迟到的 sessionId 属于旧配置，丢弃
     if (gen !== configGen || chat !== c) return;
     c.sessionId = res.sessionId;
+    // res.resumed 为 true 时网关已把历史消息一起给了（Task 6 的 3c）。
+    // 没有历史（resumed:false 或消息为空）就别画分隔线——空对话不需要它。
+    if (res.resumed && (res.messages?.length ?? 0) > 0) {
+      chatLog.textContent = '';
+      const n = res.messages!.length;
+      chatMsg('hint', `— 已恢复历史对话，${n} 条消息 —`);
+      for (const m of res.messages!) {
+        if (m.role !== 'user' && m.role !== 'assistant') continue; // 跳过 system / tool 行
+        const text = Array.isArray(m.content)
+          ? m.content.map((b) => {
+              const blk = b as { type?: string; text?: string };
+              return blk.type === 'text' ? blk.text ?? '' : blk.type === 'image' ? '[图片]' : `[${blk.type}]`;
+            }).join('')
+          : String(m.content ?? '');
+        chatMsg(m.role as 'user' | 'assistant', text);
+      }
+    }
   }
 
   // Agent 下拉：把 /health.agents 里可用的项填进去。≤1 个可用时隐藏（无意义 UI）。
@@ -641,7 +788,10 @@ const fmtCtx = (n: number) =>
     catch (e) { if (!stale()) { chatMsg('error', String((e as Error).message)); showPane('main'); } }
   }
 
-  function openChat(a: HTMLAnchorElement) {
+  let currentPickEl: HTMLElement | null = null;
+
+  // 调用点传的都是 button.chat-pick，但签名收 HTMLElement（dataset 两者都有）。
+  function openChat(a: HTMLElement, opts: { persistId?: string | null } = {}) {
     stopProbe(); // 上一次会话（若在等本地服务）的轮询要停掉，否则旧 timer 会打到新 chat 上
     chat?.streamAbort?.abort(); // 上一个会话还在流式：一并中止，别让旧流写进新对话
     // 旧流的 finally 会因下面的 gen++ 跳过按钮复位，这里得自己复位，否则新对话
@@ -657,6 +807,9 @@ const fmtCtx = (n: number) =>
       agent: null,
       cwd: '', toolTier: 'none',
       sessionId: null, streaming: false,
+      // persistId：显式给的（用户点了某条历史 / 新对话）；否则 undefined =
+      // 让 refreshSessionList 之后决定默认恢复哪条（最近一条）。
+      persistId: opts.persistId,
     };
     $('chat-model-name').textContent = chat.name;
     $('chat-provider-name').textContent = `${chat.provider} · ${chat.model}`;
@@ -676,12 +829,38 @@ const fmtCtx = (n: number) =>
     quotaText = '';
     // 上次缓存的 health 直接先填一次下拉（避免闪烁）；tryGoChat 成功后再刷新
     if (lastHealth) fillAgentSelect(lastHealth);
+    // persistId：显式给的（点某条历史 / 新对话）直接用；没给（从卡片进来）
+    // 记住「还没决定」，由 refreshSessionList 完成后挑最近一条。
+    activePersistId = opts.persistId;
+    const c0 = chat;
+    void refreshSessionList().then(() => {
+      if (!chat || chat !== c0) return;
+      if (activePersistId !== undefined) return; // 已明确：某条 or 新对话
+      // ⚠️ 不要在这里把最近一条塞进 chat.persistId：openChat 末尾的 tryGoChat
+      // 建会话时还没跑过 applyConfig，c.cwd 与 c.toolTier 仍是初值（'' / 'none'）。
+      // 真拿它去恢复，provider/model/cwd 都被当成「这次的值」，历史记录会被
+      // 工作目录为空、级别 none 的参数冲掉。恢复只发生在 ensureSession() 里，
+      // 那时 cwd/tier 已从 UI 读回（见 4d 的写法）。
+      activePersistId = sessionSummaries[0]?.id ?? null;
+    });
     openDrawer(bothDrawers(), $('chat-drawer'));
     void tryGoChat();
   }
 
   document.querySelectorAll<HTMLButtonElement>('button.chat-pick').forEach((a) => {
-    a.addEventListener('click', (e) => { e.preventDefault(); openChat(a); });
+    a.addEventListener('click', (e) => { e.preventDefault(); currentPickEl = a; openChat(a); });
+  });
+  ($('chat-new-session') as HTMLButtonElement).addEventListener('click', () => {
+    activePersistId = null; // 明确新对话：别自动恢复
+    if (currentPickEl) openChat(currentPickEl, { persistId: null });
+  });
+  sessionMoreBtn.addEventListener('click', () => { sessionShowAll = !sessionShowAll; renderSessionList(); });
+  sessionClearBtn.addEventListener('click', async () => {
+    const c = chat;
+    if (!c) return;
+    const n = await clearSessions({ agent: c.agent ?? c.agents[0] ?? 'pi', cwd: c.cwd, provider: c.provider, model: c.model });
+    chatMsg('hint', `已清空 ${n} 条历史。`);
+    await refreshSessionList();
   });
   $('chat-close').addEventListener('click', () => {
     closeDrawers(bothDrawers());
@@ -783,7 +962,14 @@ const fmtCtx = (n: number) =>
     } catch { outDiv.textContent += '\n[connection closed]'; }
     // 配置已重置/换模型时不碰按钮：新一轮 resetSession 已复位过 UI，
     // 迟到的收尾若再复位，会把新一轮正在跑的流误解锁
-    finally { if (gen === configGen && chat === c) { c.streaming = false; sendBtn.disabled = false; abortBtn.hidden = true; } }
+    finally {
+      if (gen === configGen && chat === c) {
+        c.streaming = false; sendBtn.disabled = false; abortBtn.hidden = true;
+        // 一轮结束后 lastUsed/title 都变了：顺手刷列表（按 lastUsed 降序，
+        // 刚用过的那条自然浮到最上）。过期轮次别刷——列表已属于新配置。
+        void refreshSessionList();
+      }
+    }
   });
   chatInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ($('chat-form') as HTMLFormElement).requestSubmit(); }
