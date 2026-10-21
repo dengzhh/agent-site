@@ -1966,6 +1966,15 @@ git commit -m "feat(site): session history row in the chat drawer"
 > - 跨 cwd 的 `--session` 在非交互下**不可能**续上：CLI 判成 "global" 后无条件
 >   读 tty 问 fork，stdin 非 tty 时静默 exit 0、零输出。所以要钉「跨目录也能开」，
 >   用 `--fork`（实测成功）；② 钉的是同目录原地续（用户的实际用法），用 `--session`。
+> - **②必须带 `--session-dir <镜像目录>`**（2026-10-21 复审补齐）：不带时 CLI 走默认
+>   目录 `<~/.pi/agent/sessions>/<cwdSlug>/`，而镜像平铺在别处——在**别的 cwd** 下跑
+>   会直接 `No session found matching`（实测 exit 1）。所以②钉两条：同 cwd + `--session`
+>   （原地续），跨 cwd + `--session-dir` + `--fork`（用户粘贴 Task 9 那条命令的场景）。
+> - `--print` 是 CLI 文档里的非交互开关，保留；再加 `--no-session`，否则探测运行会把
+>   本轮追加成同一 id 的**新文件**（实测同一 id 多文件按 mtime 决胜），污染第二个用例。
+> - **不要用 `execFile` 的 `timeout`**：超时被杀后回调里 stdout/stderr 可能全空、code=0，
+>   看起来像「CLI 没说话」。用 `sh -c '"$@" > file 2>&1 </dev/null'` 重定向到文件，
+>   超时由外层 `withTimeout` 兜。
 > - `restore()` 是纯读：它读的是**构造适配器时传进去的那个 store**。
 >   不传 `transcripts` 时 `restore()` 恒返回 null（`cc.mjs:394` / `pi.mjs:124`），
 >   于是「重启后能恢复」的断言在任何机器上都必然失败。测试要模拟的
@@ -1998,33 +2007,38 @@ const withTimeout = (promise, ms, label) => {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 };
 
-// ── ① 跨进程恢复：cc 适配器 + 真实 CLI + 假上游 ────────────────────────────
-// 「重启网关」在测试里只能这样模拟：磁盘目录不变，store 与适配器全换新实例。
-// 关键点——store 必须传给 createCcAdapter，否则 restore() 无从读盘（恒 null），
-// 而 configDirFor 也走无 store 的后备 Map，记录根本不会落盘。
-test('cc session survives a gateway restart and resumes on the third turn', async (t) => {
+// 起假上游（与 cc-adapter.test.mjs 同一夹具）：只读端口文件，不改夹具本身。
+async function startFakeAnthropic(t) {
   const portFile = join(tmpdir(), `atbx-e2e-port-${process.pid}-${Date.now()}.port`);
-  const upstream = spawn(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-anthropic.mjs')], {
-    env: { ...process.env, FAKE_ANTHROPIC_PORT_FILE: portFile }, stdio: 'ignore', detached: true,
-  });
-  t.after(() => { try { process.kill(-upstream.pid, 'SIGKILL'); } catch { /* 已退出 */ } rmSync(portFile, { force: true }); });
+  const child = spawn(process.execPath,
+    [join(dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-anthropic.mjs')],
+    { env: { ...process.env, FAKE_ANTHROPIC_PORT_FILE: portFile }, stdio: 'ignore', detached: true });
+  t.after(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* 已退出 */ } rmSync(portFile, { force: true }); });
   let port = null;
   for (let i = 0; i < 60 && !port; i++) {
     try { const p = Number(readFileSync(portFile, 'utf8').trim()); if (p) port = p; } catch { /* 还没写 */ }
     await delay(100);
   }
   assert.ok(port, 'fake upstream started');
+  return `http://127.0.0.1:${port}`;
+}
+
+// ── ① 跨进程恢复：cc 适配器 + 真实 CLI + 假上游 ────────────────────────────
+// 「重启网关」在测试里只能这样模拟：磁盘目录不变，store 与适配器全换新实例。
+// 关键点——store 必须传给 createCcAdapter，否则 restore() 无从读盘（恒 null），
+// 而 configDirFor 也走无 store 的后备 Map，记录根本不会落盘。
+test('cc session survives a gateway restart and resumes on the third turn', async (t) => {
+  // skip 判定放最前：没装 CLI 就不该起上游、建目录。判断的是「CLI 装没装」（探测用的
+  // 无 store 适配器），不是「能不能恢复」——后者才是被测的东西。
+  if (!(await createCcAdapter().available())) { t.skip('claude CLI not installed'); return; }
+  const baseUrl = await startFakeAnthropic(t);
 
   const storeDir = mkdtempSync(join(tmpdir(), 'atbx-e2e-store-'));
   const cwd = mkdtempSync(join(tmpdir(), 'atbx-e2e-cwd-'));
   t.after(() => rmSync(storeDir, { recursive: true, force: true }));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
 
-  // skip 判定放在上游启动之后：可用性探测本身不该让测试留下孤儿进程。
-  if (!(await createCcAdapter().available())) { t.skip('claude CLI not installed'); return; }
-
   const SID = 'e2e-restore-1';
-  const baseUrl = `http://127.0.0.1:${port}`;
   // 每次「进程重启」都新建 store + 适配器，只共用磁盘目录
   const boot = () => {
     const store = new TranscriptStore({ dir: storeDir });
@@ -2087,14 +2101,29 @@ test('a session file we write can be resumed by the real pi CLI', async (t) => {
   });
   writeFileSync(join(shared, `${piSessionId}.jsonl`), renderPiSession(lines), { mode: 0o600 });
 
-  // 在会话自己的 cwd 里、用 --session 续（同目录 = 原地续）。
+  // 跑 pi：输出重定向到文件再读（见文件头的 timeout 说明）。--no-session：探测运行
+  // 不写盘，否则 shared/ 会多出同 id 的新文件，污染下面那条断言。
+  const ask = (argv, runCwd, outFile) => new Promise((resolve) => {
+    execFile('sh', ['-c', `"$@" > "${outFile}" 2>&1 </dev/null`, 'sh', ...argv],
+      { cwd: runCwd, timeout: 180_000 }, () => resolve(readFileSync(outFile, 'utf8')));
+  });
   // 超时给足：首次 CLI 调用要跑完整性检查/加载插件（实测冷启动可达数十秒）。
-  const out = await withTimeout(new Promise((resolve) => {
-    execFile('pi', ['--session-dir', shared, '--session', piSessionId, '--print', '暗号是什么'],
-      { cwd, timeout: 150_000 },
-      (err, stdout, stderr) => resolve(`${stdout}${stderr}`));
-  }), 160_000, 'pi CLI resume');
-  assert.match(out, /木瓜/, `pi CLI did not recall the seeded context. output: ${out.slice(0, 300)}`);
+
+  // ②a 同 cwd + --session：原地续（功能里的实际用法）
+  const same = await withTimeout(
+    ask(['pi', '--session-dir', shared, '--session', piSessionId, '--no-session', '--print', '暗号是什么'], cwd, join(shared, 'out-same.log')),
+    190_000, 'pi same-cwd resume');
+  assert.match(same, /木瓜/, `pi --session did not recall the seeded context. output: ${same.slice(-300)}`);
+
+  // ②b 跨 cwd + --session-dir + --fork：用户从别的目录粘贴 Task 9 命令的场景。
+  // 不给 --session-dir 时跨 cwd 会 "No session found matching"（实测），所以这里
+  // 钉的正是「命令里带上目录」这件事。
+  const other = mkdtempSync(join(tmpdir(), 'atbx-e2e-other-'));
+  t.after(() => rmSync(other, { recursive: true, force: true }));
+  const forked = await withTimeout(
+    ask(['pi', '--session-dir', shared, '--fork', piSessionId, '--no-session', '--print', '暗号是什么'], other, join(other, 'out-fork.log')),
+    190_000, 'pi cross-cwd fork');
+  assert.match(forked, /木瓜/, `pi --fork did not recall the seeded context. output: ${forked.slice(-300)}`);
 });
 ```
 
@@ -2103,12 +2132,18 @@ test('a session file we write can be resumed by the real pi CLI', async (t) => {
 Run: `cd packages/agent-server && node --test test/e2e-restore.test.mjs`
 Expected: PASS（未装对应 CLI 则 skip，不计失败）
 
-- [ ] **Step 3: 全量回归**
+- [ ] **Step 3: 变异验证（证明这两条真的在钉东西，验证后恢复）**
+- ① 把 `boot()` 里的 `transcripts: store` 去掉 → ① 必红（`restore()` 恒 null）。
+- ② 把 `withUsage(...)` 去掉 / 把 `--session-dir` 去掉 → ② 对应那条必红。
+- 真 CLI 用例慢（各数十秒），这是端到端的代价，可接受；日常快速回路可用
+  `--test-name-pattern` 单跑。
+
+- [ ] **Step 4: 全量回归**
 
 Run: `cd packages/agent-server && npm test`
 Expected: 全部 PASS
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add packages/agent-server/test/e2e-restore.test.mjs
