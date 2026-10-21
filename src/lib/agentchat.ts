@@ -162,12 +162,55 @@ export async function answerPermission(
   } catch { return false; }
 }
 
-/** OpenRouter 账号额度（经网关代理查询，key 不进 URL/日志）。查询失败返回 null。 */
+/**
+ * OpenRouter 账号额度（经网关代理查询，key 不进 URL/日志）。查询失败返回 null。
+ * 字段语义按 openrouter.ai/docs/api_reference/limits：
+ *   creditsUsed / creditLimit / creditRemaining —— 支出额度，单位 credits（不是请求数）；
+ *   freeRequests / freeUsed / freeRemaining —— 免费模型（:free）的每日请求数，
+ *     freeRequests 由累计购买 credits 决定（<10 → 50/天，≥10 → 1000/天），
+ *     **与 isFreeTier 无关**，所以不能由 isFreeTier 推断出 50。
+ * 拿不到的字段一律 null，展示方需显示"未知"而非补一个默认值。
+ */
 export interface OpenRouterQuota {
-  usage: number | null;
-  limit: number | null;
+  creditsUsed: number | null;
+  creditLimit: number | null;
+  creditRemaining: number | null;
   isFreeTier: boolean | null;
-  rateLimit: unknown;
+  freeRequests: number | null;
+  freeUsed: number | null;
+  freeRemaining: number | null;
+}
+
+/**
+ * 额度行文案。只写上游真给的数字，拿不到的一律"未知"——不外推、不补默认数。
+ * 语义（openrouter.ai/docs/api_reference/limits）：
+ *   freeRequests = 免费模型（:free）每日请求上限，由累计购买 credits 决定
+ *     （<10 → 50/天，≥10 → 1000/天），**与 isFreeTier 无关**，
+ *     所以绝不能由 isFreeTier 推断出 50；上游不给该对象时如实说"未知"。
+ *   credits 单位是 credits，**不是请求数**。每分钟限额上游不上报，故不展示。
+ */
+export function formatQuota(q: OpenRouterQuota): string {
+  const parts: string[] = [];
+  if (q.freeRequests != null) {
+    parts.push(
+      q.freeUsed != null
+        ? `免费模型 今日 ${q.freeUsed}/${q.freeRequests} 次`
+        : `免费模型 每日上限 ${q.freeRequests} 次`,
+    );
+  } else {
+    // 上游没给 = 该账号/端点不受免费模型限额约束，或字段缺失，两者无法区分
+    parts.push('免费模型限额 未知');
+  }
+  if (q.creditLimit != null && q.creditRemaining != null) {
+    parts.push(`余额 ${q.creditRemaining}/${q.creditLimit} credits`);
+  } else if (q.creditRemaining != null) {
+    parts.push(`余额 ${q.creditRemaining} credits`);
+  } else if (q.creditsUsed != null) {
+    parts.push(`已用 ${q.creditsUsed} credits`);
+  } else {
+    parts.push('余额 未知');
+  }
+  return parts.join(' · ');
 }
 
 export async function fetchOpenRouterQuota(apiKey: string, baseUrl = AGENT_URL): Promise<OpenRouterQuota | null> {

@@ -26,6 +26,12 @@ const SESSION_ROUTE = Object.fromEntries(
   ['', '/messages', '/permission', '/abort'].map((tail) => [tail, new RegExp(`^/sessions/(${ID_SOURCE})${tail}$`)]),
 );
 
+// 上游字段可能缺失或非数值。统一成 number|null：UI 拿到 null 才知道"不知道"，
+// 而不是把 undefined/NaN 显示成 0（那等于凭空给出一个余额）。
+function numOrNull(v) {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null;
+}
+
 function corsHeaders(origin, allowed) {
   if (!origin || !allowed.includes(origin)) return null;
   return {
@@ -151,11 +157,20 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
         } catch {
           return json(502, { error: 'upstream error', message: 'invalid JSON from upstream' });
         }
+        // 字段语义按 openrouter.ai/docs/api_reference/limits：
+        //   limit/limit_remaining = 支出额度（credits），不是请求数；
+        //   free_model_daily_requests = 免费模型请求数（.limit 由累计购买 credits 决定：
+        //     <10 → 50/天，≥10 → 1000/天，与 is_free_tier 无关）；
+        //   rate_limit = 官方标注 deprecated，故不再透传。
+        // 只回 UI 要用得上的字段：拿不到的保持 null，由前端显示"未知"，不猜。
         return json(200, {
-          usage: data.usage ?? null,
-          limit: data.limit ?? null,
-          isFreeTier: data.is_free_tier ?? null,
-          rateLimit: data.rate_limit ?? null,
+          creditsUsed: numOrNull(data.usage),
+          creditLimit: numOrNull(data.limit),
+          creditRemaining: numOrNull(data.limit_remaining),
+          isFreeTier: typeof data.is_free_tier === 'boolean' ? data.is_free_tier : null,
+          freeRequests: numOrNull(data.free_model_daily_requests?.limit),
+          freeUsed: numOrNull(data.free_model_daily_requests?.used),
+          freeRemaining: numOrNull(data.free_model_daily_requests?.remaining),
         });
       }
 

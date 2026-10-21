@@ -32,7 +32,9 @@ export const PROVIDER_OVERRIDES = {
   // 必须用它，否则拼出 /api/v1/v1/messages，被 gate 的免费模型会报"模型不存在"
   openrouter: {
     anthropicApi: 'https://openrouter.ai/api',
-    note: 'Free models are rate-limited: ~20 req/min with a $10 credit, 50 requests/day without.',
+    // 数值取自 openrouter.ai/docs/api_reference/limits（免费模型限额表）。
+    // 只写官方承诺的两档每日上限；每分钟限额官方不通过 API 上报，故不写具体值。
+    note: 'Free (:free) models are rate-limited: 50 requests/day normally, 1000/day once you have bought ≥10 credits; the per-minute cap is not published per-account.',
   },
   opencode: { note: 'Free models on the Zen endpoint — requires a (free) OpenCode API key; get one at opencode.ai.' },
   groq: { api: 'https://api.groq.com/openai/v1' },

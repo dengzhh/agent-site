@@ -312,7 +312,7 @@ const fmtCtx = (n: number) =>
 <script>
   import data from '../data/free-models.json';
   import { generateConfig, type ConfigTarget } from '../lib/freeconfig';
-  import { probeHealth, createSession, streamMessage, abortSession, fetchOpenRouterQuota, answerPermission, listSessions, deleteSession, clearSessions, localResumeCommand, type SessionSummary, keyStorage, type ChatEvent, type OpenRouterQuota } from '../lib/agentchat';
+  import { probeHealth, createSession, streamMessage, abortSession, fetchOpenRouterQuota, answerPermission, listSessions, deleteSession, clearSessions, localResumeCommand, type SessionSummary, keyStorage, type ChatEvent, formatQuota } from '../lib/agentchat';
 
   import { openDrawer, closeDrawers, stopScroll } from '../lib/drawer';
 
@@ -793,11 +793,6 @@ const fmtCtx = (n: number) =>
     }
   }
 
-  // OpenRouter 额度行文案：有明确限额 → 已用/限额；无限额按是否免费档区分
-  const formatQuota = (q: OpenRouterQuota): string =>
-    q.limit != null
-      ? `已用 ${q.usage ?? 0} · 限额 ${q.limit} 请求/天`
-      : q.isFreeTier === true ? '免费档 50/天' : '不限';
 
   async function tryGoChat(): Promise<void> {
     const c = chat!;

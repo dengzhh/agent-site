@@ -434,7 +434,9 @@ test('quota/openrouter proxies the key endpoint without logging the key', async 
     if (!String(url).includes('openrouter.ai')) return origFetch(url, opts);
     calls.push({ url: String(url), auth: opts?.headers?.authorization });
     return new Response(JSON.stringify({ data: {
-      usage: 3, limit: 50, is_free_tier: true, rate_limit: { requests: 20, interval: '10s' },
+      usage: 25.5, limit: 100, limit_remaining: 74.5, is_free_tier: false,
+      free_model_daily_requests: { limit: 1000, used: 12, remaining: 988 },
+      rate_limit: { requests: 20, interval: '10s', note: 'deprecated' },
     } }), { status: 200, headers: { 'content-type': 'application/json' } });
   };
   try {
@@ -445,10 +447,16 @@ test('quota/openrouter proxies the key endpoint without logging the key', async 
       body: JSON.stringify({ apiKey: 'sk-or-test' }),
     });
     assert.equal(r.status, 200);
-    assert.equal(r.body.usage, 3);
-    assert.equal(r.body.limit, 50);
-    assert.equal(r.body.isFreeTier, true);
-    assert.deepEqual(r.body.rateLimit, { requests: 20, interval: '10s' });
+    // 语义断言：credits 与免费模型请求数是两组不同的量，不能被混成一个字段
+    assert.equal(r.body.creditsUsed, 25.5);
+    assert.equal(r.body.creditLimit, 100);
+    assert.equal(r.body.creditRemaining, 74.5);
+    assert.equal(r.body.freeRequests, 1000, 'daily free-model request ceiling, NOT credits');
+    assert.equal(r.body.freeUsed, 12);
+    assert.equal(r.body.freeRemaining, 988);
+    assert.equal(r.body.isFreeTier, false);
+    // is_free_tier=false 却配 1000/天：证明限额不由 isFreeTier 决定（官方口径）
+    assert.equal(r.body.rateLimit, undefined, 'deprecated field is not forwarded');
     assert.equal(calls.length, 1);
     assert.match(calls[0].url, /openrouter\.ai\/api\/v1\/key/);
     assert.equal(calls[0].auth, 'Bearer sk-or-test', 'key forwarded as Bearer to upstream');
@@ -463,6 +471,33 @@ test('quota/openrouter without key returns 400', async (t) => {
     body: JSON.stringify({}),
   });
   assert.equal(r.status, 400);
+});
+
+// 核心不变量：拿不到就必须是 null。UI 靠 null 显示"未知"；若这里回 0，
+// 用户会看到一个凭空捏造的余额／限额（本站此前正是这么错的）。
+test('quota/openrouter reports null (never 0/NaN) for absent or non-numeric fields', async (t) => {
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    if (!String(url).includes('openrouter.ai')) return origFetch(url, opts);
+    return new Response(JSON.stringify({ data: {
+      is_free_tier: true,
+      free_model_daily_requests: { limit: '50', used: NaN, remaining: null },
+      limit: undefined, usage: 'oops',
+    } }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    const { json } = await withFauxServer(t);
+    const r = await json('/quota/openrouter', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+      body: JSON.stringify({ apiKey: 'sk-or-test' }),
+    });
+    assert.equal(r.status, 200);
+    for (const k of ['creditsUsed', 'creditLimit', 'creditRemaining', 'freeRequests', 'freeUsed', 'freeRemaining']) {
+      assert.equal(r.body[k], null, `${k} must be null when upstream has no usable number`);
+    }
+    assert.equal(r.body.isFreeTier, true, 'boolean survives; non-numbers do not');
+  } finally { globalThis.fetch = origFetch; }
 });
 
 test('quota/openrouter mirrors upstream failure status without detail', async (t) => {
