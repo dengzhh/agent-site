@@ -43,13 +43,23 @@ function num(x) {
   return typeof x === 'number' && Number.isFinite(x) ? x : undefined;
 }
 
-// 只留白名单里的字段。写、读两条路径共用一个口径。
-function pick(obj, fields) {
-  const out = {};
-  for (const k of fields) {
-    if (obj[k] !== undefined) out[k] = obj[k];
-  }
-  return out;
+// 白名单只回答了「哪些键能落盘」，没回答「这些键里能装什么」。provider/model
+// 等配置字段本身就该是字符串（'anthropic'、'claude-sonnet-5-5'），但 save()
+// 原样拷贝，于是 provider: { apiKey } 照样把凭据写进 0600 文件——和上面
+// createdAt 那条同一个洞，只是高了一层。这些字段只收字符串；null 是
+// 「显式清空」（cc 的 ccSessionId 复位靠它），保留；其余形状整个丢掉。
+// messages 是数组、不是凭据容器，不在此列。
+const STRING_FIELDS = new Set([
+  'id', 'adapter', 'agent', 'provider', 'model', 'cwd', 'toolTier', 'title',
+  'piSessionId', 'ccSessionId', 'configDir',
+]);
+
+function shaped(k, v) {
+  if (v === null) return null;
+  if (STAMP_FIELDS.includes(k)) return num(v);
+  if (STRING_FIELDS.has(k)) return typeof v === 'string' ? v : undefined;
+  if (k === 'messages') return Array.isArray(v) ? v : undefined;
+  return undefined;
 }
 
 export class TranscriptStore {
@@ -144,8 +154,12 @@ export class TranscriptStore {
     // 就碰不到磁盘。凭据的保证因此是结构性的，不依赖调用方的自觉。
     const merged = { v: FORMAT_VERSION, createdAt: 0, lastUsed: 0 };
     for (const k of RECORD_FIELDS) {
-      if (rec[k] !== undefined) merged[k] = rec[k];
-      else if (prev?.[k] !== undefined) merged[k] = prev[k];
+      // 形状不对（非字符串的 provider 之类）不能落盘，也不能覆盖已有的好值。
+      // 判断用 k in rec（而不是 rec[k] !== undefined）：null 是显式清空。
+      if (k in rec) {
+        if (shaped(k, rec[k]) !== undefined) merged[k] = shaped(k, rec[k]);
+        else if (prev?.[k] !== undefined) merged[k] = prev[k];
+      } else if (prev?.[k] !== undefined) merged[k] = prev[k];
     }
     merged.createdAt = num(prev?.createdAt) ?? num(rec.createdAt) ?? now;
     // 调用方显式给了 lastUsed 就尊重它（导入/迁移既有记录、测试造时间线）；
@@ -186,9 +200,15 @@ export class TranscriptStore {
       this.#quarantine(path);
       return null;
     }
-    // 读回时按同一张白名单裁剪：写路径封死了入口，读路径就不该把
-    // 来路不明的字段（哪怕是手写的盘外文件）原样端给调用方。
-    return { ...pick(obj, STAMP_FIELDS), ...pick(obj, RECORD_FIELDS) };
+    // 读回时按同一张白名单裁剪，并按同一套形状规则挡掉盘外来路不明的值：
+    // 写路径封死了入口，读路径也不该把（手写的）嵌套对象原样端给调用方。
+    const out = {};
+    for (const k of [...STAMP_FIELDS, ...RECORD_FIELDS]) {
+      if (!(k in obj)) continue;
+      const v = shaped(k, obj[k]);
+      if (v !== undefined) out[k] = v;
+    }
+    return out;
   }
 
   // 不带副作用地读一份原始 JSON：remove() 用它取 configDir，

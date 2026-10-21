@@ -59,8 +59,13 @@ function denyPendingPerms(session) {
 
 export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOrigins = DEFAULT_ORIGINS, resolve = resolveModel, models, registry, acpProbe, approvalTimeoutMs = 120_000, transcripts = null, sessionTtlMs: ttlMs }) {
   // 磁盘 transcript：跨重启/跨逐出的历史。缺省自建（生产路径），测试注入临时目录。
+  // 清扫只在我们自己建了这份 store 时做——它的语义是「启动时回收超期历史」，
+  // 是**所有权**的事，不是「每建一个 server 就顺手删别人盘上的东西」。注入的
+  // store 归调用方管（测试的临时目录、bin 自己的实例）。之前无条件 sweep 让
+  // 每个没注入 store 的测试 fixtures 都去删开发者真实目录里超期的会话。
+  const ownsStore = transcripts == null;
   const store = transcripts ?? new TranscriptStore({ dir: join(homedir(), '.config', 'agenttoolbox', 'sessions'), ttlMs: ttlMs ?? sessionTtlMs() });
-  store.sweep();   // 启动时清掉超期历史
+  if (ownsStore) store.sweep();
   // ACP 适配器承接 hermes/openclaw/opencode/codex/dsh 五个子 agent。
   // acpProbe 可注入：测试用它拿到确定性的可用性，避免 shell 出去跑 `which`。
   const acpAdapter = createAcpAdapter(acpProbe ? { probe: acpProbe } : {});

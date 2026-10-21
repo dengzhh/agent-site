@@ -153,10 +153,14 @@ test('gateway roundtrip: drawer approval answers the cc control channel', async 
   process.env.ATBX_CONFIG_PATH = join(mkdtempSync(join(tmpdir(), 'atbx-cc-perm-')), 'config.json');
   const { startServer } = await import('../src/server.mjs');
   const { createRegistry } = await import('../src/adapters/registry.mjs');
+  const { TranscriptStore } = await import('../src/transcripts.mjs');
+  // 临时目录 store：绝不让测试落回 startServer 的默认目录（开发者真实会话）。
+  const storeDir = mkdtempSync(join(tmpdir(), 'atbx-cc-perm-store-'));
+  const transcripts = new TranscriptStore({ dir: storeDir });
 
   const registry = createRegistry([createCcAdapter({ cliPath: PERM_FIXTURE })]);
   const srv = await startServer({
-    port: 0, allowedOrigins: ['http://localhost:4321'], registry, acpProbe: async () => false,
+    port: 0, allowedOrigins: ['http://localhost:4321'], registry, acpProbe: async () => false, transcripts,
   });
   t.after(() => srv.close());
   const base = `http://127.0.0.1:${srv.port}`;
@@ -230,10 +234,14 @@ test('gateway roundtrip: stay-alive CLI still reaches done and frees the session
   process.env.ATBX_CONFIG_PATH = join(configDir, 'config.json');
   const { startServer } = await import('../src/server.mjs');
   const { createRegistry } = await import('../src/adapters/registry.mjs');
+  const { TranscriptStore } = await import('../src/transcripts.mjs');
+  // 临时目录 store：绝不让测试落回 startServer 的默认目录（开发者真实会话）。
+  const storeDir = mkdtempSync(join(tmpdir(), 'atbx-cc-perm-store-'));
+  const transcripts = new TranscriptStore({ dir: storeDir });
 
   const registry = createRegistry([createCcAdapter({ cliPath: PERM_FIXTURE, env: { FAKE_CLAUDE_STAY: '1' } })]);
   const srv = await startServer({
-    port: 0, allowedOrigins: ['http://localhost:4321'], registry, acpProbe: async () => false,
+    port: 0, allowedOrigins: ['http://localhost:4321'], registry, acpProbe: async () => false, transcripts,
   });
   const base = `http://127.0.0.1:${srv.port}`;
   const post = async (path, body) => {

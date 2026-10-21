@@ -286,6 +286,32 @@ test('the timestamp fields cannot smuggle a value onto disk', (t) => {
   assert.equal(typeof got.lastUsed, 'number');
 });
 
+// 白名单只回答了「哪些键能落盘」，没回答「键里能装什么」：provider/model
+// 本该是字符串，传个对象进去，嵌套的凭据就照样进了 0600 文件。写、读
+// 两条路径都得按形状过滤（读路径要挡手写文件），且坏形状不能覆盖已有好值。
+test('config fields only accept strings: a nested object cannot smuggle a credential', (t) => {
+  const { dir, store } = tmpStore(t);
+  store.save(base({ provider: 'zai', model: 'glm-4.7-flash' }));
+  store.save(base({
+    provider: { apiKey: 'sk-P1' },
+    model: { env: { ANTHROPIC_API_KEY: 'sk-M1' } },
+    cwd: ['/tmp', 'sk-C1'],
+  }));
+  const raw = readFileSync(join(dir, 'p-1.json'), 'utf8');
+  assert.ok(!raw.includes('sk-'), `no credential reached disk: ${raw}`);
+  const got = store.get('p-1');
+  assert.equal(got.provider, 'zai', 'a bad shape keeps the previous good value');
+  assert.equal(got.model, 'glm-4.7-flash');
+  // 读路径也要挡：盘外手写的嵌套对象不能从 get()/list() 端出去
+  writeFileSync(join(dir, 'p-2.json'), JSON.stringify({
+    v: 1, id: 'p-2', provider: { apiKey: 'sk-P2' }, createdAt: 1, lastUsed: 2,
+  }));
+  assert.equal(store.get('p-2').provider, undefined, 'read path drops it too');
+  // 显式 null 仍是「清空」语义（cc 复位 ccSessionId 靠它）
+  store.save({ id: 'p-1', ccSessionId: null });
+  assert.equal(store.get('p-1').ccSessionId, null);
+});
+
 // NaN 比较恒为 false，所以一个 lastUsed 不是数字的记录永远不会过期。
 // 那等于一条永生记录，TTL 形同虚设。
 test('a non-numeric lastUsed cannot make a record immortal', (t) => {

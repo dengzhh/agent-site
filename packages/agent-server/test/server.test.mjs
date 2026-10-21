@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,6 +11,13 @@ import { createPiAdapter } from '../src/adapters/pi.mjs';
 import { TranscriptStore } from '../src/transcripts.mjs';
 
 const freshDir = () => mkdtempSync(join(tmpdir(), 'atbx-srv-'));
+// 测试用的临时 transcript store，随测试结束回收。所有 startServer 调用都必须
+// 注入一份：落回 startServer 自建的默认 store 就是在开发者真实会话目录上建目录。
+const mkStore = (t) => {
+  const dir = freshDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  return new TranscriptStore({ dir });
+};
 
 
 // /health 的 grantedDirs 来自网关配置文件。重定向到临时路径，断言才不依赖开发者本机
@@ -37,7 +44,9 @@ async function withFauxServer(t, origins = ['http://localhost:4321'], acpProbe, 
   const srv = await startServer({
     port: 0, allowedOrigins: origins, resolve, models, registry,
     acpProbe: acpProbe ?? (async () => false),
-    ...(transcripts ? { transcripts } : {}),
+    // 始终注入 store：没给就开一个临时目录的。不能让它落回 startServer 的默认
+    // store——那是开发者真实的会话目录，测试不该在那里建目录、更不该碰它。
+    transcripts: transcripts ?? mkStore(t),
   });
   t.after(() => srv.close());
   const base = `http://127.0.0.1:${srv.port}`;
@@ -310,6 +319,7 @@ test('pi session with cwd+read tier receives tools via the adapter', async (t) =
   const srv = await startServer({
     port: 0, allowedOrigins: ['http://localhost:4321'], resolve, models,
     registry,
+    transcripts: mkStore(t),
   });
   t.after(() => srv.close());
   const base = `http://127.0.0.1:${srv.port}`;
@@ -350,7 +360,7 @@ test('cc read tier maps to read-only allowedTools', async (t) => {
     },
   };
   const registry = createRegistry([echoCc]);
-  const srv = await startServer({ port: 0, allowedOrigins: ['http://localhost:4321'], resolve: () => ({}), models, registry });
+  const srv = await startServer({ port: 0, allowedOrigins: ['http://localhost:4321'], resolve: () => ({}), models, registry, transcripts: mkStore(t) });
   t.after(() => srv.close());
   const base = `http://127.0.0.1:${srv.port}`;
   const j2 = async (path, opts) => {
@@ -481,7 +491,7 @@ async function withPermServer(t, { approvalTimeoutMs } = {}) {
   const srv = await startServer({
     port: 0, allowedOrigins: ['http://localhost:4321'],
     resolve: () => ({ model: faux.getModel(), providerId: faux.provider.id }),
-    models, registry, acpProbe: async () => false,
+    models, registry, acpProbe: async () => false, transcripts: mkStore(t),
     ...(approvalTimeoutMs === undefined ? {} : { approvalTimeoutMs }),
   });
   t.after(() => srv.close());
@@ -624,7 +634,7 @@ test('full-tier session threads requestApproval through the run ctx', async (t) 
   const registry = createRegistry([fakePi]);
   const srv = await startServer({
     port: 0, allowedOrigins: ['http://localhost:4321'], resolve, models, registry,
-    acpProbe: async () => false,
+    acpProbe: async () => false, transcripts: mkStore(t),
   });
   t.after(() => srv.close());
   const base = `http://127.0.0.1:${srv.port}`;
@@ -672,7 +682,7 @@ async function withStubServer(t, stub, opts = {}) {
   const srv = await startServer({
     port: 0, allowedOrigins: ['http://localhost:4321'],
     resolve: () => ({ model: faux.getModel(), providerId: faux.provider.id }),
-    models, registry, acpProbe: async () => false,
+    models, registry, acpProbe: async () => false, transcripts: mkStore(t),
     ...(opts.approvalTimeoutMs === undefined ? {} : { approvalTimeoutMs: opts.approvalTimeoutMs }),
   });
   t.after(() => srv.close());
@@ -1009,4 +1019,77 @@ test('a real turn persists the fields the session list filters on', async (t) =>
     // apiKey 绝不入盘
     assert.equal(rec.apiKey, undefined);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ── 有状态路由会往 store 里写东西：测试必须把 store 锁在临时目录里 ─────────────
+//
+// startServer 不注入 store 时会自建**开发者真实会话目录**的 store，而 POST
+// /sessions 会真的往里写记录。这件事有过代价：早期 fixtures 没注入 store，
+// 每跑一次测试就在真实目录里留下一批 cwd=null 的桩记录；更早的一版还会在启动时
+// 无条件 sweep，把真实目录里超 7 天的会话删掉。所以：
+//   ① 结构性守卫（下面第一条用例）——所有 startServer 调用点要么注入 store、
+//      要么是专门测「默认 store」的那一条；
+//   ② 合成复现——拿生产代码里**真实的写入表达式**（下面的 fields 与
+//      src/server.mjs 中 POST /sessions 的 fields 逐字一致）对一批攻击性 body
+//      跑一遍，断言落盘结果只含白名单字段、且 apiKey 永远进不去。
+//
+// 为什么不写成 HTTP 级用例：那会真的调用 startServer 默认 store，也就真的写进
+// 开发者目录——等于用测试去复现被测试的那个 bug。注意：HTTP 级的那份 API key
+// 保证由 store 的白名单提供，store 自己有一套往返测试钉着它。
+test('every startServer call in the tests injects its own store', () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const files = readdirSync(here).filter((f) => f.endsWith('.test.mjs'));
+  const offenders = [];
+  for (const f of files) {
+    const lines = readFileSync(join(here, f), 'utf8').split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      // 跳过本文件里对 `startServer({` 字面量本身的引用
+      const code = lines[i].replace(/'[^']*'|"[^"]*"|`[^`]*`/g, '');
+      if (!code.includes('startServer({')) continue;
+      // 调用可能跨行：看这一个调用到 `});` 为止的整段
+      const chunk = lines.slice(i, i + 12).join('\n').split('});')[0];
+      if (!chunk.includes('transcripts')) offenders.push(`${f}:${i + 1}`);
+    }
+  }
+  assert.deepEqual(offenders, [], 'a store-less startServer writes into the real ~/.config/agenttoolbox/sessions');
+});
+
+// 白名单能落盘的键，也能装凭据：provider/model 本该是字符串，传个对象进去
+// 嵌套的 key 就进了 0600 文件。走真路由（不复制 server.mjs 里的字段表达式，
+// 否则测试只钉住了副本），落盘检查 + 读回检查同时做。
+test('POST /sessions never lets a credential or nested object onto disk', async (t) => {
+  const store = mkStore(t);
+  const { base } = await withFauxServer(t, ['http://localhost:4321'], async () => false, store);
+  const post = (body) => fetch(`${base}/sessions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify(body),
+  });
+  const bodies = [
+    { provider: 'faux', model: 'faux', apiKey: 'sk-live-SECRET', cwd: '/tmp' },
+    { provider: { apiKey: 'sk-nested' }, model: { env: { ANTHROPIC_API_KEY: 'sk-env' } } },
+    { name: 'display-name', title: 'sneaky', messages: [{ role: 'user', content: 'x' }], createdAt: { apiKey: 'sk' } },
+    { provider: 'faux', Authorization: 'Bearer sk', nested: { token: 'sk' } },
+    { agent: 'pi', adapter: { id: 'pi', apiKey: 'sk' }, toolTier: ['full', 'sk'], cwd: ['/tmp', 'sk'] },
+  ];
+  for (const body of bodies) {
+    const id = randomUUID();
+    const r = await post({ adapter: 'pi', ...body, persistId: id });
+    await r.body.cancel();
+    assert.equal(r.status, 200, `POST failed for ${JSON.stringify(body)}`);
+    const raw = readFileSync(join(store.dir, `${id}.json`), 'utf8');
+    assert.ok(!raw.includes('sk'), `credential reached disk for ${JSON.stringify(body)}: ${raw}`);
+    const rec = store.get(id);
+    for (const k of ['apiKey', 'Authorization', 'title', 'messages', 'name', 'nested', 'createdAt']) {
+      if (k === 'createdAt') assert.equal(typeof rec.createdAt, 'number', 'createdAt is stamped, never taken from the request');
+      else assert.equal(rec[k], undefined, `${k} must not come from the request`);
+    }
+  }
+  // 非真空：同一路由对合法字符串确实落盘 provider/model（否则上面「没有」是废话）
+  const okId = randomUUID();
+  const ok = await post({ adapter: 'pi', provider: 'faux', model: 'faux', persistId: okId });
+  await ok.body.cancel();
+  const okRec = store.get(okId);
+  assert.equal(okRec.provider, 'faux');
+  assert.equal(okRec.model, 'faux');
 });

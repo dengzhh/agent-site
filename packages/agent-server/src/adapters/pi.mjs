@@ -196,8 +196,8 @@ export function createPiAdapter({ models, resolve, makeAgent = defaultMakeAgent,
             // Agent 构造用的 sessionId 就是网关的会话键，与记录 id 同值，存了
             // 只是重复；而它也不是 pi CLI 的 --session 句柄（库只把它转发给
             // provider，不写 ~/.pi/agent/sessions）——真正可 resume 的 CLI id
-            // 由 Task 5 单独铸造并镜像。另外 store 的 RECORD_FIELDS 白名单里
-            // 没有这个字段，写了也会被剥掉。失败/中止轮留占位 assistant 消息，
+            // 由 Task 5 单独铸造并镜像，写在下面 save 的 piSessionId 里（已在
+            // RECORD_FIELDS 白名单中）。失败/中止轮留占位 assistant 消息，
             // 与缓存逐出同一理由不落盘。
             //
             // cache=false 与播种对称：那趟是一次性 Agent（failover），它的
