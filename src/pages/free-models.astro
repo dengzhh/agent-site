@@ -554,9 +554,6 @@ const fmtCtx = (n: number) =>
   const sessionClearBtn = $('chat-session-clear') as HTMLButtonElement;
   let sessionSummaries: SessionSummary[] = [];
   let sessionShowAll = false;
-  // 当前会话的持久身份：undefined = 还没建过；null = 用户明确要新对话；
-  // string = 某条历史的 id（恢复它）。
-  let activePersistId: string | null | undefined = undefined;
 
   const SESSION_PAGE = 5;
 
@@ -586,8 +583,8 @@ const fmtCtx = (n: number) =>
       const item = document.createElement('div');
       item.className = 'chat-session-item';
       item.setAttribute('role', 'option');
-      // 高亮「真正恢复的那条」。用 activePersistId 会把「被自动选中但没恢复」
-      // 的那条也标成当前（默认恢复要等配置读回，见 ensureSession）。
+      // 高亮「真正恢复的那条」（chat.sessionId = 网关实际接上的会话），而不是
+      // 「列表里被点过/被选中的那条」——默认恢复要等配置读回，见 ensureSession。
       if (s.id === chat?.sessionId) item.classList.add('is-active');
       const main = document.createElement('span');
       main.className = 'chat-session-item-main';
@@ -611,7 +608,6 @@ const fmtCtx = (n: number) =>
         // 跑的那条，网关会拒绝（409）——那就只更新列表，别动现场。
         const c = chat;
         if (c && c.sessionId === s.id && !c.streaming) { c.sessionId = null; c.persistId = null; resetSession(); }
-        if (activePersistId === s.id) activePersistId = undefined;
         renderSessionList();
       });
       item.append(main, time, del);
@@ -632,8 +628,7 @@ const fmtCtx = (n: number) =>
         item.append(resume);
       }
       item.addEventListener('click', () => {
-        if (!canRestore(s)) { chatMsg('hint', '这个 agent 无法恢复上下文，将开始新对话。'); activePersistId = null; return; }
-        activePersistId = s.id;
+        if (!canRestore(s)) { chatMsg('hint', '这个 agent 无法恢复上下文，将开始新对话。'); return; }
         openChat(currentPickEl!, { persistId: s.id });
       });
       sessionListEl.append(item);
@@ -668,7 +663,6 @@ const fmtCtx = (n: number) =>
     // 日志里又是旧历史，两边对不上）。要回去点列表里那条即可。
     // undefined（而非 null）：让下一次 openChat 仍走「自动选最近一条」。
     c.persistId = undefined;
-    activePersistId = undefined;
     configGen++; // 在途的建会话/额度结果因此作废（见各 await 后的核对）
     usageEl.hidden = true;
     usageEl.textContent = '';
@@ -889,22 +883,11 @@ const fmtCtx = (n: number) =>
     quotaText = '';
     // 上次缓存的 health 直接先填一次下拉（避免闪烁）；tryGoChat 成功后再刷新
     if (lastHealth) fillAgentSelect(lastHealth);
-    // persistId：显式给的（点某条历史 / 新对话）直接用；没给（从卡片进来）
-    // 记住「还没决定」，由 refreshSessionList 完成后挑最近一条。
-    activePersistId = opts.persistId;
-    const c0 = chat;
-    void refreshSessionList({ collapse: true }).then(() => {
-      if (!chat || chat !== c0) return;
-      if (activePersistId !== undefined) return; // 已明确：某条 or 新对话
-      // ⚠️ 不要在这里把最近一条塞进 chat.persistId：openChat 末尾的 tryGoChat
-      // 建会话时还没跑过 applyConfig，c.cwd 与 c.toolTier 仍是初值（'' / 'none'）。
-      // 真拿它去恢复，provider/model/cwd 都被当成「这次的值」，历史记录会被
-      // 工作目录为空、级别 none 的参数冲掉。恢复只发生在 ensureSession() 里，
-      // 那时 cwd/tier 已从 UI 读回（见 4d 的写法）。
-      // 只有「列表确实按本目录筛过」才默认恢复：没填工作目录时列表是所有
-      // 目录混在一起的，最近一条很可能属于另一个项目。
-      activePersistId = c0.cwd ? (sessionSummaries[0]?.id ?? null) : null;
-    });
+    // persistId：显式给的（点某条历史 / 新对话）已经由 applyConfig → resetSession
+    // 带到新会话上；没给（从卡片进来）留作 undefined。⚠️ 不在这里挑「最近一条」：
+    // 此刻 c.cwd 还是抽屉初值（''），拿它去恢复会把记录的 cwd/tier 冲掉。默认
+    // 恢复只发生在 ensureSession()，那时配置已从 UI 读回。
+    void refreshSessionList({ collapse: true });
     openDrawer(bothDrawers(), $('chat-drawer'));
     void tryGoChat();
   }
@@ -913,7 +896,6 @@ const fmtCtx = (n: number) =>
     a.addEventListener('click', (e) => { e.preventDefault(); currentPickEl = a; openChat(a); });
   });
   ($('chat-new-session') as HTMLButtonElement).addEventListener('click', () => {
-    activePersistId = null; // 明确新对话：别自动恢复
     if (currentPickEl) openChat(currentPickEl, { persistId: null });
   });
   sessionMoreBtn.addEventListener('click', () => { sessionShowAll = !sessionShowAll; renderSessionList(); });
@@ -922,6 +904,12 @@ const fmtCtx = (n: number) =>
     if (!c) return;
     const n = await clearSessions({ agent: c.agent ?? c.agents[0] ?? 'pi', cwd: c.cwd, provider: c.provider, model: c.model });
     chatMsg('hint', `已清空 ${n} 条历史。`);
+    // 清空范围包含当前会话：同单条删除——它的记录没了，不解绑的话下一轮会把
+    // 整份写回来（删了又活）。正在跑的会话先不动现场（同删除 409 的处理）。
+    if (c.sessionId && !c.streaming) {
+      const left = await listSessions({ agent: c.agent ?? c.agents[0] ?? 'pi', cwd: c.cwd, provider: c.provider, model: c.model });
+      if (!left.some((x) => x.id === c.sessionId)) { c.sessionId = null; c.persistId = null; resetSession(); return; }
+    }
     await refreshSessionList();
   });
   $('chat-close').addEventListener('click', () => {
