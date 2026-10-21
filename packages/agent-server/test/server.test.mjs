@@ -913,6 +913,73 @@ test('POST /sessions/clear clears only the given filter scope', async (t) => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+// 以下四条钉的是路由的守卫。每条都对应「不守卫会怎样」的具体后果。
+test('clear with no usable filter is a 400, not a crash or a wipe-everything', async (t) => {
+  const store = mkStore(t);
+  const { json } = await withFauxServer(t, ['http://localhost:4321'], undefined, store);
+  store.save({ id: 'keep', agent: 'pi', cwd: '/tmp/x' });
+  for (const body of [{}, { agent: 42 }, { cwd: '' }, { agnet: 'pi' }]) {
+    const r = await json('/sessions/clear', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+      body: JSON.stringify(body),
+    });
+    assert.equal(r.status, 400, `expected 400 for ${JSON.stringify(body)}`);
+  }
+  assert.equal(store.get('keep')?.id, 'keep', 'nothing was cleared');
+});
+
+test('POST /sessions rejects a persistId that is not a safe id', async (t) => {
+  const store = mkStore(t);
+  const { json } = await withFauxServer(t, ['http://localhost:4321'], undefined, store);
+  for (const persistId of ['../../etc/passwd', 'a/b', '.hidden', 'x'.repeat(129)]) {
+    const r = await json('/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+      body: JSON.stringify({ adapter: 'pi', persistId }),
+    });
+    assert.equal(r.status, 400, `expected 400 for ${persistId}`);
+  }
+});
+
+test('DELETE /sessions/:id refuses an active session', async (t) => {
+  const store = mkStore(t);
+  const { json } = await withFauxServer(t, ['http://localhost:4321'], undefined, store);
+  const created = await json('/sessions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ adapter: 'pi', provider: 'faux', model: 'faux' }),
+  });
+  const id = created.body.sessionId;
+  const r = await json(`/sessions/${id}`, { method: 'DELETE', headers: { Origin: 'http://localhost:4321' } });
+  assert.equal(r.status, 409, 'deleting a live session would just come back on the next turn');
+  assert.equal(store.get(id)?.id, id, 'history is still there');
+});
+
+// 恢复时不带 agent（前端按 id 恢复不一定会带）：盘上记的是 cc，就不能被
+// 一次 pi 的恢复改写成 pi，否则按 agent 筛的列表会把它归错类。
+test('resuming a record does not rewrite its adapter/agent', async (t) => {
+  const store = mkStore(t);
+  const { json } = await withFauxServer(t, ['http://localhost:4321'], undefined, store);
+  store.save({ id: 'been-here', adapter: 'cc', agent: 'cc', cwd: '/tmp/x' });
+  const r = await json('/sessions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ adapter: 'pi', persistId: 'been-here' }),
+  });
+  assert.equal(r.status, 200);
+  const rec = store.get('been-here');
+  assert.equal(rec.adapter, 'cc', 'ownership comes from disk');
+  assert.equal(rec.agent, 'cc');
+  // 对照：新建的会话照常写上归属
+  const fresh = await json('/sessions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ adapter: 'pi', provider: 'faux', model: 'faux' }),
+  });
+  assert.equal(store.get(fresh.body.sessionId).agent, 'pi');
+});
+
 test('a resumed session accepts messages on its persistId', async (t) => {
   const dir = freshDir();
   try {

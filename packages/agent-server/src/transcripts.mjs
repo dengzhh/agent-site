@@ -21,7 +21,10 @@ const FORMAT_VERSION = 1;
 // id 直接参与拼路径，且 Task 6 起会由请求体提供，故必须先验形状。
 // 限定为「字母数字/下划线/连字符」：够放 UUID（persistId 就是 UUID），
 // 又天然排掉 `/`、`..`、前导点这些能逃出 dir 的片段。
-const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
+// 导出给路由用：网关的 URL 分段与 store 的 id 校验必须是同一把尺子，
+// 否则一处放宽（如 `bye`）另一处仍 404。
+export const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
+export const ID_SOURCE = '[A-Za-z0-9_-]{1,128}';
 
 // 记录的完整字段表（spec 单文件格式），照抄而非推断。
 // 只认这张表：不在上面的字段一律不落盘，凭据也就没地方藏。

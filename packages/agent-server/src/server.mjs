@@ -13,13 +13,20 @@ import { createCcAdapter } from './adapters/cc.mjs';
 import { createAcpAdapter } from './adapters/acp.mjs';
 import { listAgentIds, getAgentDef } from './adapters/acp-agents.mjs';
 import { loadConfig, sessionTtlMs, piSessionDir } from './config.mjs';
-import { TranscriptStore } from './transcripts.mjs';
+import { TranscriptStore, SAFE_ID, ID_SOURCE } from './transcripts.mjs';
 import { SessionStore } from './sessions.mjs';
 import { encodeSSE } from './sse.mjs';
 import { VERSION } from './version.mjs';
 import { log, preview } from './log.mjs';
 
 const DEFAULT_ORIGINS = ['https://dengzhh.github.io'];
+
+// 带会话 id 的路由。id 的正则与 store 的 SAFE_ID 必须是同一把尺子（见
+// transcripts.mjs 的 ID_SOURCE），否则一处放宽另一处仍 404。预先编译，
+// 别在每个请求里 new RegExp。
+const SESSION_ROUTE = Object.fromEntries(
+  ['', '/messages', '/permission', '/abort'].map((tail) => [tail, new RegExp(`^/sessions/(${ID_SOURCE})${tail}$`)]),
+);
 
 function corsHeaders(origin, allowed) {
   if (!origin || !allowed.includes(origin)) return null;
@@ -205,6 +212,13 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
         // 不带 = 新建。已有活跃内存会话的同 id → 409（两个标签页不能共用一份
         // transcript，后写的会覆盖前写的）。
         const persistId = typeof body.persistId === 'string' && body.persistId.trim() ? body.persistId.trim() : null;
+        // 形状在门口就拦：用它当磁盘文件名、当适配器 restore 的键，非法 id
+        // 不该走到 store 抛 TypeError 再被当成 500。
+        if (persistId && !SAFE_ID.test(persistId)) return json(400, { error: 'invalid persistId' });
+        // 恢复已存在的记录时，归属字段（adapter/agent）以盘上为准：前端按 id
+        // 恢复时未必带上原来的 agent，若照请求重写，一条 cc 会话会被标成 pi，
+        // 之后按 agent 筛的列表就把它归错类。只有新建时才写归属。
+        const existing = persistId ? store.get(persistId) : null;
         // 恢复材料先取出来：成功与否都要写进响应（resumed），前端据此决定要不要
         // 渲染历史。拿不到（记录没了/目录没了/agent 不支持）→ resumed:false，
         // 但 id 仍是 persistId，让前端别假装有历史。
@@ -247,7 +261,8 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
         // 但别把它当参数传。
         try {
           store.save({
-            id, adapter: adapter.id, agent: acpAgentId ? `acp:${acpAgentId}` : adapter.id,
+            id,
+            ...(existing ? {} : { adapter: adapter.id, agent: acpAgentId ? `acp:${acpAgentId}` : adapter.id }),
             provider: body.provider ?? undefined, model: body.model ?? undefined,
             cwd: cwd ?? undefined, toolTier,
           });
@@ -267,8 +282,11 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
       // 删单条历史（含 cc 的持久 config dir）。
       // **id 的正则必须与 store 的 SAFE_ID 对齐**：`[0-9a-f-]+` 只认小写十六进制，
       // 会把 `bye`/`dup`/`resume-me` 这类 id 挡在门外（404 而不是 204）。
-      const delMatch = req.method === 'DELETE' && url.pathname.match(/^\/sessions\/([A-Za-z0-9_-]{1,128})$/);
+      const delMatch = req.method === 'DELETE' && url.pathname.match(SESSION_ROUTE['']);
       if (delMatch) {
+        // 活跃会话不能删：内存里还攥着它的运行时与审批表，下一轮会把整份历史
+        // 重新写回去（等于「删了又活了」）。先让用户关掉它。
+        if (sessions.peek(delMatch[1])) return json(409, { error: 'session is active' });
         store.remove(delMatch[1]);
         return res.writeHead(204, cors).end();
       }
@@ -283,10 +301,14 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
         for (const k of ['agent', 'cwd', 'provider', 'model']) {
           if (typeof body?.[k] === 'string' && body[k]) filter[k] = body[k];
         }
+        // 一个筛选条件都没认出来 = 请求体写错了（字段名拼错/类型不对）。
+        // 转发空筛选会让 store.clear() 抛 TypeError（500），而把非法筛选悄悄
+        // 丢掉再清全部更糟——按「请求有问题」明确拒掉。
+        if (!Object.keys(filter).length) return json(400, { error: 'at least one of agent/cwd/provider/model is required' });
         return json(200, { cleared: store.clear(filter) });
       }
 
-      const msgMatch = req.method === 'POST' && url.pathname.match(/^\/sessions\/([A-Za-z0-9_-]{1,128})\/messages$/);
+      const msgMatch = req.method === 'POST' && url.pathname.match(SESSION_ROUTE['/messages']);
       if (msgMatch) {
         const session = sessions.get(msgMatch[1]);
         if (!session) { log('turn', `${msgMatch[1].slice(0, 8)} ✗ unknown session`); return json(404, { error: 'unknown session' }); }
@@ -401,7 +423,7 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
 
       // 审批应答：前端抽屉点允许/拒绝 → 这里唤醒挂起的 requestApproval。
       // 未知会话 / 未知或已收敛的 reqId 都是 404（幂等重放按不存在处理）。
-      const permMatch = req.method === 'POST' && url.pathname.match(/^\/sessions\/([A-Za-z0-9_-]{1,128})\/permission$/);
+      const permMatch = req.method === 'POST' && url.pathname.match(SESSION_ROUTE['/permission']);
       if (permMatch) {
         const session = sessions.get(permMatch[1]);
         if (!session) return json(404, { error: 'unknown session' });
@@ -413,7 +435,7 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
         return json(200, { ok: true });
       }
 
-      const abortMatch = req.method === 'POST' && url.pathname.match(/^\/sessions\/([A-Za-z0-9_-]{1,128})\/abort$/);
+      const abortMatch = req.method === 'POST' && url.pathname.match(SESSION_ROUTE['/abort']);
       if (abortMatch) {
         const session = sessions.get(abortMatch[1]);
         if (!session) return json(404, { error: 'unknown session' });
