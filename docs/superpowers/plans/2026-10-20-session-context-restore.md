@@ -1827,6 +1827,9 @@ export function localResumeCommand(s: SessionSummary): string | null {
     });
 ```
 
+恢复只发生在这一处：`openChat` 里挑出的 `activePersistId` 必须写进 `chat.persistId`
+（见 4h），`ensureSession` 才带上它；`resetSession()` 已解绑时它是 `undefined`。
+
 4e. 历史消息回填。**消息由网关在 `resumed:true` 时一并返回**（Task 6 的 3c 已经把
 `messages` 放进 `POST /sessions` 的响应，前端不必再发一次请求）。
 
@@ -1891,19 +1894,47 @@ export function localResumeCommand(s: SessionSummary): string | null {
   });
 ```
 
-4h. `openChat` 里 `chatLog.textContent = ''` 之后、`void tryGoChat()` 之前插入列表刷新与默认恢复：
+4h. `openChat` 里 `chatLog.textContent = ''` 之后、`void tryGoChat()` 之前插入默认选择：
 
 ```ts
-    // 有历史 → 默认恢复最近一条（spec 选项 C 的无缝部分）；用户显式选了
-    // persistId（点某条 / 点新对话）时以那个为准。
+    // persistId：显式给的（点某条历史 / 新对话）直接用；没给（从卡片进来）
+    // 记住「还没决定」，由 refreshSessionList 完成后挑最近一条。
+    activePersistId = opts.persistId;
+    chat.persistId = opts.persistId;
     void refreshSessionList().then(() => {
+      if (!chat || chat !== c0) return;
       if (activePersistId !== undefined) return;   // 已明确：某条 or 新对话
-      const latest = sessionSummaries.find((s) => canRestore(s));
-      if (latest) { activePersistId = latest.id; chat.persistId = latest.id; }
+      // ⚠️ 不要在这里把最近一条塞进 chat.persistId：openChat 末尾的 tryGoChat
+      // 建会话时还没跑过 applyConfig，c.cwd 与 c.toolTier 仍是初值（'' / 'none'）。
+      // 真拿它去恢复，provider/model/cwd 都被当成「这次的值」，历史记录会被
+      // 工作目录为空、级别 none 的参数冲掉。恢复只发生在 ensureSession() 里，
+      // 那时 cwd/tier 已从 UI 读回（见 4d 的写法）。
+      activePersistId = latest?.id ?? null;
     });
 ```
 
-注意 `refreshSessionList` 依赖 `chat` 已建好，所以必须放在 `chat = {...}` 赋值之后。
+**必须放在 `chat = {...}` 赋值之后**：`refreshSessionList` 读 `chat.cwd` 等字段。
+
+4i. 改配置 = 新会话（`resetSession()` 只把 `sessionId` 置空、不解绑 `persistId`）：
+用户进抽屉时还没填工作目录，填完 `applyConfig` 会重建会话——若仍带着旧的
+`persistId`，新的 cwd/级别会把历史记录改写掉，而且历史已经画在日志里、对不上新参数。
+所以在 `resetSession()` 里**一并解绑持久身份**：
+
+```ts
+  function resetSession(): void {
+    ...
+    c.sessionId = null;
+    // 改了 agent/cwd/级别 = 用户要的已经不是那条历史了：解绑，别在
+    // ensureSession 里拿新参数去恢复旧记录（会把记录的 cwd/tier 冲掉，
+    // 日志里又是旧历史，两边对不上）。要回去点列表里那条即可。
+    c.persistId = undefined;
+    activePersistId = undefined;
+    ...
+  }
+```
+
+（`activePersistId = undefined` 而非 `null`：让下一次 `openChat` 仍走「自动选最近一条」；
+但 `resetSession` 之后 `refreshSessionList` 不会被重新触发，所以本次不会悄悄换成别的历史。）
 
 - [ ] **Step 5: 类型检查与构建**
 
