@@ -193,7 +193,7 @@ terminal yourself are not listed in the web UI — that direction is one-way.
 
 Terminal management (the web UI can only clear the current directory's scope):
 
-    npx agenttoolbox-agent sessions list           # metadata only, never message text
+    npx agenttoolbox-agent sessions list           # metadata + title (title = first ~40 chars of your first message)
     npx agenttoolbox-agent sessions clear --yes    # deletes every transcript
 
 ## Directory grants
