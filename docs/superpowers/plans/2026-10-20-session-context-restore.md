@@ -462,6 +462,13 @@ Expected: FAIL — 模块不存在
 //   pi --session-dir <共享目录> --fork    <piSessionId> "…"    跨 cwd，fork 续
 // 两条路都实测可用（2026-10-20，真实 pi CLI，含跨目录 fork 后正确回忆上下文）。
 //
+// ⚠️ 2026-10-21 补测（0.84.3）：跨 cwd 的 **--session** 在非交互模式下会卡死——
+// resolveSessionPath 判成 "global" 后源码无条件 `await promptConfirm("Fork this
+// session…")`，不检查 --print，于是读 stdin；stdin 是 /dev/null 时 CLI 直接
+// exit 0 且**什么都不输出**（无 stdout、无 stderr），是 shell 里用 `| head`
+// 测试时最容易误判成「空回复」的形态。故：跨目录续接**必须用 --fork**；
+// 同目录续接 --session/--fork 都行（--fork 会另建一个新文件）。
+//
 // 只写不读：CLI 自己建的会话是同样格式，但反向喂回库的 initialState.messages
 // 需要事件→消息的折叠，且会给出「能恢复」的假象——本期不做（spec 非目标）。
 //
@@ -1317,7 +1324,12 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
           const v = url.searchParams.get(k);
           if (v != null && v !== '') filter[k] = v;
         }
-        return json(200, { sessions: store.list(filter) });
+        // piSessionDir 不是记录字段（记录里只有镜像文件的 id），是网关配置——
+        // 由这里补进去，UI 的「本机续接命令」才知道去哪个目录找文件。
+        const records = store.list(filter).map((r) => (
+          r.adapter === 'pi' ? { ...r, piSessionDir } : r
+        ));
+        return json(200, { sessions: records });
       }
 
       // 删单条历史（含 cc 的持久 config dir）。
@@ -1556,8 +1568,11 @@ export interface SessionSummary {
   title: string;
   createdAt: number;
   lastUsed: number;
-  /** pi 专属：本机 `pi --session <piSessionId>` 用它续上。 */
+  /** pi 专属：本机 `pi --fork <piSessionId>` 用它续上。 */
   piSessionId?: string | null;
+  /** pi 专属：镜像文件所在目录（网关的 ATBX_PI_SESSION_DIR）。删掉记录前
+   *  它是空的；Task 9 只在这里有值时才给出可复制的命令。 */
+  piSessionDir?: string | null;
   /** cc 专属：本机 `claude --resume <ccSessionId>` 用它续上。 */
   ccSessionId?: string | null;
 }
@@ -1596,14 +1611,28 @@ export async function clearSessions(
   } catch { return 0; }
 }
 
+// 单引号包裹 + 把内部的 ' 转义成 '\''：POSIX sh 通用。
+function shellQuote(s: string): string {
+  return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
 /**
  * 本机续接命令：把「统一管理」落到用户手里的那一行。
  * pi 需要 --session-dir（共享目录扁平存放，CLI 默认按 cwd 分子目录）；
  * cc 用 --resume，跨目录时 CLI 自己会问要不要 fork。
  */
 export function localResumeCommand(s: SessionSummary): string | null {
-  if (s.agent === 'pi' && s.piSessionId) {
-    return `pi --session-dir ~/.pi/agent/sessions --session ${s.piSessionId}`;
+  if (s.agent === 'pi' && s.piSessionId && s.piSessionDir) {
+    // 目录必须是镜像实际所在的 <piSessionDir>：指向 ~/.pi/agent/sessions 这种
+    // 「默认目录的父目录」时，listSessionsFromDir 只扫描这一层，而 CLI 自己的
+    // 会话在 <父>/--<cwdSlug>--/ 子目录里，只会得到 "No session found matching"。
+    // 命令里按 shell 规则加引号（路径可能含空格）。
+    const dir = shellQuote(s.piSessionDir);
+    const id = shellQuote(s.piSessionId);
+    // 用 --fork 而不是 --session：用户几乎总在**别的目录**里粘贴这条命令，
+    // 跨 cwd 时 --session 会停在 "Fork this session into current directory?
+    // [y/N]" 等输入（实测 0.84.3，非交互下直接静默退出）；--fork 直接续上。
+    return `pi --session-dir ${dir} --fork ${id}`;
   }
   if ((s.agent === 'cc' || s.adapter === 'cc') && s.ccSessionId) {
     return `claude --resume ${s.ccSessionId}`;
@@ -1897,6 +1926,20 @@ git commit -m "feat(site): session history row in the chat drawer"
 **Files:**
 - Create: `packages/agent-server/test/e2e-restore.test.mjs`
 
+> 派活前已实测（2026-10-21，真实 pi CLI 0.84.3）：
+> - 会话文件里 assistant 消息**缺 `usage`** 时 CLI 直接崩在
+>   `Cannot read properties of undefined (reading 'totalTokens')`
+>   （`calculateContextTokens` 无保护地读 `usage.totalTokens`）；
+>   `{}` 或 partial usage 不崩（算出的 token 数是 NaN，不影响读取）。
+>   故 ② 的种子消息**必须**过 `withUsage()`——这不是风格，是能跑与不能跑的分界。
+> - 跨 cwd 的 `--session` 在非交互下**不可能**续上：CLI 判成 "global" 后无条件
+>   读 tty 问 fork，stdin 非 tty 时静默 exit 0、零输出。所以要钉「跨目录也能开」，
+>   用 `--fork`（实测成功）；② 钉的是同目录原地续（用户的实际用法），用 `--session`。
+> - `restore()` 是纯读：它读的是**构造适配器时传进去的那个 store**。
+>   不传 `transcripts` 时 `restore()` 恒返回 null（`cc.mjs:394` / `pi.mjs:124`），
+>   于是「重启后能恢复」的断言在任何机器上都必然失败。测试要模拟的
+>   「重启」= 新建 store 实例 + 新建适配器实例，两者都指向同一个磁盘目录。
+
 - [ ] **Step 1: 写测试**
 
 ```js
@@ -1905,29 +1948,35 @@ git commit -m "feat(site): session history row in the chat drawer"
 // 两条都跑真实 CLI，故本机没装 claude / pi 时 skip，不让 CI 因环境缺失而红。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, readFileSync, existsSync, readdirSync } from 'node:fs';
+import { spawn, execFile } from 'node:child_process';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { startServer } from '../src/server.mjs';
 import { createCcAdapter } from '../src/adapters/cc.mjs';
 import { TranscriptStore } from '../src/transcripts.mjs';
-import { buildPiSessionLines, renderPiSession } from '../src/pi-session-writer.mjs';
+import { withUsage, buildPiSessionLines, renderPiSession } from '../src/pi-session-writer.mjs';
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 const collect = async (iter) => { const out = []; for await (const e of iter) out.push(e); return out; };
+const withTimeout = (promise, ms, label) => {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms: ${label}`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+};
 
 // ── ① 跨进程恢复：cc 适配器 + 真实 CLI + 假上游 ────────────────────────────
+// 「重启网关」在测试里只能这样模拟：磁盘目录不变，store 与适配器全换新实例。
+// 关键点——store 必须传给 createCcAdapter，否则 restore() 无从读盘（恒 null），
+// 而 configDirFor 也走无 store 的后备 Map，记录根本不会落盘。
 test('cc session survives a gateway restart and resumes on the third turn', async (t) => {
-  if (!(await createCcAdapter().available())) { t.skip('claude CLI not installed'); return; }
-
-  const portFile = join(tmpdir(), `atbx-e2e-port-${process.pid}.txt`);
-  rmSync(portFile, { force: true });
+  const portFile = join(tmpdir(), `atbx-e2e-port-${process.pid}-${Date.now()}.port`);
   const upstream = spawn(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-anthropic.mjs')], {
     env: { ...process.env, FAKE_ANTHROPIC_PORT_FILE: portFile }, stdio: 'ignore', detached: true,
   });
-  t.after(() => { try { process.kill(-upstream.pid, 'SIGKILL'); } catch { /* 已退出 */ } });
+  t.after(() => { try { process.kill(-upstream.pid, 'SIGKILL'); } catch { /* 已退出 */ } rmSync(portFile, { force: true }); });
   let port = null;
   for (let i = 0; i < 60 && !port; i++) {
     try { const p = Number(readFileSync(portFile, 'utf8').trim()); if (p) port = p; } catch { /* 还没写 */ }
@@ -1940,65 +1989,83 @@ test('cc session survives a gateway restart and resumes on the third turn', asyn
   t.after(() => rmSync(storeDir, { recursive: true, force: true }));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
 
-  const store = new TranscriptStore({ dir: storeDir });
-  const baseUrl = `http://127.0.0.1:${port}`;
+  // skip 判定放在上游启动之后：可用性探测本身不该让测试留下孤儿进程。
+  if (!(await createCcAdapter().available())) { t.skip('claude CLI not installed'); return; }
+
   const SID = 'e2e-restore-1';
-  const runTurn = async (text, resume) => collect(createCcAdapter().run({
+  const baseUrl = `http://127.0.0.1:${port}`;
+  // 每次「进程重启」都新建 store + 适配器，只共用磁盘目录
+  const boot = () => {
+    const store = new TranscriptStore({ dir: storeDir });
+    return { store, cc: createCcAdapter({ transcripts: store }) };
+  };
+  const runTurn = (cc, text, resumeSessionId) => collect(cc.run({
     messages: [{ role: 'user', content: text }],
     model: 'claude-sonnet-4-5', apiKey: 'k', baseUrl, cwd, allowedTools: [],
-    resumeSessionId: resume, sessionId: SID,
+    resumeSessionId, sessionId: SID,
   }));
 
-  const first = await runTurn('turn one', null);
-  assert.equal(first.at(-1).type, 'turn_end', 'turn 1 ok');
-  assert.ok(store.get(SID)?.ccSessionId, 'cc session id persisted');
+  // ── 第一个网关进程 ──
+  const first = boot();
+  const t1 = await withTimeout(runTurn(first.cc, 'turn one', null), 90_000, 'turn 1');
+  assert.equal(t1.at(-1).type, 'turn_end', `turn 1 errored: ${t1.at(-1).message}`);
+  const ccSessionId = first.store.get(SID)?.ccSessionId;
+  assert.ok(ccSessionId, 'cc session id persisted');
+  const configDir = first.store.get(SID).configDir;
+  assert.ok(configDir, 'config dir persisted (without it --resume cannot find the transcript)');
 
-  // 模拟网关重启：store 是新进程里读同一目录的那份，适配器实例全部重建
-  const ccAfterRestart = createCcAdapter();
-  const restored = ccAfterRestart.restore(SID);
+  // ── 网关重启：内存全丢，磁盘全在 ──
+  const second = boot();
+  assert.notEqual(second.cc, first.cc, 'adapter instance really is new');
+  const restored = second.cc.restore(SID);
   assert.ok(restored, 'restore finds the record after a cold start');
-  assert.equal(restored.ccSessionId, store.get(SID).ccSessionId);
+  assert.equal(restored.ccSessionId, ccSessionId);
+  assert.equal(restored.configDir, configDir);
 
-  const third = await runTurn('turn three', restored.ccSessionId);
-  assert.equal(third.at(-1).type, 'turn_end', `turn 3 after restart errored: ${third.at(-1).message}`);
+  // 第三轮走的是新进程的 restore() 结果——不是手抄的 id
+  const t3 = await withTimeout(runTurn(second.cc, 'turn three', restored.ccSessionId), 90_000, 'turn 3');
+  assert.equal(t3.at(-1).type, 'turn_end', `turn 3 after restart errored: ${t3.at(-1).message}`);
+  // 续上：CLI 复用同一个 session id（实测 2.1.302）
+  assert.equal(t3.find((e) => e.sessionId)?.sessionId, ccSessionId, 'resumed turn reused the cc session');
 });
 
 // ── ② 网站会话本机可打开 ──────────────────────────────────────────────────
+// 与适配器的 mirror 写盘同一套约束：平铺在 --session-dir 下、固定名、
+// 0600、assistant 消息的 usage 补齐（缺 usage 真 CLI 会崩，见文件头）。
+// 在 **会话自己的 cwd** 里跑：跨 cwd 的 --session 会停在 tty 的 fork 确认上
+// （见 Task 2 的补测），而「同目录续上」正是本功能的用法——镜像的 cwd 就是
+// 用户当前目录。注意这里只钉「格式能被 CLI 读懂并续上」；CLI 会不会记住/
+// 回写会话 id 是 CLI 内部行为，不在本用例的断言范围内。
 test('a session file we write can be resumed by the real pi CLI', async (t) => {
-  const piBin = await (async () => {
-    const { execFile } = await import('node:child_process');
-    return await new Promise((resolve) => execFile('which', ['pi'], (e) => resolve(!e)));
-  })();
-  if (!piBin) { t.skip('pi CLI not installed'); return; }
+  const hasPi = await new Promise((resolve) => execFile('pi', ['--version'], (err) => resolve(!err)));
+  if (!hasPi) { t.skip('pi CLI not installed'); return; }
 
   const shared = mkdtempSync(join(tmpdir(), 'atbx-e2e-shared-'));
   const cwd = mkdtempSync(join(tmpdir(), 'atbx-e2e-picwd-'));
   t.after(() => rmSync(shared, { recursive: true, force: true }));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
 
-  // 用 Task 2 的写入器造一份会话，内容带一个只有续上才知道的暗号
   const piSessionId = '01e2e000-0000-7000-8000-0000000000ff';
   const lines = buildPiSessionLines({
     piSessionId, cwd, name: 'e2e',
-    messages: [
+    // withUsage：assistant 缺 usage 时 CLI 崩在 totalTokens 上（实测）
+    messages: withUsage([
       { role: 'user', content: [{ type: 'text', text: '记住暗号是 木瓜' }], timestamp: 1 },
       { role: 'assistant', content: [{ type: 'text', text: '好的。' }], timestamp: 2 },
-    ],
+    ]),
   });
-  const { writeFileSync } = await import('node:fs');
-  writeFileSync(join(shared, `2026-10-20T00-00-00-000Z_${piSessionId}.jsonl`), renderPiSession(lines));
+  writeFileSync(join(shared, `${piSessionId}.jsonl`), renderPiSession(lines), { mode: 0o600 });
 
-  // 真 CLI 必须能找到并续上。跨 cwd → 用 --fork（实测非交互可用）。
-  const out = await new Promise((resolve, reject) => {
-    execFile('pi', ['--print', '--session-dir', shared, '--fork', piSessionId, '暗号是什么'], { cwd, timeout: 90_000 }, (err, stdout, stderr) => {
-      resolve(`${stdout}${stderr}`);
-    });
-  });
+  // 在会话自己的 cwd 里、用 --session 续（同目录 = 原地续）。
+  // 超时给足：首次 CLI 调用要跑完整性检查/加载插件（实测冷启动可达数十秒）。
+  const out = await withTimeout(new Promise((resolve) => {
+    execFile('pi', ['--session-dir', shared, '--session', piSessionId, '--print', '暗号是什么'],
+      { cwd, timeout: 150_000 },
+      (err, stdout, stderr) => resolve(`${stdout}${stderr}`));
+  }), 160_000, 'pi CLI resume');
   assert.match(out, /木瓜/, `pi CLI did not recall the seeded context. output: ${out.slice(0, 300)}`);
 });
 ```
-
-测试文件顶部需要补 import：`import { execFile } from 'node:child_process';` 与 `import { writeFileSync } from 'node:fs';`（合并进已有的 fs import）。
 
 - [ ] **Step 2: 运行测试确认通过**
 
@@ -2135,7 +2202,7 @@ screenshots from `full` tier runs. **API keys are never written to disk.**
 Website-created sessions are also mirrored into `~/.pi/agent/sessions/` in
 pi CLI's native format, so you can continue one locally:
 
-    pi --session-dir ~/.pi/agent/sessions --session <piSessionId> "…"
+    pi --session-dir <ATBX_PI_SESSION_DIR> --fork <piSessionId> "…"
 
 The drawer shows that exact command with a copy button. `cc` sessions resume
 locally with `claude --resume <ccSessionId>`. Sessions you start in the
