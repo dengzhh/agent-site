@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseSSEChunk, keyFor, probeHealth, createSession, fetchOpenRouterQuota, formatQuota, answerPermission, historyBlocks, sessionModelLabel, type OpenRouterQuota, type SessionSummary } from './agentchat';
+import { parseSSEChunk, keyFor, probeHealth, createSession, fetchOpenRouterQuota, formatQuota, answerPermission, historyBlocks, sessionModelLabel, type OpenRouterQuota } from './agentchat';
 
 
 describe('parseSSEChunk', () => {
@@ -216,9 +216,28 @@ describe('historyBlocks', () => {
     ]);
   });
 
+  it('keeps unknown blocks to a bare type label, leaking no field values', () => {
+    // 真实 tool_use 带 id/name/input，redacted_thinking 带 data——都只报类型名，
+    // 字段值一个不外带（不编内容，也不替用户把敏感值画上屏）。
+    expect(historyBlocks([
+      { type: 'tool_use', id: 'toolu_secret', name: 'Bash', input: { cmd: 'rm -rf /' } },
+      { type: 'redacted_thinking', data: 's3cret' },
+    ])).toEqual([
+      { kind: 'unknown', text: '[tool_use]' },
+      { kind: 'unknown', text: '[redacted_thinking]' },
+    ]);
+  });
+
   it('skips blocks it cannot say anything about', () => {
     expect(historyBlocks([null, {}, { type: 'text' }])).toEqual([
       { kind: 'text', text: '' },
+    ]);
+  });
+
+  it('skips raw non-object entries in the array', () => {
+    // 守卫 `typeof blk === 'object'`：字符串/数字混进数组时直接跳过，不硬画。
+    expect(historyBlocks(['str', 42, { type: 'text', text: 'ok' }])).toEqual([
+      { kind: 'text', text: 'ok' },
     ]);
   });
 });
@@ -227,10 +246,10 @@ describe('historyBlocks', () => {
 // 上次是谁跑的（记录里本来就有 model 字段）。
 describe('sessionModelLabel', () => {
   it('shows the model when known', () => {
-    expect(sessionModelLabel({ model: 'glm-4.7-flash' } as SessionSummary)).toBe('glm-4.7-flash');
+    expect(sessionModelLabel({ model: 'glm-4.7-flash' })).toBe('glm-4.7-flash');
   });
   it('says nothing rather than guessing when the record has no model', () => {
-    expect(sessionModelLabel({ model: '' } as SessionSummary)).toBe('');
-    expect(sessionModelLabel({} as SessionSummary)).toBe('');
+    expect(sessionModelLabel({ model: '' })).toBe('');
+    expect(sessionModelLabel({})).toBe('');
   });
 });

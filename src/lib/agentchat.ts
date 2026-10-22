@@ -352,7 +352,7 @@ export function historyBlocks(content: unknown): HistoryBlock[] {
  * 历史列表行的模型小标。记录里本来就有 model 字段（曾是筛选键，现降级为
  * 展示元数据）；拿不到就返回空串，由调用方不渲染这个 span——不猜、不显示「未知」。
  */
-export function sessionModelLabel(s: Pick<SessionSummary, 'model'> | Record<string, unknown>): string {
+export function sessionModelLabel(s: { model?: unknown }): string {
   const m = (s as { model?: unknown }).model;
   return typeof m === 'string' ? m : '';
 }

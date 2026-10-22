@@ -241,7 +241,7 @@ const fmtCtx = (n: number) =>
   .chat-session-item:hover { border-color: var(--cobalt); }
   .chat-session-item.is-active { border-color: var(--cobalt); background: var(--cobalt-wash); }
   .chat-session-item-main { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .chat-session-item-model { flex: 0 0 auto; margin-left: .35rem; color: var(--ink-soft); font-size: .72rem; font-family: var(--font-mono); }
+  .chat-session-item-model { flex: 0 0 auto; color: var(--ink-soft); font-size: .72rem; font-family: var(--font-mono); }
   .chat-session-time { flex: 0 0 auto; color: var(--ink-soft); font-size: .75rem; }
   .chat-session-del { flex: 0 0 auto; background: transparent; border: 0; color: var(--ink-soft); cursor: pointer; padding: 0 .2rem; font-size: .9rem; }
   .chat-session-resume { background: transparent; border: 0; color: var(--cobalt); cursor: pointer; padding: 0 .2rem; font-size: .78rem; }
@@ -599,12 +599,13 @@ const fmtCtx = (n: number) =>
       if (!canRestore(s)) main.textContent = `⟲ ${main.textContent}`;
       // 模型小标：筛选不再按模型分格（见网关的 filter 构造处），列表里会混着
       // 不同模型的会话，标出来才知道这条上次是谁跑的。记录里本来就有 model。
+      // 挂在 item 平级而不是 main 里——main 有 overflow:hidden + ellipsis，
+      // 挂里面会被长标题裁掉，恰恰是杂乱长列表最需要看清模型的时候。
       const model = sessionModelLabel(s);
-      if (model) {
-        const tag = document.createElement('span');
+      const tag = model ? document.createElement('span') : null;
+      if (tag) {
         tag.className = 'chat-session-item-model';
         tag.textContent = model;
-        main.append(tag);
       }
       const time = document.createElement('span');
       time.className = 'chat-session-time';
@@ -628,7 +629,7 @@ const fmtCtx = (n: number) =>
         if (c && c.sessionId === s.id && !c.streaming) resetSession({ fresh: true });
         renderSessionList();
       });
-      item.append(main, time, del);
+      item.append(main, ...(tag ? [tag] : []), time, del);
       // 没 key 时本机命令先不给：下面会切到填 key 面板，复制出去也跑不起来，
       // 还让人看不到要填的东西。
       const cmd = keyStorage.get(chat?.provider ?? '') ? localResumeCommand(s) : null;
