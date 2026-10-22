@@ -566,6 +566,8 @@ const fmtCtx = (n: number) =>
   };
 
   // 能恢复的才让点：acp 的记录点了也是空对话，标出来但不假装（spec 选项 A）。
+  // 网关已用 hideEmpty 把没发过消息的空壳挡在列表外（建会话即落盘，但空壳
+  // 不是历史），所以这里看到的每条都有 messages；canRestore 只判适配器能否续接。
   const canRestore = (s: SessionSummary) => s.adapter === 'pi' || s.adapter === 'cc';
 
   function renderSessionList(): void {
@@ -573,7 +575,9 @@ const fmtCtx = (n: number) =>
     if (sessionSummaries.length === 0) {
       const empty = document.createElement('p');
       empty.className = 'chat-session-empty';
-      empty.textContent = '这个目录下还没有历史对话。';
+      // 网关已过滤掉「建了会话但没发消息」的空壳，所以空列表只有一种含义：
+      // 这个目录/模型组合下真没有对话。别写成暗示"被藏起来了"的措辞。
+      empty.textContent = '这个目录下还没有对话。';
       sessionListEl.append(empty);
       sessionMoreBtn.hidden = true;
       return;
