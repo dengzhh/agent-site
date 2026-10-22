@@ -313,3 +313,46 @@ export function localResumeCommand(s: SessionSummary): string | null {
   }
   return null; // acp 等：没有互通路径，UI 据此不显示复制按钮
 }
+
+/**
+ * 把一条历史消息的 content 拆成渲染用的块序列。
+ *
+ * 恢复渲染循环此前把非 text 块画成 `[${blk.type}]`，思维链于是显示成
+ * `[thinking]`。cc 的 block 是 Anthropic 标准形状（`{type:'text',text}` /
+ * `{type:'thinking',thinking}`），与 pi 存进 messages 的完全一致，故这里
+ * 只做分流、不做转换。
+ *
+ * 提成纯函数是因为 `free-models.astro` 的脚本内联在 .astro 里，vitest
+ * import 不到（node 环境也没有 DOM）——与 drawer.ts / prompt.ts 同一模式。
+ */
+export type HistoryBlock =
+  | { kind: 'thinking'; text: string }
+  | { kind: 'text'; text: string }
+  | { kind: 'image'; text: string }
+  | { kind: 'unknown'; text: string };
+
+export function historyBlocks(content: unknown): HistoryBlock[] {
+  // 字符串 content（少数模型/早期记录）：一条正文，不必假装有块结构。
+  if (typeof content === 'string') return [{ kind: 'text', text: content }];
+  if (!Array.isArray(content)) return [];
+  const out: HistoryBlock[] = [];
+  for (const raw of content) {
+    const blk = raw as { type?: unknown; text?: unknown; thinking?: unknown } | null;
+    const type = blk && typeof blk === 'object' ? blk.type : undefined;
+    if (type === 'thinking') out.push({ kind: 'thinking', text: String(blk!.thinking ?? '') });
+    else if (type === 'text') out.push({ kind: 'text', text: String(blk!.text ?? '') });
+    else if (type === 'image') out.push({ kind: 'image', text: '[图片]' });
+    // 其他未知块：只报类型名，不编内容。缺 type 的（null / {}）什么都说不出，跳过。
+    else if (typeof type === 'string') out.push({ kind: 'unknown', text: `[${type}]` });
+  }
+  return out;
+}
+
+/**
+ * 历史列表行的模型小标。记录里本来就有 model 字段（曾是筛选键，现降级为
+ * 展示元数据）；拿不到就返回空串，由调用方不渲染这个 span——不猜、不显示「未知」。
+ */
+export function sessionModelLabel(s: Pick<SessionSummary, 'model'> | Record<string, unknown>): string {
+  const m = (s as { model?: unknown }).model;
+  return typeof m === 'string' ? m : '';
+}

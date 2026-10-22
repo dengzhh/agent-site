@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { parseSSEChunk, keyFor, probeHealth, createSession, fetchOpenRouterQuota, formatQuota, answerPermission, type OpenRouterQuota } from './agentchat';
+import { parseSSEChunk, keyFor, probeHealth, createSession, fetchOpenRouterQuota, formatQuota, answerPermission, historyBlocks, sessionModelLabel, type OpenRouterQuota, type SessionSummary } from './agentchat';
+
 
 describe('parseSSEChunk', () => {
   it('parses complete blocks and keeps partial in rest', () => {
@@ -184,5 +185,52 @@ describe('answerPermission', () => {
     globalThis.fetch = (async () => { throw new Error('down'); }) as typeof fetch;
     try { expect(await answerPermission('s-1', 'r-1', true, 'http://x')).toBe(false); }
     finally { globalThis.fetch = original; }
+  });
+});
+
+// ── 恢复历史的渲染分流（2026-10-23）──────────────────────────────────────
+// cc 的历史现在会进网页（见网关 cc.restore）。恢复渲染循环此前把非 text 块
+// 画成 `[${blk.type}]`，思维链于是显示成 `[thinking]`。用户已确认选 A：
+// 思维链与正文都显示，与 CLI 一致。逻辑提成纯函数，页面只负责接线——
+// .astro 里的脚本 import 不进来，node 环境也没有 DOM。
+describe('historyBlocks', () => {
+  it('splits thinking from text and keeps the original order', () => {
+    const blocks = [
+      { type: 'thinking', thinking: '先想清楚' },
+      { type: 'text', text: '好的' },
+    ];
+    expect(historyBlocks(blocks)).toEqual([
+      { kind: 'thinking', text: '先想清楚' },
+      { kind: 'text', text: '好的' },
+    ]);
+  });
+
+  it('keeps string content as one text block', () => {
+    expect(historyBlocks('plain')).toEqual([{ kind: 'text', text: 'plain' }]);
+  });
+
+  it('labels images and unknown blocks without inventing content', () => {
+    expect(historyBlocks([{ type: 'image' }, { type: 'tool_use' }])).toEqual([
+      { kind: 'image', text: '[图片]' },
+      { kind: 'unknown', text: '[tool_use]' },
+    ]);
+  });
+
+  it('skips blocks it cannot say anything about', () => {
+    expect(historyBlocks([null, {}, { type: 'text' }])).toEqual([
+      { kind: 'text', text: '' },
+    ]);
+  });
+});
+
+// 筛选不再按模型分格，列表里会混着不同模型的会话——标出来才知道这条
+// 上次是谁跑的（记录里本来就有 model 字段）。
+describe('sessionModelLabel', () => {
+  it('shows the model when known', () => {
+    expect(sessionModelLabel({ model: 'glm-4.7-flash' } as SessionSummary)).toBe('glm-4.7-flash');
+  });
+  it('says nothing rather than guessing when the record has no model', () => {
+    expect(sessionModelLabel({ model: '' } as SessionSummary)).toBe('');
+    expect(sessionModelLabel({} as SessionSummary)).toBe('');
   });
 });

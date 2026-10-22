@@ -241,6 +241,7 @@ const fmtCtx = (n: number) =>
   .chat-session-item:hover { border-color: var(--cobalt); }
   .chat-session-item.is-active { border-color: var(--cobalt); background: var(--cobalt-wash); }
   .chat-session-item-main { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chat-session-item-model { flex: 0 0 auto; margin-left: .35rem; color: var(--ink-soft); font-size: .72rem; font-family: var(--font-mono); }
   .chat-session-time { flex: 0 0 auto; color: var(--ink-soft); font-size: .75rem; }
   .chat-session-del { flex: 0 0 auto; background: transparent; border: 0; color: var(--ink-soft); cursor: pointer; padding: 0 .2rem; font-size: .9rem; }
   .chat-session-resume { background: transparent; border: 0; color: var(--cobalt); cursor: pointer; padding: 0 .2rem; font-size: .78rem; }
@@ -312,7 +313,7 @@ const fmtCtx = (n: number) =>
 <script>
   import data from '../data/free-models.json';
   import { generateConfig, type ConfigTarget } from '../lib/freeconfig';
-  import { probeHealth, createSession, streamMessage, abortSession, fetchOpenRouterQuota, answerPermission, listSessions, deleteSession, clearSessions, localResumeCommand, type SessionSummary, keyStorage, type ChatEvent, formatQuota } from '../lib/agentchat';
+  import { probeHealth, createSession, streamMessage, abortSession, fetchOpenRouterQuota, answerPermission, listSessions, deleteSession, clearSessions, localResumeCommand, historyBlocks, sessionModelLabel, type SessionSummary, keyStorage, type ChatEvent, formatQuota } from '../lib/agentchat';
 
   import { openDrawer, closeDrawers, stopScroll } from '../lib/drawer';
 
@@ -596,6 +597,15 @@ const fmtCtx = (n: number) =>
       main.className = 'chat-session-item-main';
       main.textContent = s.title || '(无标题)';
       if (!canRestore(s)) main.textContent = `⟲ ${main.textContent}`;
+      // 模型小标：筛选不再按模型分格（见网关的 filter 构造处），列表里会混着
+      // 不同模型的会话，标出来才知道这条上次是谁跑的。记录里本来就有 model。
+      const model = sessionModelLabel(s);
+      if (model) {
+        const tag = document.createElement('span');
+        tag.className = 'chat-session-item-model';
+        tag.textContent = model;
+        main.append(tag);
+      }
       const time = document.createElement('span');
       time.className = 'chat-session-time';
       time.textContent = fmtTime(s.lastUsed);
@@ -651,7 +661,7 @@ const fmtCtx = (n: number) =>
     // 工作目录为空时网关按「不过滤」处理（空串被丢掉），会返回**所有目录**的
     // 历史；列表本身照常显示（用户看得见它们不属于当前目录），但自动恢复
     // 不能用它（见 openChat 的判断）——那会把用户带到别的项目的会话里。
-    sessionSummaries = await listSessions({ agent: c.agent ?? c.agents[0] ?? 'pi', cwd: c.cwd, provider: c.provider, model: c.model });
+    sessionSummaries = await listSessions({ agent: c.agent ?? c.agents[0] ?? 'pi', cwd: c.cwd });
     // 只在「换了配置重新打开」时收起；每轮结束的刷新保持用户选过的展开状态。
     if (opts.collapse) sessionShowAll = false;
     renderSessionList();
@@ -695,7 +705,7 @@ const fmtCtx = (n: number) =>
       target = null;
       if (c.cwd) {
         try {
-          const list = await listSessions({ agent: c.agent ?? c.agents[0] ?? 'pi', cwd: c.cwd, provider: c.provider, model: c.model });
+          const list = await listSessions({ agent: c.agent ?? c.agents[0] ?? 'pi', cwd: c.cwd });
           if (stale()) return;
           target = list.find(canRestore)?.id ?? null;
         } catch { target = null; } // 查不到就新建，不该因为列表挂了连会话都建不了
@@ -744,13 +754,11 @@ const fmtCtx = (n: number) =>
       chatMsg('hint', `— 已恢复历史对话，${n} 条消息 —`);
       for (const m of res.messages!) {
         if (m.role !== 'user' && m.role !== 'assistant') continue; // 跳过 system / tool 行
-        const text = Array.isArray(m.content)
-          ? m.content.map((b) => {
-              const blk = b as { type?: string; text?: string };
-              return blk.type === 'text' ? blk.text ?? '' : blk.type === 'image' ? '[图片]' : `[${blk.type}]`;
-            }).join('')
-          : String(m.content ?? '');
-        chatMsg(m.role as 'user' | 'assistant', text);
+        for (const blk of historyBlocks(m.content)) {
+          if (blk.kind === 'text') chatMsg(m.role as 'user' | 'assistant', blk.text);
+          else if (blk.kind === 'thinking') chatMsg('thinking', blk.text);
+          else chatMsg('hint', blk.text); // 图片 / 未知块：一行说明，不抢正文
+        }
       }
     } else if (target) {
       // 占位要撤掉，否则「恢复中…」永远挂在空白对话上。cc 正常就是这条路
@@ -911,10 +919,10 @@ const fmtCtx = (n: number) =>
     // 是所有项目里同 agent/provider/model 的历史。这个按钮只清当前目录，故拦住
     // （与自动恢复同一条规则；全量清空是终端 `sessions clear --yes` 的事）。
     if (!c.cwd) { chatMsg('hint', '先填工作目录再清空：这个按钮只清当前目录的历史。'); return; }
-    const n = await clearSessions({ agent: c.agent ?? c.agents[0] ?? 'pi', cwd: c.cwd, provider: c.provider, model: c.model });
+    const n = await clearSessions({ agent: c.agent ?? c.agents[0] ?? 'pi', cwd: c.cwd });
     // 查一次清空后的列表：既用来如实提示，也决定要不要解绑——不去猜 c.streaming
     // （流可能恰好在这期间结束；网关也会跳过活跃会话）。
-    const left = await listSessions({ agent: c.agent ?? c.agents[0] ?? 'pi', cwd: c.cwd, provider: c.provider, model: c.model });
+    const left = await listSessions({ agent: c.agent ?? c.agents[0] ?? 'pi', cwd: c.cwd });
     if (chat !== c) return; // 期间换了会话/关了抽屉：这轮结果作废
     const kept = Boolean(c.sessionId && left.some((x) => x.id === c.sessionId));
     chatMsg('hint', kept ? `已清空 ${n} 条历史（正在使用的会话保留）。` : `已清空 ${n} 条历史。`);
