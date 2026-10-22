@@ -85,6 +85,68 @@ test('list omits the messages payload (listing must stay cheap)', (t) => {
   assert.equal(hit.title, '写一个贪吃蛇');
 });
 
+// ── hideEmpty：把「建了会话但没说过话」的空壳挡在历史列表之外 ──────────────
+// 背景：网关在建会话时就落盘（筛选四维必须及时写，否则 GET /sessions 命中 0 条，
+// 前端自动恢复会废掉），于是每开一次抽屉就留一条无 messages 的记录，用户看到
+// 一排「(无标题)」。落盘时机不能改（Task 6 的地基），故在读取侧过滤。
+
+test('list({hideEmpty:true}) drops records with no messages', (t) => {
+  const { store } = tmpStore(t);
+  store.save(base({ id: 'real', lastUsed: 200 }));
+  // 空会话：建会话时 server.mjs 只写配置四维，没有 messages
+  store.save({ id: 'empty', adapter: 'pi', agent: 'pi', provider: 'zai',
+               model: 'glm-4.7-flash', cwd: '/tmp/x', toolTier: 'full' });
+  // cc 的桩记录：configDir 已建、ccSessionId 显式为 null，也还没有 messages
+  store.save({ id: 'stub', adapter: 'cc', agent: 'cc', provider: 'zai',
+               model: 'glm-4.7-flash', cwd: '/tmp/x', toolTier: 'full',
+               configDir: '/tmp/x.cc', ccSessionId: null });
+  const ids = store.list({}, { hideEmpty: true }).map((r) => r.id);
+  assert.deepEqual(ids, ['real'], 'empty and stub records are hidden');
+});
+
+test('list() without hideEmpty still returns empty records (default unchanged)', (t) => {
+  const { store } = tmpStore(t);
+  store.save(base({ id: 'real' }));
+  store.save({ id: 'empty', adapter: 'pi', agent: 'pi', provider: 'zai',
+               model: 'glm-4.7-flash', cwd: '/tmp/x', toolTier: 'full' });
+  assert.deepEqual(store.list({}).map((r) => r.id).sort(), ['empty', 'real'],
+    'default must keep every record: sweep/remove/tests rely on it');
+});
+
+// 有 messages 但内容为空的数组，等同于没说成话——一样挡掉。
+test('list({hideEmpty:true}) treats an empty messages array as empty', (t) => {
+  const { store } = tmpStore(t);
+  store.save(base({ id: 'real', messages: [{ role: 'user', content: 'hi' }] }));
+  store.save(base({ id: 'blank', messages: [] }));
+  assert.deepEqual(store.list({}, { hideEmpty: true }).map((r) => r.id), ['real']);
+});
+
+// 过滤只在读取侧：桩记录照样能被 remove() 找到并收回它的 configDir，
+// 否则 cc 的隔离目录会永久泄漏在磁盘上。
+test('hideEmpty hides the stub but remove() still reclaims its configDir', (t) => {
+  const { dir, store } = tmpStore(t);
+  const cfg = join(dir, 'stub.cc');
+  mkdirSync(cfg, { recursive: true });
+  store.save({ id: 'stub', adapter: 'cc', agent: 'cc', provider: 'zai',
+               model: 'glm-4.7-flash', cwd: '/tmp/x', toolTier: 'full',
+               configDir: cfg, ccSessionId: null });
+  assert.deepEqual(store.list({}, { hideEmpty: true }).map((r) => r.id), [], 'stub hidden');
+  assert.ok(existsSync(cfg), 'dir still there while the record exists');
+  assert.equal(store.remove('stub'), true, 'remove() must still find it');
+  assert.ok(!existsSync(cfg), 'remove() reclaims the cc config dir');
+});
+
+// hideEmpty 与筛选四维同时用时，两个条件都要成立才算命中。
+test('hideEmpty composes with the four-dimension filter', (t) => {
+  const { store } = tmpStore(t);
+  store.save(base({ id: 'match' }));
+  store.save(base({ id: 'other-cwd', cwd: '/tmp/elsewhere' }));
+  store.save({ id: 'match-but-empty', adapter: 'pi', agent: 'pi', provider: 'zai',
+               model: 'glm-4.7-flash', cwd: '/tmp/x', toolTier: 'full' });
+  const hits = store.list({ agent: 'pi', cwd: '/tmp/x', provider: 'zai', model: 'glm-4.7-flash' }, { hideEmpty: true });
+  assert.deepEqual(hits.map((r) => r.id), ['match'], 'both filters apply');
+});
+
 test('remove deletes the file and the companion .cc dir', (t) => {
   const { dir, store } = tmpStore(t);
   store.save(base());

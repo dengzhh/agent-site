@@ -237,9 +237,14 @@ export class TranscriptStore {
    * 列某配置下的历史。messages 一律剥掉——列表只该看到元数据，
    * 否则几百条消息的会话会把列表响应撑爆。
    * @param {object} filter {agent, cwd, provider, model} 全部可选，给的都需匹配
+   * @param {object} [opts]
+   * @param {boolean} [opts.hideEmpty] 滤掉没有 messages 的记录。网关建会话时
+   *   就必须落盘（provider/model/cwd/toolTier 四维要立即可查，否则自动恢复
+   *   命中 0 条），于是每开一次抽屉就多一条空壳；落盘时机改不了，故在读取侧
+   *   过滤。默认 false：sweep/remove/CLI 等内部调用要看得见空壳。
    * @returns {object[]} 按 lastUsed 降序
    */
-  list(filter = {}) {
+  list(filter = {}, { hideEmpty = false } = {}) {
     let names;
     try { names = readdirSync(this.dir); } catch { return []; }
     const out = [];
@@ -259,6 +264,9 @@ export class TranscriptStore {
       if (filter.cwd != null && rec.cwd !== filter.cwd) continue;
       if (filter.provider != null && rec.provider !== filter.provider) continue;
       if (filter.model != null && rec.model !== filter.model) continue;
+      // 空会话（含 cc 建目录时留的桩记录）不进历史列表。判断必须在剥掉
+      // messages 之前；cc 的桩记录 ccSessionId 显式为 null，也算没说过话。
+      if (hideEmpty && !(Array.isArray(rec.messages) && rec.messages.length > 0)) continue;
       const { messages, ...meta } = rec;
       out.push(meta);
     }

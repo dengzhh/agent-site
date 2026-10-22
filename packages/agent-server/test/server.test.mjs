@@ -907,12 +907,53 @@ test('GET /sessions lists history for the given config, newest first', async (t)
   try {
     const store = new TranscriptStore({ dir });
     const { json } = await withFauxServer(t, ['http://localhost:4321'], undefined, store);
-    store.save({ id: 'old', agent: 'pi', cwd: '/tmp/x', provider: 'faux', model: 'faux', lastUsed: 1, title: '旧' });
-    store.save({ id: 'new', agent: 'pi', cwd: '/tmp/x', provider: 'faux', model: 'faux', lastUsed: 2, title: '新' });
+    // 带 messages：hideEmpty 之下仍算历史（见下一条「空会话不进列表」）
+    const msg = [{ role: 'user', content: 'hi', timestamp: 1 }];
+    store.save({ id: 'old', agent: 'pi', cwd: '/tmp/x', provider: 'faux', model: 'faux', lastUsed: 1, title: '旧', messages: msg });
+    store.save({ id: 'new', agent: 'pi', cwd: '/tmp/x', provider: 'faux', model: 'faux', lastUsed: 2, title: '新', messages: msg });
     const { status, body } = await json('/sessions?agent=pi&cwd=%2Ftmp%2Fx');
     assert.equal(status, 200);
     assert.deepEqual(body.sessions.map((s) => s.id), ['new', 'old']);
     assert.equal(body.sessions[0].messages, undefined, 'list payload stays metadata-only');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// 用户看到的「(无标题) · 刚刚 + 删除图标」就是这些空壳：网关建会话时即落盘，
+// 没发过消息所以既无 title 也无 messages。落盘时机不能改（四维筛选要立即可查），
+// 故 GET /sessions 用 hideEmpty 把它们挡在外面。
+test('GET /sessions hides sessions that never sent a message', async (t) => {
+  const dir = freshDir();
+  try {
+    const store = new TranscriptStore({ dir });
+    const { json } = await withFauxServer(t, ['http://localhost:4321'], undefined, store);
+    store.save({
+      id: 'real', agent: 'pi', cwd: '/tmp/x', provider: 'faux', model: 'faux',
+      title: '真对话', messages: [{ role: 'user', content: 'hi', timestamp: 1 }],
+    });
+    // 空壳：与 server.mjs 建会话时写的那次完全一致（只有四维，没有 messages）
+    store.save({ id: 'shell', agent: 'pi', cwd: '/tmp/x', provider: 'faux', model: 'faux' });
+    // cc 的桩记录：configDir 已建、ccSessionId 显式 null
+    store.save({ id: 'stub', adapter: 'cc', agent: 'cc', cwd: '/tmp/x', provider: 'faux', model: 'faux', ccSessionId: null });
+    const { body } = await json('/sessions?agent=pi&cwd=%2Ftmp%2Fx');
+    assert.deepEqual(body.sessions.map((s) => s.id), ['real'], 'empty shell must not show up');
+    // cc 桩记录也别出现（不同 agent，这条只证明它在 cc 维度下同样被挡）
+    const cc = await json('/sessions?agent=cc&cwd=%2Ftmp%2Fx');
+    assert.deepEqual(cc.body.sessions.map((s) => s.id), [], 'cc stub record must not show up');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// 过滤只是读取侧：空壳仍可被单条删除（否则用户在别处建的空壳永远删不掉）。
+test('a hidden empty session is still deletable by id', async (t) => {
+  const dir = freshDir();
+  try {
+    const store = new TranscriptStore({ dir });
+    const { json } = await withFauxServer(t, ['http://localhost:4321'], undefined, store);
+    store.save({ id: 'shell', agent: 'pi', cwd: '/tmp/x', provider: 'faux', model: 'faux' });
+    const { body } = await json('/sessions?agent=pi&cwd=%2Ftmp%2Fx');
+    assert.deepEqual(body.sessions.map((s) => s.id), [], 'hidden from the list');
+    const del = await json(`/sessions/${'shell'}`, { method: 'DELETE', headers: { Origin: 'http://localhost:4321' } });
+    assert.equal(del.status, 204, 'DELETE must not go through the filtered list');
+    assert.equal(store.get('shell'), null, 'record is actually gone');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
