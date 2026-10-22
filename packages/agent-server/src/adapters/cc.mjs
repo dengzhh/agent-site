@@ -419,6 +419,11 @@ export function createCcAdapter({ cliPath = 'claude', env = {}, transcripts = nu
 // system prompt 当用户消息渲染出来（2026-10-23 实测一份真实 transcript）。
 // type ∈ {user, assistant} 才是 CLI 写下的对话。
 //
+// 不按 isMeta 过滤：真实 transcript 可能带 isMeta 元信息行（slash 命令输出
+// 之类），但该字段未经本仓库任何代码/测试验证（读真实 transcript 有 PII
+// 边界约束，无法核对）。风险不对称——不过滤最多多显示一行外观噪音，过滤
+// 错了会静默吞掉真对话。要加这条过滤，先用真实 transcript 核对再动。
+//
 // 只在 restore() 里调一次（POST /sessions 时），绝不每轮读、也绝不把内容
 // 搬进我们的记录：权威副本只有 CLI 那一份，存第二份就有了两个可能不一致
 // 的真源。记录继续只留 configDir + ccSessionId 两个指针。
@@ -432,7 +437,16 @@ function readCcDialogue(configDir, ccSessionId) {
     if (!d.isDirectory()) continue;
     const file = join(projects, d.name, target);
     let raw;
-    try { raw = readFileSync(file, 'utf8'); } catch { continue; } // 别的 slug：继续找
+    try { raw = readFileSync(file, 'utf8'); } catch (err) {
+      // findCcTranscript 刚确认文件存在、这里却读失败（权限 / 竞态删除）：
+      // 用户会看到「历史没了」而毫无线索，VERBOSE 下给一条诊断。别的 slug
+      // 没命中也会走到这里，但那种沉默是 fallback 设计如此——只有 errno
+      // 不是「文件本来就没有」（ENOENT 之外的错）才值得出声。
+      if (err?.code !== 'ENOENT' && VERBOSE) {
+        logErr('cc:restore', `transcript read failed: sessionId=${ccSessionId} file=${file} ${err?.code || err?.message}`);
+      }
+      continue; // 别的 slug：继续找
+    }
     const out = [];
     // 逐行 parse，单行坏了只丢那一行——一份 213 KB 的文件不该因为末尾半行
     // 而整个读不出来。
@@ -449,7 +463,11 @@ function readCcDialogue(configDir, ccSessionId) {
       if (!Array.isArray(content) && typeof content !== 'string') continue;
       out.push({ role: obj.type, content });
     }
-    // 一行对话都没有 → 当没读到（调用方据此只回指针，不返回空数组）
+    // 一行对话都没有 → 当没读到（调用方据此只回指针，不返回空数组）。
+    // 文件确实读到了却零对话，多半不是用户预期——VERBOSE 下给条线索。
+    if (!out.length && VERBOSE) {
+      logErr('cc:restore', `transcript had no dialogue lines: sessionId=${ccSessionId} file=${file}`);
+    }
     return out.length ? out : null;
   }
   return null;
