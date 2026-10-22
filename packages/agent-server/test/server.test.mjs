@@ -1475,3 +1475,50 @@ test('restoring a record does not downgrade its own provider/model/cwd/toolTier'
   // 声明——记录写的是「这条会话是怎么跑过的」，所以不覆盖。
   assert.equal(rec.toolTier, 'full', 'toolTier is not rewritten on restore');
 });
+
+// 用户原话：「切换模型后如果没有换 agent，那会话历史应该不变」。
+// 模型/provider 曾是筛选四维中的两维（server.mjs 的 filter 构造处），于是从
+// GLM 卡切到 Claude 卡历史整排消失。二者已从筛选里退出，仍是记录字段
+// （展示用）。这条钉住网关行为，不是 store 能力。
+test('switching models does not lose the history: the list is scoped by agent+cwd only', async (t) => {
+  const store = mkStore(t);
+  const { json } = await withFauxServer(t, ['http://localhost:4321'], undefined, store);
+  const msg = [{ role: 'user', content: 'hi', timestamp: 1 }];
+  // 同一目录、同一 agent，两个不同模型各一条历史
+  store.save({ id: 'by-glm', agent: 'pi', cwd: '/tmp/x', provider: 'zai', model: 'glm-4.7-flash', lastUsed: 1, messages: msg });
+  store.save({ id: 'by-claude', agent: 'pi', cwd: '/tmp/x', provider: 'openrouter', model: 'claude-sonnet-5-5', lastUsed: 2, messages: msg });
+  store.save({ id: 'other-cwd', agent: 'pi', cwd: '/tmp/y', provider: 'zai', model: 'glm-4.7-flash', lastUsed: 3, messages: msg });
+  store.save({ id: 'other-agent', agent: 'cc', cwd: '/tmp/x', provider: 'zai', model: 'glm-4.7-flash', lastUsed: 4, messages: msg });
+
+  // 现在选的是 Claude：按 model 筛的话只剩 by-claude，GLM 那条会消失。
+  const r = await json('/sessions?agent=pi&cwd=%2Ftmp%2Fx&provider=openrouter&model=claude-sonnet-5-5');
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body.sessions.map((s) => s.id).sort(), ['by-claude', 'by-glm'],
+    'a model switch must not hide the history');
+  assert.ok(!r.body.sessions.some((s) => s.id === 'other-cwd'), 'cwd is still a boundary');
+  assert.ok(!r.body.sessions.some((s) => s.id === 'other-agent'), 'agent is still a boundary');
+
+  // provider/model 仍写进记录，但降级为展示元数据：列表 payload 里看得见。
+  const glm = r.body.sessions.find((s) => s.id === 'by-glm');
+  assert.equal(glm.provider, 'zai', 'provider is still recorded');
+  assert.equal(glm.model, 'glm-4.7-flash', 'model is still recorded (the list row labels it)');
+});
+
+// 清空按钮的标签写的是「清空此目录的历史」——改后它真的只按目录清，
+// 不再偷偷多带一个模型条件。
+test('clearing this directory clears every model under it', async (t) => {
+  const store = mkStore(t);
+  const { json } = await withFauxServer(t, ['http://localhost:4321'], undefined, store);
+  store.save({ id: 'a', agent: 'pi', cwd: '/tmp/x', provider: 'zai', model: 'glm-4.7-flash' });
+  store.save({ id: 'b', agent: 'pi', cwd: '/tmp/x', provider: 'openrouter', model: 'claude-sonnet-5-5' });
+  store.save({ id: 'c', agent: 'pi', cwd: '/tmp/y', provider: 'zai', model: 'glm-4.7-flash' });
+  // 请求体仍带 provider/model（前端暂时没改）：必须被忽略，而不是筛掉 b。
+  const r = await json('/sessions/clear', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ agent: 'pi', cwd: '/tmp/x', provider: 'zai', model: 'glm-4.7-flash' }),
+  });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.cleared, 2, 'both models under this cwd go');
+  assert.ok(store.get('c'), 'a different cwd survives');
+});

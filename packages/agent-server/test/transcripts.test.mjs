@@ -622,3 +622,35 @@ test('an unsafe id is reported truncated', (t) => {
     assert.ok(err.message.length < 100, `message must be short, got: ${err.message}`);
   }
 });
+
+// ── 筛选降维：网关不再按 model/provider 筛，但 store 的能力保留 ────────────
+// 背景：2026-10-23 起 GET /sessions 只按 {agent, cwd} 筛（见 server.mjs 的
+// filter 构造处）。**这不是把能力从 store 里删掉**——list()/clear() 仍支持
+// 四维，只是网关不再传那两个参数。这两条用例就是凭证：谁要是顺手把 model
+// 从 list() 的判断里删了，这里会红。
+test('list({agent,cwd}) spans models and providers — the gateway no longer splits by them', (t) => {
+  const { store } = tmpStore(t);
+  const msg = [{ role: 'user', content: 'hi', timestamp: 1 }];
+  store.save(base({ id: 'glm', provider: 'zai', model: 'glm-4.7-flash' }));
+  store.save(base({ id: 'claude', provider: 'openrouter', model: 'claude-sonnet-5-5' }));
+  store.save(base({ id: 'elsewhere', cwd: '/tmp/other' }));
+  // 同 provider 不同 model：单独把 model 从筛选里删掉时，这条会冒出来
+  // 把四维断言打红（只有 provider 维度兜不住它）。
+  store.save(base({ id: 'glm-other-model', provider: 'zai', model: 'glm-4.6' }));
+  const hits = store.list({ agent: 'pi', cwd: '/tmp/x' });
+  assert.deepEqual(hits.map((h) => h.id).sort(), ['claude', 'glm', 'glm-other-model'],
+    'a model switch must not hide the history — cwd is the boundary, not the model');
+  assert.ok(!hits.some((h) => h.id === 'elsewhere'), 'cwd is still a real boundary');
+  // 能力保留：同一个 store 上按四维筛仍只返回匹配的那条。
+  assert.deepEqual(store.list({ agent: 'pi', cwd: '/tmp/x', provider: 'zai', model: 'glm-4.7-flash' })
+    .map((h) => h.id), ['glm'], 'the four-dimension filter still works for callers that want it');
+});
+
+test('clear({agent,cwd}) spans models — capability unchanged', (t) => {
+  const { store } = tmpStore(t);
+  store.save(base({ id: 'glm', provider: 'zai', model: 'glm-4.7-flash' }));
+  store.save(base({ id: 'claude', provider: 'openrouter', model: 'claude-sonnet-5-5' }));
+  store.save(base({ id: 'keep', cwd: '/tmp/other' }));
+  assert.equal(store.clear({ agent: 'pi', cwd: '/tmp/x' }), 2, 'both models cleared');
+  assert.ok(store.get('keep'), 'a different cwd is untouched');
+});

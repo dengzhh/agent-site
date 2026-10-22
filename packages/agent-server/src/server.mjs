@@ -187,10 +187,18 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
       }
 
       // 历史列表：某配置下的会话，newest first，只带元数据（见 TranscriptStore.list）。
-      // 筛选四维与 pi 的 cacheKey 一致：换模型不该串到别的模型的历史里。
+      // 只按 agent + cwd 筛。曾经是四维（provider/model 也在内），注释写「与 pi 的
+      // cacheKey 一致」——那把两件事混为一谈了：cacheKey（pi.mjs）是**内存 Agent
+      // 缓存**的键，换模型必须换 Agent（否则上一模型的上下文与凭据被带过去）；
+      // 而记录里的 model/provider 只是「这条会话最后一次用什么跑的」元数据。
+      // 两个可恢复适配器都跨模型续命：pi 把 rec.messages 喂回 initialState.messages、
+      // Agent 用新模型重建；cc 的 --resume 由本次请求定模型。按模型分格是我们自己
+      // 加的约束，后果是换模型进 chat 历史整排消失（用户 2026-10-23 报的）。
+      // provider/model 仍是记录字段（列表行拿它标模型），只是不再是筛选键。
+      // list() 的四维能力保留：是这里不再传，不是 store 不再支持。
       if (req.method === 'GET' && url.pathname === '/sessions') {
         const filter = {};
-        for (const k of ['agent', 'cwd', 'provider', 'model']) {
+        for (const k of ['agent', 'cwd']) {
           const v = url.searchParams.get(k);
           if (v != null && v !== '') filter[k] = v;
         }
@@ -334,13 +342,16 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
       if (req.method === 'POST' && url.pathname === '/sessions/clear') {
         const body = await readJson(req);
         const filter = {};
-        for (const k of ['agent', 'cwd', 'provider', 'model']) {
+        for (const k of ['agent', 'cwd']) {
           if (typeof body?.[k] === 'string' && body[k]) filter[k] = body[k];
         }
         // 一个筛选条件都没认出来 = 请求体写错了（字段名拼错/类型不对）。
         // 转发空筛选会让 store.clear() 抛 TypeError（500），而把非法筛选悄悄
         // 丢掉再清全部更糟——按「请求有问题」明确拒掉。
-        if (!Object.keys(filter).length) return json(400, { error: 'at least one of agent/cwd/provider/model is required' });
+        // 与 GET 同一边界：只按 agent/cwd 清。请求体里仍可能带 provider/model
+        // （前端尚未改），被忽略而不是拿它再筛一遍——否则「清空此目录的历史」
+        // 这个按钮实际只清一个模型下的，标签就成了谎话。
+        if (!Object.keys(filter).length) return json(400, { error: 'at least one of agent/cwd is required' });
         // 与 DELETE 的 409 同一原则：活跃会话的记录不删（内存里还攥着运行时，
         // 下一轮会把整份历史重新写回去）。跳过它们，返回的 cleared 只数真删的。
         const cleared = store.clear(filter, { skipActive: (id) => sessions.peek(id) });
