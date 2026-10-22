@@ -262,7 +262,7 @@ export class TranscriptStore {
    * @param {object} filter {agent, cwd, provider, model} 全部可选，给的都需匹配
    * @param {object} [opts]
    * @param {boolean} [opts.hideEmpty] 滤掉「没说过话」的空壳。网关建会话时
-   *   就必须落盘（provider/model/cwd/toolTier 四维要立即可查，否则自动恢复
+   *   就必须落盘（筛选键（agent/cwd）与恢复要用的字段要立即可查，否则自动恢复
    *   命中 0 条），于是每开一次抽屉就多一条空壳；落盘时机改不了，故在读取侧
    *   过滤。默认 false：sweep/remove/CLI 等内部调用要看得见空壳。
    *   判据是「这条记录能不能被恢复」（见 spoke()），**不是**「记录里有没有

@@ -919,7 +919,7 @@ test('GET /sessions lists history for the given config, newest first', async (t)
 });
 
 // 用户看到的「(无标题) · 刚刚 + 删除图标」就是这些空壳：网关建会话时即落盘，
-// 没发过消息所以既无 title 也无 messages。落盘时机不能改（四维筛选要立即可查），
+// 没发过消息所以既无 title 也无 messages。落盘时机不能改（筛选键要立即可查），
 // 故 GET /sessions 用 hideEmpty 把它们挡在外面。
 test('GET /sessions hides sessions that never sent a message', async (t) => {
   const dir = freshDir();
@@ -930,7 +930,7 @@ test('GET /sessions hides sessions that never sent a message', async (t) => {
       id: 'real', agent: 'pi', cwd: '/tmp/x', provider: 'faux', model: 'faux',
       title: '真对话', messages: [{ role: 'user', content: 'hi', timestamp: 1 }],
     });
-    // 空壳：与 server.mjs 建会话时写的那次完全一致（只有四维，没有 messages）
+    // 空壳：与 server.mjs 建会话时写的那次完全一致（只有配置字段，没有 messages）
     store.save({ id: 'shell', agent: 'pi', cwd: '/tmp/x', provider: 'faux', model: 'faux' });
     // cc 的桩记录：configDir 已建、ccSessionId 显式 null
     store.save({ id: 'stub', adapter: 'cc', agent: 'cc', cwd: '/tmp/x', provider: 'faux', model: 'faux', ccSessionId: null });

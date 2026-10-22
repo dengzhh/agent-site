@@ -249,7 +249,7 @@ export interface SessionSummary {
 
 export interface SessionListResponse { sessions: SessionSummary[] }
 
-/** 列某配置下的历史。筛选四维与网关一致。 */
+/** 列某配置下的历史。筛选两维（agent/cwd）与网关一致。 */
 export async function listSessions(
   filter: { agent?: string; cwd?: string; provider?: string; model?: string },
   baseUrl = AGENT_URL,

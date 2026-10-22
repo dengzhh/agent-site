@@ -86,7 +86,7 @@ test('list omits the messages payload (listing must stay cheap)', (t) => {
 });
 
 // ── hideEmpty：把「建了会话但没说过话」的空壳挡在历史列表之外 ──────────────
-// 背景：网关在建会话时就落盘（筛选四维必须及时写，否则 GET /sessions 命中 0 条，
+// 背景：网关在建会话时就落盘（筛选键必须及时写，否则 GET /sessions 命中 0 条，
 // 前端自动恢复会废掉），于是每开一次抽屉就留一条无 messages 的记录，用户看到
 // 一排「(无标题)」。落盘时机不能改（Task 6 的地基），故在读取侧过滤。
 //
@@ -99,7 +99,7 @@ test('list omits the messages payload (listing must stay cheap)', (t) => {
 test('list({hideEmpty:true}) drops records with no messages', (t) => {
   const { store } = tmpStore(t);
   store.save(base({ id: 'real', lastUsed: 200 }));
-  // 空会话：建会话时 server.mjs 只写配置四维，没有 messages
+  // 空会话：建会话时 server.mjs 只写配置字段，没有 messages
   store.save({ id: 'empty', adapter: 'pi', agent: 'pi', provider: 'zai',
                model: 'glm-4.7-flash', cwd: '/tmp/x', toolTier: 'full' });
   // cc 的桩记录：configDir 已建、ccSessionId 显式为 null，也还没有 messages
@@ -202,8 +202,8 @@ test('hideEmpty hides the stub but remove() still reclaims its configDir', (t) =
   assert.ok(!existsSync(cfg), 'remove() reclaims the cc config dir');
 });
 
-// hideEmpty 与筛选四维同时用时，两个条件都要成立才算命中。
-test('hideEmpty composes with the four-dimension filter', (t) => {
+// hideEmpty 与筛选条件同时用时，两个条件都要成立才算命中。
+test('hideEmpty composes with the multi-dimension filter', (t) => {
   const { store } = tmpStore(t);
   store.save(base({ id: 'match' }));
   store.save(base({ id: 'other-cwd', cwd: '/tmp/elsewhere' }));
