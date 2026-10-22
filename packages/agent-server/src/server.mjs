@@ -281,9 +281,10 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
         record.dispose = () => { denyPendingPerms(record); adapter.disposeSession?.(id); };
         sessions.set(record);
         // 配置字段由网关写：适配器只写自己那几个（pi 写 messages，cc 写
-        // ccSessionId/configDir），筛选四维（agent/cwd/provider/model）与
-        // title 只有网关知道——没有这次写入，GET /sessions 的筛选永远命中
-        // 0 条，前端「会话」行会一直空着。逐字段合并，不会盖掉适配器写的。
+        // ccSessionId/configDir），筛选键（agent/cwd 两维——provider/model
+        // 已从筛选降级为展示元数据，见 GET /sessions 上方的注释，但仍由这里
+        // 写入）与 title 只有网关知道——没有这次写入，GET /sessions 的筛选
+        // 永远命中 0 条，前端「会话」行会一直空着。逐字段合并，不会盖掉适配器写的。
         //
         // ⚠️ 缺省字段传 undefined（而不是 null）：save() 逐字段合并时
         // undefined =「没给」，保留盘上的旧值；null 是「显式值」，会把
