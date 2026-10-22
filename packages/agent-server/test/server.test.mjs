@@ -957,6 +957,159 @@ test('a hidden empty session is still deletable by id', async (t) => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+// ── 9e35bb7 的回归：cc 跑完一轮后记录里没有 messages，别把它筛掉 ──────────────
+//
+// cc 的历史在 CLI 自己的 projects/<slug>/<id>.jsonl 里，靠 --resume 续；我们的
+// 记录只留 configDir/ccSessionId 两个指针（见 cc.mjs 的 turn_end 写入），
+// **永远**没有 messages。hideEmpty 曾按「有没有 messages」判，于是 cc/acp 的
+// 真会话全部从列表消失，只剩 pi 的空壳——用户看到「换模型进 chat，历史全没了」。
+// 这条测试走真实路径（真 server + 真 cc 适配器 + 假 CC 夹具）端到端钉住它：
+// 层间 mock 全换成手写 store.save() 的话，这个回归照样能溜过去——上一批测试
+// 正是这么漏的（8 条 hideEmpty 测试全是 pi 形状，没有一条覆盖 cc）。
+test('a cc session that ran a turn stays in the history list', async (t) => {
+  process.env.ATBX_CONFIG_PATH = join(mkdtempSync(join(tmpdir(), 'atbx-cc-list-cfg-')), 'config.json');
+  const { startServer } = await import('../src/server.mjs');
+  const { createRegistry } = await import('../src/adapters/registry.mjs');
+  const { createCcAdapter } = await import('../src/adapters/cc.mjs');
+  const dir = freshDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const store = new TranscriptStore({ dir });
+  // 假 CC 夹具：回放一轮完整对话（init → delta → result）。
+  // cliPath 指到 fake-claude.sh，cc 适配器的 available() 只查文件可执行。
+  // ⚠️ transcripts 必须同时进适配器：registry 会顶掉 startServer 自建的默认
+  // registry，不传的话适配器退回内存 Map，turn_end 写得进内存、落不了盘——
+  // 这条测试要的正是「落盘后的记录长什么样」。
+  const registry = createRegistry([createCcAdapter({
+    cliPath: join(dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-claude.sh'),
+    transcripts: store,
+  })]);
+  const srv = await startServer({
+    port: 0, allowedOrigins: ['http://localhost:4321'], registry,
+    acpProbe: async () => false, transcripts: store,
+  });
+  t.after(() => srv.close());
+  const base = `http://127.0.0.1:${srv.port}`;
+  const json = async (path, opts = {}) => {
+    const res = await fetch(base + path, { ...opts, headers: { Origin: 'http://localhost:4321', ...(opts.headers ?? {}) } });
+    return { status: res.status, body: await res.json().catch(() => null) };
+  };
+
+  const created = await json('/sessions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ provider: 'openrouter', model: 'm:free', agent: 'cc', cwd: '/tmp', toolTier: 'read' }),
+  });
+  assert.equal(created.status, 200);
+  const sessionId = created.body.sessionId;
+
+  // 真发一轮：走 /messages（SSE），让 cc 适配器在 turn_end 时写下它的字段
+  const res = await fetch(`${base}/sessions/${sessionId}/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ text: 'hi' }),
+  });
+  await res.text();
+
+  const rec = store.get(sessionId);
+  assert.equal(rec.ccSessionId, 'fake-sess-1', 'the turn really completed');
+  assert.equal(rec.messages, undefined,
+    'precondition: a cc record carries no messages — history lives in the CLI jsonl');
+
+  const listed = await json('/sessions?agent=cc&cwd=%2Ftmp&provider=openrouter&model=m%3Afree');
+  assert.equal(listed.status, 200);
+  assert.deepEqual(listed.body.sessions.map((s) => s.id), [sessionId],
+    'a finished cc turn is history even though our record has no messages');
+  // 标题也由网关派生（cc 的记录里没有 messages，只有看得见 body.text 的这一层
+  // 能派）。否则这一行显示成「(无标题)」——用户最初抱怨的那一排。
+  assert.equal(store.get(sessionId).title, 'hi', 'cc records get a title from the first user text');
+  assert.equal(listed.body.sessions[0].title, 'hi', 'the title reaches the list payload');
+});
+
+// 标题只在**首轮**写：后续轮次不能把它冲掉（列表第一行永远是第一条问句）。
+// 这条同时钉住「用户手动改过的标题不被覆盖」——pi 那条路径同源。
+test('a later turn does not overwrite the session title', async (t) => {
+  process.env.ATBX_CONFIG_PATH = join(mkdtempSync(join(tmpdir(), 'atbx-cc-title-cfg-')), 'config.json');
+  const { startServer } = await import('../src/server.mjs');
+  const { createRegistry } = await import('../src/adapters/registry.mjs');
+  const { createCcAdapter } = await import('../src/adapters/cc.mjs');
+  const dir = freshDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const store = new TranscriptStore({ dir });
+  const registry = createRegistry([createCcAdapter({
+    cliPath: join(dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-claude.sh'),
+    transcripts: store,
+  })]);
+  const srv = await startServer({
+    port: 0, allowedOrigins: ['http://localhost:4321'], registry,
+    acpProbe: async () => false, transcripts: store,
+  });
+  t.after(() => srv.close());
+  const base = `http://127.0.0.1:${srv.port}`;
+  const json = async (path, opts = {}) => {
+    const res = await fetch(base + path, { ...opts, headers: { Origin: 'http://localhost:4321', 'content-type': 'application/json' } });
+    return { status: res.status, body: await res.json().catch(() => null) };
+  };
+  const created = await json('/sessions', {
+    method: 'POST',
+    body: JSON.stringify({ provider: 'openrouter', model: 'm:free', agent: 'cc', cwd: '/tmp', toolTier: 'read' }),
+  });
+  const id = created.body.sessionId;
+  const turn = async (text) => {
+    const res = await fetch(`${base}/sessions/${id}/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+      body: JSON.stringify({ text }),
+    });
+    await res.text();
+  };
+  await turn('第一条问句');
+  assert.equal(store.get(id).title, '第一条问句', 'title comes from the first turn');
+  await turn('第二条问句');
+  assert.equal(store.get(id).title, '第一条问句', 'a later turn must not rename the session');
+});
+
+// 失败轮不写标题：这一轮什么都没留下（ccSessionId 也不会写，记录仍会被
+// hideEmpty 挡在列表外），拿它的 text 当会话名等于给一个不存在的对话命名。
+// 真正的标题由**首个成功的回合**派生。
+test('a failed turn leaves the session untitled', async (t) => {
+  process.env.ATBX_CONFIG_PATH = join(mkdtempSync(join(tmpdir(), 'atbx-cc-fail-cfg-')), 'config.json');
+  const { startServer } = await import('../src/server.mjs');
+  const { createRegistry } = await import('../src/adapters/registry.mjs');
+  const { createCcAdapter } = await import('../src/adapters/cc.mjs');
+  const dir = freshDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const store = new TranscriptStore({ dir });
+  const registry = createRegistry([createCcAdapter({
+    cliPath: join(dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-claude.sh'),
+    // FAKE_CC_MODE=error：CLI 回一条 is_error 的 result（真实 500 的样子）
+    env: { FAKE_CC_MODE: 'error' },
+    transcripts: store,
+  })]);
+  const srv = await startServer({
+    port: 0, allowedOrigins: ['http://localhost:4321'], registry,
+    acpProbe: async () => false, transcripts: store,
+  });
+  t.after(() => srv.close());
+  const base = `http://127.0.0.1:${srv.port}`;
+  const created = await (await fetch(`${base}/sessions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ provider: 'openrouter', model: 'm:free', agent: 'cc', cwd: '/tmp', toolTier: 'read' }),
+  })).json();
+  const id = created.sessionId;
+  const res = await fetch(`${base}/sessions/${id}/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ text: '这一轮会失败' }),
+  });
+  await res.text();
+  const rec = store.get(id);
+  assert.equal(rec.title, undefined, 'a failed turn must not name the session');
+  // ccSessionId 是 null（建目录时写的桩），不是 undefined：这一轮失败，
+  // 适配器不写 id，只留下一个空目录。下一轮跑成功才会有真 id。
+  assert.equal(rec.ccSessionId, null, 'and it left only the stub record');
+});
+
 test('POST /sessions with a persistId resumes instead of creating', async (t) => {
   const dir = freshDir();
   try {

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, chmodSync, rmSync, existsSync, readFileSync, statSync, writeFileSync, readdirSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
-import { TranscriptStore } from '../src/transcripts.mjs';
+import { TranscriptStore, spoke } from '../src/transcripts.mjs';
 
 const freshDir = () => mkdtempSync(join(tmpdir(), 'atbx-tstore-'));
 const base = (over = {}) => ({
@@ -89,6 +89,12 @@ test('list omits the messages payload (listing must stay cheap)', (t) => {
 // 背景：网关在建会话时就落盘（筛选四维必须及时写，否则 GET /sessions 命中 0 条，
 // 前端自动恢复会废掉），于是每开一次抽屉就留一条无 messages 的记录，用户看到
 // 一排「(无标题)」。落盘时机不能改（Task 6 的地基），故在读取侧过滤。
+//
+// ⚠️ 判据是「这条记录能不能被恢复」，**不是**「记录里有没有 messages」。
+// cc 的历史在 CLI 自己的 jsonl 里，靠 --resume 续，我们的记录只留
+// configDir/ccSessionId 两个指针，永远没有 messages。9e35bb7 按 messages 判，
+// 结果把 cc/acp 的真会话全筛掉、只剩 pi 的空壳——用户看到的就是
+// 「换模型进 chat，历史全没了」。下面每条 cc 用例都是钉这个回归的。
 
 test('list({hideEmpty:true}) drops records with no messages', (t) => {
   const { store } = tmpStore(t);
@@ -102,6 +108,66 @@ test('list({hideEmpty:true}) drops records with no messages', (t) => {
                configDir: '/tmp/x.cc', ccSessionId: null });
   const ids = store.list({}, { hideEmpty: true }).map((r) => r.id);
   assert.deepEqual(ids, ['real'], 'empty and stub records are hidden');
+});
+
+// 回归的主用例：cc 跑完一轮后记录里**没有** messages（历史在 CLI 的 jsonl 里），
+// 但 ccSessionId 是这一轮真的跑完了的凭据——它必须算「说过话」。
+test('hideEmpty keeps a cc session that ran a turn even without messages', (t) => {
+  const { store } = tmpStore(t);
+  store.save(base({ id: 'pi-real', lastUsed: 200 }));
+  // cc.mjs 在 turn_end 时写的正是这三个字段——与生产写入逐字段一致
+  store.save({ id: 'cc-real', adapter: 'cc', agent: 'cc', provider: 'zai',
+               model: 'glm-4.7-flash', cwd: '/tmp/x', toolTier: 'full',
+               configDir: '/tmp/x.cc', ccSessionId: 'f05c80fa-ac8e-471c-b98d' });
+  const ids = store.list({}, { hideEmpty: true }).map((r) => r.id);
+  // 排序用 .sort()：两条 lastUsed 同在写入毫秒，先后不保证，故比集合不比顺序
+  assert.deepEqual([...ids].sort(), ['cc-real', 'pi-real'],
+    'a cc session that completed a turn is history, messages or not');
+});
+
+// 桩记录与「跑过一轮的 cc」之别就在 ccSessionId 是 null 还是字符串：
+// 建目录时写的是 null（首轮成功前 restore() 必须返回 null），跑完才是 UUID。
+test('hideEmpty tells a cc stub from a finished cc turn by ccSessionId', (t) => {
+  const { store } = tmpStore(t);
+  store.save({ id: 'stub', adapter: 'cc', agent: 'cc', provider: 'zai',
+               model: 'glm-4.7-flash', cwd: '/tmp/x', toolTier: 'full',
+               configDir: '/tmp/x.cc', ccSessionId: null });
+  store.save({ id: 'stub-empty-str', adapter: 'cc', agent: 'cc', provider: 'zai',
+               model: 'glm-4.7-flash', cwd: '/tmp/x', toolTier: 'full',
+               configDir: '/tmp/x.cc', ccSessionId: '' });
+  store.save({ id: 'ran', adapter: 'cc', agent: 'cc', provider: 'zai',
+               model: 'glm-4.7-flash', cwd: '/tmp/x', toolTier: 'full',
+               configDir: '/tmp/x.cc', ccSessionId: '11111111-2222' });
+  assert.deepEqual(store.list({}, { hideEmpty: true }).map((r) => r.id), ['ran'],
+    'only a real cc session id counts as having spoken');
+});
+
+// acp 每轮都是 newSession，不落任何凭据 → 不可恢复 → 不该出现在列表里。
+// 前端 canRestore() 只认 pi|cc，出现一条点不开的历史是欺骗。
+test('hideEmpty drops acp records (they can never be resumed)', (t) => {
+  const { store } = tmpStore(t);
+  store.save(base({ id: 'pi-real' }));
+  store.save({ id: 'acp-one', adapter: 'acp', agent: 'acp:hermes', provider: 'zai',
+               model: 'glm-4.7-flash', cwd: '/tmp/x', toolTier: 'full' });
+  assert.deepEqual(store.list({}, { hideEmpty: true }).map((r) => r.id), ['pi-real'],
+    'acp history is not restorable, so it is not history in the list');
+});
+
+// 判据单独钉一层：spoke() 是这套语义的唯一出处，前端 canRestore() 与它对齐。
+test('spoke() judges restorability, not the presence of messages', (t) => {
+  const { store } = tmpStore(t);
+  store.save(base({ id: 'pi' }));
+  store.save({ id: 'cc', adapter: 'cc', agent: 'cc', ccSessionId: 'abc' });
+  store.save({ id: 'cc-stub', adapter: 'cc', agent: 'cc', ccSessionId: null });
+  store.save({ id: 'acp', adapter: 'acp', agent: 'acp:hermes' });
+  store.save({ id: 'blank', messages: [] });
+  const byId = (id) => store.get(id);
+  assert.equal(spoke(byId('pi')), true, 'pi with messages spoke');
+  assert.equal(spoke(byId('cc')), true, 'cc with a session id spoke');
+  assert.equal(spoke(byId('cc-stub')), false, 'cc stub has not spoken');
+  assert.equal(spoke(byId('acp')), false, 'acp leaves nothing restorable');
+  assert.equal(spoke(byId('blank')), false, 'empty messages array is not speech');
+  assert.equal(spoke(null), false, 'no record, no speech');
 });
 
 test('list() without hideEmpty still returns empty records (default unchanged)', (t) => {
