@@ -595,3 +595,85 @@ test('cc adapter leaves store-owned config dirs intact when the host process exi
     rmSync(storeDir, { recursive: true, force: true });
   }
 });
+
+// ── restore 把 CLI 的对话读回来（2026-10-23）───────────────────────────────
+// cc 的历史在 CLI 自己的 projects/<slug>/<id>.jsonl 里，我们的记录只有指针。
+// restore() 读它，经 POST /sessions 已有的 material.messages 契约交出去，
+// 网页于是能画出思维链 + 正文。判据是行首 type（user/assistant）——
+// 实测噪声行（api-request-blob 之类）也带 message.role，按 role 筛会把
+// 8474 字符的 system prompt 当用户消息渲染出来。
+
+// 造一个假 configDir + 一份最小 jsonl。行序即真实对话序。
+const plantTranscript = (dir, sessionId, lines) => {
+  mkdirSync(join(dir, 'projects', 'fake-slug'), { recursive: true });
+  writeFileSync(join(dir, 'projects', 'fake-slug', `${sessionId}.jsonl`), lines.join('\n') + '\n');
+};
+
+const DIALOGUE_LINES = [
+  JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: '写一个贪吃蛇' }] } }),
+  JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [
+    { type: 'thinking', thinking: '先想清楚游戏循环' },
+    { type: 'text', text: '好的，我来写。' },
+  ] } }),
+];
+
+test('cc restore reads the dialogue out of the CLI jsonl', (t) => {
+  const store = mkStore(t);
+  const cc = createCcAdapter({ cliPath: FIXTURE, transcripts: store });
+  const dir = mkdtempSync(join(tmpdir(), 'atbx-cc-tx-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  plantTranscript(dir, 'sess-x', [
+    ...DIALOGUE_LINES,
+    // 噪声：attachment 没有 message；api-request-blob 带 message.role —— 按 role 筛会中招
+    JSON.stringify({ type: 'attachment', attachment: { type: 'x' } }),
+    JSON.stringify({ type: 'api-request-blob', message: { role: 'user', content: 'x'.repeat(8474) } }),
+    JSON.stringify({ type: 'queue-operation', operation: 'add' }),
+  ]);
+  store.save({ id: 'sess-x', adapter: 'cc', ccSessionId: 'sess-x', configDir: dir });
+
+  const restored = cc.restore('sess-x');
+  assert.deepEqual(restored.messages, [
+    { role: 'user', content: [{ type: 'text', text: '写一个贪吃蛇' }] },
+    { role: 'assistant', content: [
+      { type: 'thinking', thinking: '先想清楚游戏循环' },
+      { type: 'text', text: '好的，我来写。' },
+    ] },
+  ], 'only the dialogue lines, blocks passed through verbatim');
+  // 指针照旧给：下一轮 --resume 仍要靠它们。
+  assert.equal(restored.ccSessionId, 'sess-x');
+  assert.equal(restored.configDir, dir);
+});
+
+// 按 role 筛的回归防线：噪声行同样带 role。
+test('cc restore ignores noise lines that also carry a role', (t) => {
+  const store = mkStore(t);
+  const cc = createCcAdapter({ cliPath: FIXTURE, transcripts: store });
+  const dir = mkdtempSync(join(tmpdir(), 'atbx-cc-tx-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  plantTranscript(dir, 'sess-y', [
+    JSON.stringify({ type: 'api-request-blob', message: { role: 'user', content: 'system prompt…' } }),
+    JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } }),
+  ]);
+  store.save({ id: 'sess-y', adapter: 'cc', ccSessionId: 'sess-y', configDir: dir });
+  assert.deepEqual(cc.restore('sess-y').messages,
+    [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+    'type decides, not message.role');
+});
+
+// 绝不返回空数组：那会让前端画出「已恢复历史对话，0 条消息」的假横幅。
+// 宁可退回指针-only（前端照现在的提示走），不假装有历史。
+test('cc restore falls back to pointers alone when the jsonl is gone', (t) => {
+  const store = mkStore(t);
+  const cc = createCcAdapter({ cliPath: FIXTURE, transcripts: store });
+  const dir = mkdtempSync(join(tmpdir(), 'atbx-cc-tx-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  // 目录在、但里面没有 jsonl（被手删 / 被清）
+  store.save({ id: 'sess-z', adapter: 'cc', ccSessionId: 'gone', configDir: dir });
+  assert.deepEqual(cc.restore('sess-z'), null, 'no transcript file at all: not restorable');
+  // 有文件、但一行对话都没有
+  plantTranscript(dir, 'sess-z2', [JSON.stringify({ type: 'attachment' })]);
+  store.save({ id: 'sess-z2', adapter: 'cc', ccSessionId: 'sess-z2', configDir: dir });
+  const r = cc.restore('sess-z2');
+  assert.equal(r.messages, undefined, 'no dialogue lines: omit messages, do not return []');
+  assert.equal(r.ccSessionId, 'sess-z2', '--resume still gets its pointers');
+});

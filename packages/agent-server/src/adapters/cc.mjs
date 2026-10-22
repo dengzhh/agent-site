@@ -3,7 +3,7 @@
 // ~/.claude/settings.json（否则会用用户默认模型并执行其 hooks——已实测）。
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { mkdtempSync, existsSync, rmSync, mkdirSync, readdirSync } from 'node:fs';
+import { mkdtempSync, existsSync, rmSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseCcLine, isGateError, summarizeToolInput, buildControlResponse } from './cc-stream.mjs';
@@ -395,11 +395,64 @@ export function createCcAdapter({ cliPath = 'claude', env = {}, transcripts = nu
       const rec = transcripts?.get(sessionId);
       if (!rec?.configDir || !rec.ccSessionId) return null;
       if (!existsSync(rec.configDir)) return null;
-      return findCcTranscript(rec.configDir, rec.ccSessionId)
-        ? { configDir: rec.configDir, ccSessionId: rec.ccSessionId }
-        : null;
+      if (!findCcTranscript(rec.configDir, rec.ccSessionId)) return null;
+      // 读得到对话就一并带上：网页于是能显示思维链 + 正文，与 pi 一致。
+      // 读不到（jsonl 没了 / 一行对话都没有）就只回指针——--resume 照常续
+      // 上下文，前端照「已接上本机的 Claude Code 会话」提示走。
+      // **绝不回空数组**：那会画出「已恢复历史对话，0 条消息」的假横幅，
+      // 比不显示更糟。
+      const dialogue = readCcDialogue(rec.configDir, rec.ccSessionId);
+      return {
+        configDir: rec.configDir, ccSessionId: rec.ccSessionId,
+        ...(dialogue ? { messages: dialogue } : {}),
+      };
     },
   };
+}
+
+// 从 CLI 的 jsonl 里把对话读出来。返回 [{role, content}]（与 pi 存进
+// rec.messages 的形状逐字段一致，前端同一条渲染路径），或 null（读不到 /
+// 一行对话都没有）。
+//
+// 判据是**行首的 type 字段**，不是 message.role：实测噪声行也带 role——
+// api-request-blob 的 message.role 就是 'user'，按 role 筛会把 8474 字符的
+// system prompt 当用户消息渲染出来（2026-10-23 实测一份真实 transcript）。
+// type ∈ {user, assistant} 才是 CLI 写下的对话。
+//
+// 只在 restore() 里调一次（POST /sessions 时），绝不每轮读、也绝不把内容
+// 搬进我们的记录：权威副本只有 CLI 那一份，存第二份就有了两个可能不一致
+// 的真源。记录继续只留 configDir + ccSessionId 两个指针。
+function readCcDialogue(configDir, ccSessionId) {
+  if (!configDir || !ccSessionId) return null;
+  const projects = join(configDir, 'projects');
+  let slugs;
+  try { slugs = readdirSync(projects, { withFileTypes: true }); } catch { return null; }
+  const target = `${ccSessionId}.jsonl`;
+  for (const d of slugs) {
+    if (!d.isDirectory()) continue;
+    const file = join(projects, d.name, target);
+    let raw;
+    try { raw = readFileSync(file, 'utf8'); } catch { continue; } // 别的 slug：继续找
+    const out = [];
+    // 逐行 parse，单行坏了只丢那一行——一份 213 KB 的文件不该因为末尾半行
+    // 而整个读不出来。
+    for (const line of raw.split('\n')) {
+      if (!line.trim()) continue;
+      let obj;
+      try { obj = JSON.parse(line); } catch { continue; }
+      if (obj?.type !== 'user' && obj?.type !== 'assistant') continue;
+      const msg = obj.message;
+      if (!msg || typeof msg !== 'object') continue;
+      // content 必须是块数组（Anthropic 标准形状）；字符串 content 也见得过，
+      // 原样留着让前端按字符串路径渲染。
+      const content = msg.content;
+      if (!Array.isArray(content) && typeof content !== 'string') continue;
+      out.push({ role: obj.type, content });
+    }
+    // 一行对话都没有 → 当没读到（调用方据此只回指针，不返回空数组）
+    return out.length ? out : null;
+  }
+  return null;
 }
 
 // configDir 下有没有 <sessionId>.jsonl：claude 按 projects/<cwd-slug>/<id>.jsonl
