@@ -566,8 +566,10 @@ const fmtCtx = (n: number) =>
   };
 
   // 能恢复的才让点：acp 的记录点了也是空对话，标出来但不假装（spec 选项 A）。
-  // 网关已用 hideEmpty 把没发过消息的空壳挡在列表外（建会话即落盘，但空壳
-  // 不是历史），所以这里看到的每条都有 messages；canRestore 只判适配器能否续接。
+  // 网关的 hideEmpty 按「这条记录能不能被恢复」过滤（transcripts.mjs 的 spoke()）：
+  // cc 的历史在 CLI 自己的 jsonl 里、我们的记录没有 messages，所以「有 messages」
+  // 从来不是列表的准入条件；被挡在外面的是空壳和 acp（它每轮 newSession，
+  // 什么都没留下）。canRestore 与 spoke() 是同一把尺子，列表里出现的都点得开。
   const canRestore = (s: SessionSummary) => s.adapter === 'pi' || s.adapter === 'cc';
 
   function renderSessionList(): void {

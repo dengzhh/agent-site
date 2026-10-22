@@ -32,6 +32,18 @@ function numOrNull(v) {
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
 }
 
+// 会话标题：首条 user 消息的前 40 字。供 cc/acp 用——pi 适配器自己有同款
+// 派生（见 pi.mjs 的 deriveTitle），但它只覆盖自己那一份 Agent 状态。
+// **为什么放在网关层**：cc 的历史在 CLI 自己的 jsonl 里，我们的记录没有
+// messages；acp 每轮都是新 session、什么都不落。两者的标题只能由看得见
+// `body.text` 的这里派生，否则它们的记录永远是 title=undefined，列表里
+// 显示成「(无标题)」——正是用户抱怨的那一排。
+// 逐字段合并 + 只在没有标题时写（pi 已派生过的不被覆盖，用户改过的更不行）。
+export function deriveTitle(text) {
+  if (typeof text !== 'string') return null;
+  return text.trim().slice(0, 40) || null;
+}
+
 function corsHeaders(origin, allowed) {
   if (!origin || !allowed.includes(origin)) return null;
   return {
@@ -430,7 +442,22 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
             // activity（工具调用提示）目前前端不消费，但透传成本为零且保留信息；
             // 未识别的 SSE 类型前端会安全忽略。
             else if (ev.type === 'activity') { toolCalls += 1; send('activity', { title: ev.title }); }
-            else if (ev.type === 'turn_end') send('turn_end', { stopReason: ev.stopReason ?? null });
+            else if (ev.type === 'turn_end') {
+              send('turn_end', { stopReason: ev.stopReason ?? null });
+              // 回合成功才写标题：失败/中止轮的 text 不该变成会话名。cc/acp 的
+              // 记录里没有 messages，标题只能由这里（看得见 body.text 的那一层）
+              // 派生——否则它们的记录永远是 title=undefined，列表显示「(无标题)」。
+              // store.save 逐字段合并，不传 title 就保留盘上的旧值；pi 适配器
+              // 自己也会写同一份标题（首条 user 消息），两边同源不会互踩。
+              if (!session.title) {
+                const title = deriveTitle(text);
+                if (title) {
+                  session.title = title;
+                  try { store.save({ id: session.id, title }); }
+                  catch (err) { log('session', `title save failed for ${short}: ${preview(err?.message ?? err, 80)}`); }
+                }
+              }
+            }
             else if (ev.type === 'error') send('error', { message: ev.message });
           }
           log('turn', `${short} ✓ end reply=${deltaChars}ch thinking=${thinkChars}ch tools=${toolCalls}`);

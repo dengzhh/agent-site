@@ -65,6 +65,29 @@ function shaped(k, v) {
   return undefined;
 }
 
+/**
+ * 这条记录「说过话」吗——即它有没有可恢复的内容？
+ *
+ * 判据刻意**不**看 messages：每个适配器的历史放在不同的地方。
+ *   · pi： Agent 状态由我们持有（库自己不落盘），成功的 turn 把整份
+ *     messages 写进记录——有 messages 就是说过话。
+ *   · cc： 历史在 CLI 自己的 projects/<slug>/<id>.jsonl 里，靠 --resume 续；
+ *     我们的记录只留 configDir + ccSessionId 两个指针，**永远**没有
+ *     messages。cc 建目录时写的桩记录 ccSessionId 显式为 null，那是没说过话。
+ *   · acp：每轮都是全新 session（newSession），不落任何东西，天然不可恢复
+ *     ——它的记录永远不算说过话，列表里也不该出现。
+ * 这与前端 canRestore()（pi | cc）是同一把尺子：列表里出现的每条都点得开。
+ * @param {object} rec 记录（可含 messages，也可不含）
+ * @returns {boolean}
+ */
+export function spoke(rec) {
+  if (!rec) return false;
+  if (Array.isArray(rec.messages) && rec.messages.length > 0) return true;
+  // ccSessionId 是「这一轮真的跑完了」的唯一凭据（见 cc.mjs 的 turn_end 写入）。
+  // 桩记录里它是 null，正常记录里它是个 UUID 字符串。
+  return typeof rec.ccSessionId === 'string' && rec.ccSessionId.length > 0;
+}
+
 export class TranscriptStore {
   /**
    * @param {object} opts
@@ -238,10 +261,14 @@ export class TranscriptStore {
    * 否则几百条消息的会话会把列表响应撑爆。
    * @param {object} filter {agent, cwd, provider, model} 全部可选，给的都需匹配
    * @param {object} [opts]
-   * @param {boolean} [opts.hideEmpty] 滤掉没有 messages 的记录。网关建会话时
+   * @param {boolean} [opts.hideEmpty] 滤掉「没说过话」的空壳。网关建会话时
    *   就必须落盘（provider/model/cwd/toolTier 四维要立即可查，否则自动恢复
    *   命中 0 条），于是每开一次抽屉就多一条空壳；落盘时机改不了，故在读取侧
    *   过滤。默认 false：sweep/remove/CLI 等内部调用要看得见空壳。
+   *   判据是「这条记录能不能被恢复」（见 spoke()），**不是**「记录里有没有
+   *   messages」：cc 的历史在 CLI 自己的 jsonl 里，我们的记录只留
+   *   configDir/ccSessionId，永远没有 messages——按 messages 判会把 cc/acp
+   *   的真会话全部筛掉，只剩 pi 的空壳（正是 9e35bb7 那次回归）。
    * @returns {object[]} 按 lastUsed 降序
    */
   list(filter = {}, { hideEmpty = false } = {}) {
@@ -266,7 +293,7 @@ export class TranscriptStore {
       if (filter.model != null && rec.model !== filter.model) continue;
       // 空会话（含 cc 建目录时留的桩记录）不进历史列表。判断必须在剥掉
       // messages 之前；cc 的桩记录 ccSessionId 显式为 null，也算没说过话。
-      if (hideEmpty && !(Array.isArray(rec.messages) && rec.messages.length > 0)) continue;
+      if (hideEmpty && !spoke(rec)) continue;
       const { messages, ...meta } = rec;
       out.push(meta);
     }
