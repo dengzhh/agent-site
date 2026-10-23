@@ -337,4 +337,68 @@ describe('release → resume ordering', () => {
       expect(url).toBe('http://gw/sessions/abc%20123/release');
     } finally { globalThis.fetch = original; }
   });
+
+  // 连点 A→B→A：第二个 release 在第一个还没回来时就登记。只存「最后一个」
+  // 的实现会把第一个盖掉——那个请求照样打到网关、却没人等它，于是下一次恢复
+  // 仍可能抢先撞 409（正是这条闸门要消灭的竞态，只是在更快的操作下复现）。
+  // 两次释放的延迟故意差一个量级：一样快的话，没被等的那次也会在等待期间
+  // 自行落地，测试就什么都证明不了（第一次写成就这样，变异后依然全绿）。
+  it('awaits every queued release, not only the last one', async () => {
+    const original = globalThis.fetch;
+    const released: string[] = [];
+    let sawSessionBeforeAllReleased = false;
+    globalThis.fetch = (async (u: RequestInfo) => {
+      const url = String(u);
+      const rel = url.match(/^http:\/\/gw\/sessions\/(.+)\/release$/);
+      if (rel) {
+        const id = decodeURIComponent(rel[1]);
+        await new Promise((r) => setTimeout(r, id === 'slow' ? 80 : 5));
+        released.push(id);
+        return new Response(null, { status: 204 });
+      }
+      if (url === 'http://gw/sessions') {
+        sawSessionBeforeAllReleased = released.length < 2;
+        return new Response(JSON.stringify({ sessionId: 's-3' }), { status: 200 });
+      }
+      return new Response(null, { status: 404 });
+    }) as typeof fetch;
+    try {
+      releaseSessionQueued('slow', 'http://gw');
+      releaseSessionQueued('fast', 'http://gw');
+      await awaitPendingRelease();
+      await createSession({ provider: 'p', model: 'm', persistId: 'fast' }, 'http://gw');
+      // 顺序无关（谁先回到本地看各自的延迟），数量与时机才是承诺
+      expect(released.sort()).toEqual(['fast', 'slow']);
+      expect(sawSessionBeforeAllReleased).toBe(false);
+    } finally { globalThis.fetch = original; }
+  });
+
+  // 等待期间新登记的 release 属于下一轮建会话，该由它自己等：这一轮追着等会把
+  // awaitPendingRelease 变成没有终点的手风琴（每次等完又有新的在飞）。
+  it('leaves releases queued during the wait to the next round', async () => {
+    const original = globalThis.fetch;
+    const released: string[] = [];
+    // 装在对象里：直接 `let releaseLate` 会被 TS 按闭包外的唯一赋值窄成 null
+    const late: { go: (() => void) | null } = { go: null };
+    globalThis.fetch = (async (u: RequestInfo) => {
+      const url = String(u);
+      const rel = url.match(/^http:\/\/gw\/sessions\/(.+)\/release$/);
+      if (rel) {
+        const id = decodeURIComponent(rel[1]);
+        if (id === 'late') { await new Promise<void>((r) => { late.go = r; }); released.push(id); return new Response(null, { status: 204 }); }
+        released.push(id);
+        return new Response(null, { status: 204 });
+      }
+      return new Response(null, { status: 404 });
+    }) as typeof fetch;
+    try {
+      releaseSessionQueued('first', 'http://gw');
+      const waiting = awaitPendingRelease();
+      releaseSessionQueued('late', 'http://gw'); // 等待期间又登记了一个
+      await waiting; // 只等 first：这一轮不能被子孙辈拖住
+      expect(released).toEqual(['first']);
+      late.go?.(); // 放走 late，别把测试挂在未 settle 的 promise 上
+      await new Promise((r) => setTimeout(r, 0));
+    } finally { globalThis.fetch = original; }
+  });
 });

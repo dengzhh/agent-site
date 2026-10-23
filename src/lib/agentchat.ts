@@ -163,18 +163,27 @@ export async function releaseSession(sessionId: string, baseUrl = AGENT_URL): Pr
 // 正是「切换模型后会话历史应该不变」要消灭的失败。
 // 三条作废旧会话的路径（resetSession / openChat / 关抽屉）都是同步函数，
 // 没法 await，于是把 in-flight 的 promise 寄存在这里，由建会话前的一刻等它。
-// releaseSession 自己吞掉网络错，所以这个 promise 不会 reject。
-let pendingRelease: Promise<void> | null = null;
+// releaseSession 自己吞掉网络错，所以这些 promise 不会 reject。
+//
+// 收**集**而不是只存最后一个：连点 A→B→A 时第二个 release 会在第一个还没
+// 落地时盖掉它，被盖掉的那个请求照样发去了网关、却没人等它——下一次恢复又
+// 可能抢先，回到这条闸门本来要消灭的竞态。集合里的每一项都 awaited，代价
+// 只是多等几次已经并发发出的本地请求，不会串行化。
+let pendingReleases: Promise<void>[] = [];
 
-/** 登记一次让出占用（不等它）。之后 awaitPendingRelease() 会等到它落地。 */
+/** 登记一次让出占用（不等它）。之后 awaitPendingRelease() 会等到它们全部落地。 */
 export function releaseSessionQueued(sessionId: string, baseUrl = AGENT_URL): void {
-  pendingRelease = releaseSession(sessionId, baseUrl);
+  pendingReleases.push(releaseSession(sessionId, baseUrl));
 }
 
-/** 等已登记的让出占用落地。幂等：没有待办的立即返回（绝不因此卡住建会话）。 */
+/** 等已登记的让出占用全部落地。幂等：没有待办的立即返回（绝不因此卡住建会话）。 */
 export async function awaitPendingRelease(): Promise<void> {
-  const p = pendingRelease;
-  if (p) await p;
+  // 整体取走（而不是逐项 await 后留着）：等待期间新登记的 release 属于下一轮
+  // 建会话，该由它自己去等，不该让这一轮无限追下去。
+  const all = pendingReleases;
+  if (!all.length) return;
+  pendingReleases = [];
+  for (const p of all) await p;
 }
 
 /** 权限卡应答。404 = 请求已超时/已收敛/回合已取消（网关按不存在处理），一律 false 不抛错。 */
