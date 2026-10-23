@@ -156,6 +156,27 @@ export async function releaseSession(sessionId: string, baseUrl = AGENT_URL): Pr
   await fetch(`${baseUrl}/sessions/${encodeURIComponent(sessionId)}/release`, { method: 'POST' }).catch(() => {});
 }
 
+// 「先释放、再恢复」的闸门。让出占用与「带 persistId 的 POST /sessions」是
+// **因果关系**：旧会话还占着内存时，恢复请求只会撞 409「session already
+// active」。两条 fetch 同时打出去时谁先到网关并不确定（POST 先到就是那条
+// 409），而前端看到的是「正在另一个标签页里使用」的假提示 + 历史不出现——
+// 正是「切换模型后会话历史应该不变」要消灭的失败。
+// 三条作废旧会话的路径（resetSession / openChat / 关抽屉）都是同步函数，
+// 没法 await，于是把 in-flight 的 promise 寄存在这里，由建会话前的一刻等它。
+// releaseSession 自己吞掉网络错，所以这个 promise 不会 reject。
+let pendingRelease: Promise<void> | null = null;
+
+/** 登记一次让出占用（不等它）。之后 awaitPendingRelease() 会等到它落地。 */
+export function releaseSessionQueued(sessionId: string, baseUrl = AGENT_URL): void {
+  pendingRelease = releaseSession(sessionId, baseUrl);
+}
+
+/** 等已登记的让出占用落地。幂等：没有待办的立即返回（绝不因此卡住建会话）。 */
+export async function awaitPendingRelease(): Promise<void> {
+  const p = pendingRelease;
+  if (p) await p;
+}
+
 /** 权限卡应答。404 = 请求已超时/已收敛/回合已取消（网关按不存在处理），一律 false 不抛错。 */
 export async function answerPermission(
   sessionId: string,

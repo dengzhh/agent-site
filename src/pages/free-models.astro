@@ -313,7 +313,7 @@ const fmtCtx = (n: number) =>
 <script>
   import data from '../data/free-models.json';
   import { generateConfig, type ConfigTarget } from '../lib/freeconfig';
-  import { probeHealth, createSession, streamMessage, abortSession, releaseSession, fetchOpenRouterQuota, answerPermission, listSessions, deleteSession, clearSessions, localResumeCommand, historyBlocks, sessionModelLabel, type SessionSummary, keyStorage, type ChatEvent, formatQuota } from '../lib/agentchat';
+  import { probeHealth, createSession, streamMessage, abortSession, releaseSessionQueued, awaitPendingRelease, fetchOpenRouterQuota, answerPermission, listSessions, deleteSession, clearSessions, localResumeCommand, historyBlocks, sessionModelLabel, type SessionSummary, keyStorage, type ChatEvent, formatQuota } from '../lib/agentchat';
 
   import { openDrawer, closeDrawers, stopScroll } from '../lib/drawer';
 
@@ -690,7 +690,9 @@ const fmtCtx = (n: number) =>
     // undefined（而非 null）：让下一次 openChat 仍走「自动选最近一条」。
     // fresh（删/清空了当前会话）：明确开全新对话，绝不自动恢复别的记录。
     c.persistId = fresh ? null : undefined;
-    if (staleId) void releaseSession(staleId);
+    // 登记而非 fire-and-forget：建会话前 awaitPendingRelease() 会等它落地，
+    // 否则恢复请求可能抢先打到网关、撞 409（见 lib 里的说明）。
+    if (staleId) releaseSessionQueued(staleId);
     configGen++; // 在途的建会话/额度结果因此作废（见各 await 后的核对）
     usageEl.hidden = true;
     usageEl.textContent = '';
@@ -735,6 +737,14 @@ const fmtCtx = (n: number) =>
       persistId,
     });
 
+    // 先等「让出占用」落地，再发恢复请求。换模型卡片走 openChat → 这里，两步
+    // 之间隔着一连串 await（probeHealth / 列表查询），不刻意等的话那次 release
+    // 早就该到网关了；但没有等待点时（resetSession → tryGoChat 同步路径）
+    // 两条 fetch 就是同时在飞，谁先到不定，POST 先到 = 409 = 历史不出现。
+    // 没有待办的 release 时立即返回，不卡任何东西。
+    await awaitPendingRelease();
+    if (stale()) return;
+
     if (target) { chatLog.textContent = ''; chatMsg('hint', '恢复中…'); }
     let res;
     try {
@@ -742,8 +752,8 @@ const fmtCtx = (n: number) =>
     } catch (e) {
       // 409：这条历史正被另一个标签页的会话占着（内存里活跃）。别把抽屉卡在
       // 「没有会话」——转开新会话并说明，历史本身不动。
-      // 本标签页自己的占用已在 openChat / resetSession / 关抽屉时释放（release），
-      // 所以走到这里基本只剩真的第二个标签页——提示说的是实话，不是兜底话术。
+      // 本标签页自己的占用已在上面等它释放，所以走到这里基本只剩真的第二个
+      // 标签页——提示说的是实话，不是兜底话术。
       if (target && (e as { status?: number }).status === 409) {
         if (stale()) return;
         chatMsg('hint', '这条会话正在另一个标签页里使用，已改为开始新对话。');
@@ -879,7 +889,7 @@ const fmtCtx = (n: number) =>
     // 让出上一个会话在网关侧的占用。换模型卡片走的是这里而不是 resetSession
     // （那条路会顺带 tryGoChat 重建，此处要的是「先释放再建」），不释放的话
     // ensureSession 的自动挑档会挑回同一条记录、POST 时撞 409 → 转开新对话。
-    if (chat?.sessionId) void releaseSession(chat.sessionId);
+    if (chat?.sessionId) releaseSessionQueued(chat.sessionId);
     chat = {
       provider: a.dataset.provider!, model: a.dataset.model!, base: a.dataset.base ?? '',
       anthropicApi: a.dataset.anthropic ?? '',
@@ -954,7 +964,7 @@ const fmtCtx = (n: number) =>
     configGen++; // 抽屉关了 = 会话作废：在途的建会话/额度结果别再落 UI
     // 占用也一并让出：不释放的话重开抽屉时 ensureSession 会挑回这条记录，
     // 而网关还认为它活跃 → 409 → 用户看到「正在另一个标签页里使用」的假提示。
-    if (chat?.sessionId) void releaseSession(chat.sessionId);
+    if (chat?.sessionId) releaseSessionQueued(chat.sessionId);
     $('chat-config-row').hidden = true;
     usageEl.hidden = true;
   });

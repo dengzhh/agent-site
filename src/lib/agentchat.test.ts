@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseSSEChunk, keyFor, probeHealth, createSession, releaseSession, fetchOpenRouterQuota, formatQuota, answerPermission, historyBlocks, sessionModelLabel, type OpenRouterQuota } from './agentchat';
+import { parseSSEChunk, keyFor, probeHealth, createSession, releaseSession, releaseSessionQueued, awaitPendingRelease, fetchOpenRouterQuota, formatQuota, answerPermission, historyBlocks, sessionModelLabel, type OpenRouterQuota } from './agentchat';
 
 
 describe('parseSSEChunk', () => {
@@ -279,6 +279,62 @@ describe('releaseSession', () => {
     globalThis.fetch = (async () => { throw new Error('gateway down'); }) as typeof fetch;
     try {
       await expect(releaseSession('s-1', 'http://gw')).resolves.toBeUndefined();
+    } finally { globalThis.fetch = original; }
+  });
+});
+
+describe('release → resume ordering', () => {
+  // 这三条盯着换模型竞态的最后一环：三条作废路径（resetSession / openChat /
+  // 关抽屉）都是同步函数，await 不了，所以 release 的 promise 被寄起来，
+  // 由建会话前的那一刻等它。不等的话 POST /sessions{persistId} 可能先打到
+  // 网关 → 409 → 前端误报「另一个标签页」并转开新对话，历史照样不出现。
+
+  it('awaits a queued release before resuming', async () => {
+    const original = globalThis.fetch;
+    let released = false;
+    let sawSessionBeforeRelease = false;
+    // release 的响应压在 50ms 后：不等它，紧接着的 createSession 就会跑到前面去
+    globalThis.fetch = (async (u: RequestInfo) => {
+      const url = String(u);
+      if (url.endsWith('/release')) {
+        await new Promise((r) => setTimeout(r, 50));
+        released = true;
+        return new Response(null, { status: 204 });
+      }
+      if (url === 'http://gw/sessions') {
+        sawSessionBeforeRelease = !released;
+        return new Response(JSON.stringify({ sessionId: 's-2' }), { status: 200 });
+      }
+      return new Response(null, { status: 404 });
+    }) as typeof fetch;
+    try {
+      releaseSessionQueued('s-1', 'http://gw');
+      await awaitPendingRelease();
+      await createSession({ provider: 'p', model: 'm', persistId: 's-1' }, 'http://gw');
+      expect(released).toBe(true);
+      expect(sawSessionBeforeRelease).toBe(false);
+    } finally { globalThis.fetch = original; }
+  });
+
+  // 没有待办的 release 时不许卡住：冷启动、点「新对话」这些路径不该凭空多一次
+  // 往返，更不能把 awaitPendingRelease 变成建会话的前置阻塞。
+  it('does not stall when nothing was queued', async () => {
+    await expect(awaitPendingRelease()).resolves.toBeUndefined();
+  });
+
+  // 登记要真的把请求发出去（不是只存个标记），否则闸门等的是一个空操作。
+  it('queues the release request itself', async () => {
+    const original = globalThis.fetch;
+    let url = ''; let method = '';
+    globalThis.fetch = (async (u: RequestInfo, init?: RequestInit) => {
+      url = String(u); method = init?.method ?? 'GET';
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+    try {
+      releaseSessionQueued('abc 123', 'http://gw');
+      await awaitPendingRelease();
+      expect(method).toBe('POST');
+      expect(url).toBe('http://gw/sessions/abc%20123/release');
     } finally { globalThis.fetch = original; }
   });
 });
