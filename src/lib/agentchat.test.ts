@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { parseSSEChunk, keyFor, probeHealth, createSession, fetchOpenRouterQuota, formatQuota, answerPermission, type OpenRouterQuota } from './agentchat';
+import { parseSSEChunk, keyFor, probeHealth, createSession, releaseSession, releaseSessionQueued, awaitPendingRelease, fetchOpenRouterQuota, formatQuota, answerPermission, historyBlocks, sessionModelLabel, type OpenRouterQuota } from './agentchat';
+
 
 describe('parseSSEChunk', () => {
   it('parses complete blocks and keeps partial in rest', () => {
@@ -184,5 +185,220 @@ describe('answerPermission', () => {
     globalThis.fetch = (async () => { throw new Error('down'); }) as typeof fetch;
     try { expect(await answerPermission('s-1', 'r-1', true, 'http://x')).toBe(false); }
     finally { globalThis.fetch = original; }
+  });
+});
+
+// ── 恢复历史的渲染分流（2026-10-23）──────────────────────────────────────
+// cc 的历史现在会进网页（见网关 cc.restore）。恢复渲染循环此前把非 text 块
+// 画成 `[${blk.type}]`，思维链于是显示成 `[thinking]`。用户已确认选 A：
+// 思维链与正文都显示，与 CLI 一致。逻辑提成纯函数，页面只负责接线——
+// .astro 里的脚本 import 不进来，node 环境也没有 DOM。
+describe('historyBlocks', () => {
+  it('splits thinking from text and keeps the original order', () => {
+    const blocks = [
+      { type: 'thinking', thinking: '先想清楚' },
+      { type: 'text', text: '好的' },
+    ];
+    expect(historyBlocks(blocks)).toEqual([
+      { kind: 'thinking', text: '先想清楚' },
+      { kind: 'text', text: '好的' },
+    ]);
+  });
+
+  it('keeps string content as one text block', () => {
+    expect(historyBlocks('plain')).toEqual([{ kind: 'text', text: 'plain' }]);
+  });
+
+  it('labels images and unknown blocks without inventing content', () => {
+    expect(historyBlocks([{ type: 'image' }, { type: 'tool_use' }])).toEqual([
+      { kind: 'image', text: '[图片]' },
+      { kind: 'unknown', text: '[tool_use]' },
+    ]);
+  });
+
+  it('keeps unknown blocks to a bare type label, leaking no field values', () => {
+    // 真实 tool_use 带 id/name/input，redacted_thinking 带 data——都只报类型名，
+    // 字段值一个不外带（不编内容，也不替用户把敏感值画上屏）。
+    expect(historyBlocks([
+      { type: 'tool_use', id: 'toolu_secret', name: 'Bash', input: { cmd: 'rm -rf /' } },
+      { type: 'redacted_thinking', data: 's3cret' },
+    ])).toEqual([
+      { kind: 'unknown', text: '[tool_use]' },
+      { kind: 'unknown', text: '[redacted_thinking]' },
+    ]);
+  });
+
+  it('skips blocks it cannot say anything about', () => {
+    expect(historyBlocks([null, {}, { type: 'text' }])).toEqual([
+      { kind: 'text', text: '' },
+    ]);
+  });
+
+  it('skips raw non-object entries in the array', () => {
+    // 守卫 `typeof blk === 'object'`：字符串/数字混进数组时直接跳过，不硬画。
+    expect(historyBlocks(['str', 42, { type: 'text', text: 'ok' }])).toEqual([
+      { kind: 'text', text: 'ok' },
+    ]);
+  });
+});
+
+// 筛选不再按模型分格，列表里会混着不同模型的会话——标出来才知道这条
+// 上次是谁跑的（记录里本来就有 model 字段）。
+describe('sessionModelLabel', () => {
+  it('shows the model when known', () => {
+    expect(sessionModelLabel({ model: 'glm-4.7-flash' })).toBe('glm-4.7-flash');
+  });
+  it('says nothing rather than guessing when the record has no model', () => {
+    expect(sessionModelLabel({ model: '' })).toBe('');
+    expect(sessionModelLabel({})).toBe('');
+  });
+});
+
+describe('releaseSession', () => {
+  // 这条盯着「换模型后历史不变」的最后一块：网关侧占着旧会话不放，前端就只能
+  // 撞 409 转开新对话。请求必须真的发出去（方法 + 路径 + id 编码），否则页面
+  // 「看起来改了」而时序毫无变化。
+  it('posts to /sessions/:id/release', async () => {
+    const original = globalThis.fetch;
+    let url = ''; let method = '';
+    globalThis.fetch = (async (u: RequestInfo, init?: RequestInit) => {
+      url = String(u); method = init?.method ?? 'GET';
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+    try {
+      await releaseSession('abc 123', 'http://gw');
+      expect(method).toBe('POST');
+      expect(url).toBe('http://gw/sessions/abc%20123/release');
+    } finally { globalThis.fetch = original; }
+  });
+
+  // 网关对「本来就没在占用」也回 204；前端在每条作废路径上都发它，失败若往上抛
+  // 会让 resetSession 的调用链炸掉（它不 catch），所以必须静默。
+  it('swallows a failed release', async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = (async () => { throw new Error('gateway down'); }) as typeof fetch;
+    try {
+      await expect(releaseSession('s-1', 'http://gw')).resolves.toBeUndefined();
+    } finally { globalThis.fetch = original; }
+  });
+});
+
+describe('release → resume ordering', () => {
+  // 这三条盯着换模型竞态的最后一环：三条作废路径（resetSession / openChat /
+  // 关抽屉）都是同步函数，await 不了，所以 release 的 promise 被寄起来，
+  // 由建会话前的那一刻等它。不等的话 POST /sessions{persistId} 可能先打到
+  // 网关 → 409 → 前端误报「另一个标签页」并转开新对话，历史照样不出现。
+
+  it('awaits a queued release before resuming', async () => {
+    const original = globalThis.fetch;
+    let released = false;
+    let sawSessionBeforeRelease = false;
+    // release 的响应压在 50ms 后：不等它，紧接着的 createSession 就会跑到前面去
+    globalThis.fetch = (async (u: RequestInfo) => {
+      const url = String(u);
+      if (url.endsWith('/release')) {
+        await new Promise((r) => setTimeout(r, 50));
+        released = true;
+        return new Response(null, { status: 204 });
+      }
+      if (url === 'http://gw/sessions') {
+        sawSessionBeforeRelease = !released;
+        return new Response(JSON.stringify({ sessionId: 's-2' }), { status: 200 });
+      }
+      return new Response(null, { status: 404 });
+    }) as typeof fetch;
+    try {
+      releaseSessionQueued('s-1', 'http://gw');
+      await awaitPendingRelease();
+      await createSession({ provider: 'p', model: 'm', persistId: 's-1' }, 'http://gw');
+      expect(released).toBe(true);
+      expect(sawSessionBeforeRelease).toBe(false);
+    } finally { globalThis.fetch = original; }
+  });
+
+  // 没有待办的 release 时不许卡住：冷启动、点「新对话」这些路径不该凭空多一次
+  // 往返，更不能把 awaitPendingRelease 变成建会话的前置阻塞。
+  it('does not stall when nothing was queued', async () => {
+    await expect(awaitPendingRelease()).resolves.toBeUndefined();
+  });
+
+  // 登记要真的把请求发出去（不是只存个标记），否则闸门等的是一个空操作。
+  it('queues the release request itself', async () => {
+    const original = globalThis.fetch;
+    let url = ''; let method = '';
+    globalThis.fetch = (async (u: RequestInfo, init?: RequestInit) => {
+      url = String(u); method = init?.method ?? 'GET';
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+    try {
+      releaseSessionQueued('abc 123', 'http://gw');
+      await awaitPendingRelease();
+      expect(method).toBe('POST');
+      expect(url).toBe('http://gw/sessions/abc%20123/release');
+    } finally { globalThis.fetch = original; }
+  });
+
+  // 连点 A→B→A：第二个 release 在第一个还没回来时就登记。只存「最后一个」
+  // 的实现会把第一个盖掉——那个请求照样打到网关、却没人等它，于是下一次恢复
+  // 仍可能抢先撞 409（正是这条闸门要消灭的竞态，只是在更快的操作下复现）。
+  // 两次释放的延迟故意差一个量级：一样快的话，没被等的那次也会在等待期间
+  // 自行落地，测试就什么都证明不了（第一次写成就这样，变异后依然全绿）。
+  it('awaits every queued release, not only the last one', async () => {
+    const original = globalThis.fetch;
+    const released: string[] = [];
+    let sawSessionBeforeAllReleased = false;
+    globalThis.fetch = (async (u: RequestInfo) => {
+      const url = String(u);
+      const rel = url.match(/^http:\/\/gw\/sessions\/(.+)\/release$/);
+      if (rel) {
+        const id = decodeURIComponent(rel[1]);
+        await new Promise((r) => setTimeout(r, id === 'slow' ? 80 : 5));
+        released.push(id);
+        return new Response(null, { status: 204 });
+      }
+      if (url === 'http://gw/sessions') {
+        sawSessionBeforeAllReleased = released.length < 2;
+        return new Response(JSON.stringify({ sessionId: 's-3' }), { status: 200 });
+      }
+      return new Response(null, { status: 404 });
+    }) as typeof fetch;
+    try {
+      releaseSessionQueued('slow', 'http://gw');
+      releaseSessionQueued('fast', 'http://gw');
+      await awaitPendingRelease();
+      await createSession({ provider: 'p', model: 'm', persistId: 'fast' }, 'http://gw');
+      // 顺序无关（谁先回到本地看各自的延迟），数量与时机才是承诺
+      expect(released.sort()).toEqual(['fast', 'slow']);
+      expect(sawSessionBeforeAllReleased).toBe(false);
+    } finally { globalThis.fetch = original; }
+  });
+
+  // 等待期间新登记的 release 属于下一轮建会话，该由它自己等：这一轮追着等会把
+  // awaitPendingRelease 变成没有终点的手风琴（每次等完又有新的在飞）。
+  it('leaves releases queued during the wait to the next round', async () => {
+    const original = globalThis.fetch;
+    const released: string[] = [];
+    // 装在对象里：直接 `let releaseLate` 会被 TS 按闭包外的唯一赋值窄成 null
+    const late: { go: (() => void) | null } = { go: null };
+    globalThis.fetch = (async (u: RequestInfo) => {
+      const url = String(u);
+      const rel = url.match(/^http:\/\/gw\/sessions\/(.+)\/release$/);
+      if (rel) {
+        const id = decodeURIComponent(rel[1]);
+        if (id === 'late') { await new Promise<void>((r) => { late.go = r; }); released.push(id); return new Response(null, { status: 204 }); }
+        released.push(id);
+        return new Response(null, { status: 204 });
+      }
+      return new Response(null, { status: 404 });
+    }) as typeof fetch;
+    try {
+      releaseSessionQueued('first', 'http://gw');
+      const waiting = awaitPendingRelease();
+      releaseSessionQueued('late', 'http://gw'); // 等待期间又登记了一个
+      await waiting; // 只等 first：这一轮不能被子孙辈拖住
+      expect(released).toEqual(['first']);
+      late.go?.(); // 放走 late，别把测试挂在未 settle 的 promise 上
+      await new Promise((r) => setTimeout(r, 0));
+    } finally { globalThis.fetch = original; }
   });
 });

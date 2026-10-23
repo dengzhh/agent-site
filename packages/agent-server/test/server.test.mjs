@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +9,7 @@ import { createModels, fauxProvider, fauxAssistantMessage, fauxText } from '@ear
 import { createRegistry } from '../src/adapters/registry.mjs';
 import { createPiAdapter } from '../src/adapters/pi.mjs';
 import { TranscriptStore } from '../src/transcripts.mjs';
+import { createCcAdapter } from '../src/adapters/cc.mjs';
 
 const freshDir = () => mkdtempSync(join(tmpdir(), 'atbx-srv-'));
 // 测试用的临时 transcript store，随测试结束回收。所有 startServer 调用都必须
@@ -919,7 +920,7 @@ test('GET /sessions lists history for the given config, newest first', async (t)
 });
 
 // 用户看到的「(无标题) · 刚刚 + 删除图标」就是这些空壳：网关建会话时即落盘，
-// 没发过消息所以既无 title 也无 messages。落盘时机不能改（四维筛选要立即可查），
+// 没发过消息所以既无 title 也无 messages。落盘时机不能改（筛选键要立即可查），
 // 故 GET /sessions 用 hideEmpty 把它们挡在外面。
 test('GET /sessions hides sessions that never sent a message', async (t) => {
   const dir = freshDir();
@@ -930,7 +931,7 @@ test('GET /sessions hides sessions that never sent a message', async (t) => {
       id: 'real', agent: 'pi', cwd: '/tmp/x', provider: 'faux', model: 'faux',
       title: '真对话', messages: [{ role: 'user', content: 'hi', timestamp: 1 }],
     });
-    // 空壳：与 server.mjs 建会话时写的那次完全一致（只有四维，没有 messages）
+    // 空壳：与 server.mjs 建会话时写的那次完全一致（只有配置字段，没有 messages）
     store.save({ id: 'shell', agent: 'pi', cwd: '/tmp/x', provider: 'faux', model: 'faux' });
     // cc 的桩记录：configDir 已建、ccSessionId 显式 null
     store.save({ id: 'stub', adapter: 'cc', agent: 'cc', cwd: '/tmp/x', provider: 'faux', model: 'faux', ccSessionId: null });
@@ -1474,4 +1475,200 @@ test('restoring a record does not downgrade its own provider/model/cwd/toolTier'
   // 前端每次都发 toolTier；恢复时它是「这次运行用什么」的请求，不是对记录的
   // 声明——记录写的是「这条会话是怎么跑过的」，所以不覆盖。
   assert.equal(rec.toolTier, 'full', 'toolTier is not rewritten on restore');
+});
+
+// 用户原话：「切换模型后如果没有换 agent，那会话历史应该不变」。
+// 模型/provider 曾是筛选四维中的两维（server.mjs 的 filter 构造处），于是从
+// GLM 卡切到 Claude 卡历史整排消失。二者已从筛选里退出，仍是记录字段
+// （展示用）。这条钉住网关行为，不是 store 能力。
+test('switching models does not lose the history: the list is scoped by agent+cwd only', async (t) => {
+  const store = mkStore(t);
+  const { json } = await withFauxServer(t, ['http://localhost:4321'], undefined, store);
+  const msg = [{ role: 'user', content: 'hi', timestamp: 1 }];
+  // 同一目录、同一 agent，两个不同模型各一条历史
+  store.save({ id: 'by-glm', agent: 'pi', cwd: '/tmp/x', provider: 'zai', model: 'glm-4.7-flash', lastUsed: 1, messages: msg });
+  store.save({ id: 'by-claude', agent: 'pi', cwd: '/tmp/x', provider: 'openrouter', model: 'claude-sonnet-5-5', lastUsed: 2, messages: msg });
+  store.save({ id: 'other-cwd', agent: 'pi', cwd: '/tmp/y', provider: 'zai', model: 'glm-4.7-flash', lastUsed: 3, messages: msg });
+  store.save({ id: 'other-agent', agent: 'cc', cwd: '/tmp/x', provider: 'zai', model: 'glm-4.7-flash', lastUsed: 4, messages: msg });
+
+  // 现在选的是 Claude：按 model 筛的话只剩 by-claude，GLM 那条会消失。
+  const r = await json('/sessions?agent=pi&cwd=%2Ftmp%2Fx&provider=openrouter&model=claude-sonnet-5-5');
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body.sessions.map((s) => s.id).sort(), ['by-claude', 'by-glm'],
+    'a model switch must not hide the history');
+  assert.ok(!r.body.sessions.some((s) => s.id === 'other-cwd'), 'cwd is still a boundary');
+  assert.ok(!r.body.sessions.some((s) => s.id === 'other-agent'), 'agent is still a boundary');
+
+  // provider/model 仍写进记录，但降级为展示元数据：列表 payload 里看得见。
+  const glm = r.body.sessions.find((s) => s.id === 'by-glm');
+  assert.equal(glm.provider, 'zai', 'provider is still recorded');
+  assert.equal(glm.model, 'glm-4.7-flash', 'model is still recorded (the list row labels it)');
+});
+
+// 清空按钮的标签写的是「清空此目录的历史」——改后它真的只按目录清，
+// 不再偷偷多带一个模型条件。
+test('clearing this directory clears every model under it', async (t) => {
+  const store = mkStore(t);
+  const { json } = await withFauxServer(t, ['http://localhost:4321'], undefined, store);
+  store.save({ id: 'a', agent: 'pi', cwd: '/tmp/x', provider: 'zai', model: 'glm-4.7-flash' });
+  store.save({ id: 'b', agent: 'pi', cwd: '/tmp/x', provider: 'openrouter', model: 'claude-sonnet-5-5' });
+  store.save({ id: 'c', agent: 'pi', cwd: '/tmp/y', provider: 'zai', model: 'glm-4.7-flash' });
+  // 请求体仍带 provider/model（前端暂时没改）：必须被忽略，而不是筛掉 b。
+  const r = await json('/sessions/clear', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+    body: JSON.stringify({ agent: 'pi', cwd: '/tmp/x', provider: 'zai', model: 'glm-4.7-flash' }),
+  });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.cleared, 2, 'both models under this cwd go');
+  assert.ok(store.get('c'), 'a different cwd survives');
+});
+
+// 端到端：换模型后恢复的是同一条会话，且历史消息一起来了。
+// 这是两个改动的交汇点——筛选降维（同目录跨模型可见）+ cc restore 读 jsonl。
+// 用 fake-claude 夹具，不 spawn 真 CLI。
+test('switching models resumes the same cc session, with its dialogue', async (t) => {
+  const dir = freshDir();
+  try {
+    const store = new TranscriptStore({ dir });
+    const registry = createRegistry([createCcAdapter({
+      cliPath: join(dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-claude.sh'),
+      transcripts: store,
+    })]);
+    const srv = await startServer({
+      port: 0, allowedOrigins: ['http://localhost:4321'], registry,
+      acpProbe: async () => false, transcripts: store,
+    });
+    t.after(() => srv.close());
+    const base = `http://127.0.0.1:${srv.port}`;
+    const json = async (path, opts = {}) => {
+      const res = await fetch(base + path, { ...opts, headers: { Origin: 'http://localhost:4321', ...(opts.headers ?? {}) } });
+      return { status: res.status, body: await res.json().catch(() => null) };
+    };
+
+    // 第一轮：用模型 A 建会话、发一轮，让 cc 适配器在 turn_end 写下 ccSessionId
+    const first = await json('/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'openrouter', model: 'm:free', agent: 'cc', cwd: '/tmp', toolTier: 'read' }),
+    });
+    assert.equal(first.status, 200);
+    const id = first.body.sessionId;
+    await fetch(`${base}/sessions/${id}/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Origin: 'http://localhost:4321' },
+      body: JSON.stringify({ text: 'hi' }),
+    }).then((r) => r.text());
+    const rec = store.get(id);
+    assert.equal(rec.ccSessionId, 'fake-sess-1', 'the first turn completed');
+
+    // 种一份 CLI 的 jsonl：restore() 靠它把历史读出来
+    mkdirSync(join(rec.configDir, 'projects', 'slug'), { recursive: true });
+    writeFileSync(join(rec.configDir, 'projects', 'slug', 'fake-sess-1.jsonl'),
+      JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } }) + '\n'
+      + JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [
+        { type: 'thinking', thinking: '想一下' }, { type: 'text', text: 'PONG' }] } }) + '\n');
+
+    // 关掉第一个 server（= 重启网关）：活跃内存会话随它消失。不这么做的话
+    // 第二次 POST /sessions 带 persistId 会命中 409「session already active」
+    // ——两个标签页不能共用一份记录。真实流程里恢复本来就发生在重启/逐出后。
+    await srv.close();
+    // 用同一份 store 重启：记录（含 configDir/ccSessionId）在盘上，内存会话没了
+    const srv2 = await startServer({
+      port: 0, allowedOrigins: ['http://localhost:4321'], registry,
+      acpProbe: async () => false, transcripts: store,
+    });
+    t.after(() => srv2.close());
+    const base2 = `http://127.0.0.1:${srv2.port}`;
+    const json2 = async (path, opts = {}) => {
+      const res = await fetch(base2 + path, { ...opts, headers: { Origin: 'http://localhost:4321', ...(opts.headers ?? {}) } });
+      return { status: res.status, body: await res.json().catch(() => null) };
+    };
+
+    // 换模型再进：模型 B。断言恢复的是**同一条**会话，且带着历史消息。
+    const second = await json2('/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'openrouter', model: 'other:free', agent: 'cc', cwd: '/tmp',
+        toolTier: 'read', persistId: id,
+      }),
+    });
+    assert.equal(second.status, 200);
+    assert.equal(second.body.sessionId, id, 'the same session, not a new one');
+    assert.equal(second.body.resumed, true, 'it really resumed');
+    assert.deepEqual(second.body.messages, [
+      { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+      { role: 'assistant', content: [
+        { type: 'thinking', thinking: '想一下' }, { type: 'text', text: 'PONG' }] },
+    ], 'the dialogue came back with it');
+    // 模型是记录里的展示元数据：被更新成「最近一次用的」，不是筛选键。
+    assert.equal(store.get(id).model, 'other:free', 'model is recorded, not filtered on');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// 同一个标签页内换模型卡片：前端 openChat 造新 chat、作废旧 sessionId，但**不关抽屉**，
+// 于是网关侧那条内存会话还活着。不释放的话第二次 POST /sessions{persistId} 命中
+// server.mjs 的 409「session already active」，前端只能转开新对话——历史照样不出现
+// （这正是用户原话「切换模型后会话历史应该不变」的实见路径，探针实测复现）。
+// release 是这条路的出口：语义只有「这个标签页不再占用它」，磁盘记录与历史原样留着。
+test('release frees the live session so a model switch can resume it', async (t) => {
+  const store = mkStore(t);
+  const { json, srv } = await withFauxServer(t, ['http://localhost:4321'], undefined, store);
+  const msg = [{ role: 'user', content: 'hi', timestamp: 1 }];
+  store.save({ id: 'live-one', adapter: 'pi', agent: 'pi', cwd: '/tmp', provider: 'zai', model: 'glm-4.7-flash', lastUsed: 1, messages: msg });
+
+  // 先在模型 A 下把它开成活跃会话（= 用户此时正在这张卡里聊天）
+  const a = await json('/sessions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ agent: 'pi', cwd: '/tmp', provider: 'zai', model: 'glm-4.7-flash', persistId: 'live-one' }),
+  });
+  assert.equal(a.status, 200);
+  assert.equal(a.body.resumed, true);
+
+  // 不释放就换模型：409，前端只能开新对话（历史不出现）
+  const blocked = await json('/sessions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ agent: 'pi', cwd: '/tmp', provider: 'openrouter', model: 'claude-sonnet-5-5', persistId: 'live-one' }),
+  });
+  assert.equal(blocked.status, 409, 'the live session still blocks a resume');
+
+  // release：只让出占用。记录和历史一个字不动。
+  const rel = await json('/sessions/live-one/release', { method: 'POST' });
+  assert.equal(rel.status, 204);
+  assert.ok(store.get('live-one'), 'release keeps the record on disk');
+  assert.deepEqual(store.get('live-one').messages, msg, 'release keeps the history');
+
+  // 现在换模型恢复得了，且历史跟着一起回来
+  const b = await json('/sessions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ agent: 'pi', cwd: '/tmp', provider: 'openrouter', model: 'claude-sonnet-5-5', persistId: 'live-one' }),
+  });
+  assert.equal(b.status, 200);
+  assert.equal(b.body.sessionId, 'live-one', 'still the same session');
+  assert.equal(b.body.resumed, true, 'it really resumed');
+  assert.equal(b.body.messages?.length, 1, 'the dialogue came back with it');
+  assert.equal(b.body.model, 'claude-sonnet-5-5', 'the new model is recorded');
+});
+
+// release 的边界：没在占用（从没建过 / 已逐出 / 重启后）→ 204 幂等。
+// 前端在关抽屉、换 agent 等每条作废路径上都会发它，不能因为「已经不活跃了」报错——
+// 那会让每条作废路径都多一个要忽略的失败。
+test('release is idempotent for a session that is not active', async (t) => {
+  const { json } = await withFauxServer(t, ['http://localhost:4321']);
+  const r = await json('/sessions/never-existed/release', { method: 'POST' });
+  assert.equal(r.status, 204);
+});
+
+// 非法 id 必须在门口就拦（它会被当磁盘文件名用），而不是走到 store 里抛 TypeError
+// 被当成 500。与 DELETE 同一把尺子。
+test('release rejects an unsafe id', async (t) => {
+  const { json } = await withFauxServer(t, ['http://localhost:4321']);
+  const r = await json('/sessions/..%2Fetc%2Fpasswd/release', { method: 'POST' });
+  assert.ok(r.status === 400 || r.status === 404, `unsafe id rejected, got ${r.status}`);
 });

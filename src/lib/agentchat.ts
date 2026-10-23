@@ -145,6 +145,47 @@ export async function abortSession(sessionId: string, baseUrl = AGENT_URL): Prom
   await fetch(`${baseUrl}/sessions/${sessionId}/abort`, { method: 'POST' }).catch(() => {});
 }
 
+/**
+ * 让出一个会话的占用（不删任何持久状态）。换模型卡片、换 agent、改 cwd/级别、
+ * 关抽屉——前端每条作废旧会话的路径都要走它：不释放的话网关侧那条内存会话还
+ * 活着，下一次带 persistId 的 POST /sessions 会命中 409「session already active」，
+ * 前端只能转开新对话，历史照样不出现。
+ * 网关对「本来就没在占用」也回 204，所以这里刻意不返回值、不抛错。
+ */
+export async function releaseSession(sessionId: string, baseUrl = AGENT_URL): Promise<void> {
+  await fetch(`${baseUrl}/sessions/${encodeURIComponent(sessionId)}/release`, { method: 'POST' }).catch(() => {});
+}
+
+// 「先释放、再恢复」的闸门。让出占用与「带 persistId 的 POST /sessions」是
+// **因果关系**：旧会话还占着内存时，恢复请求只会撞 409「session already
+// active」。两条 fetch 同时打出去时谁先到网关并不确定（POST 先到就是那条
+// 409），而前端看到的是「正在另一个标签页里使用」的假提示 + 历史不出现——
+// 正是「切换模型后会话历史应该不变」要消灭的失败。
+// 三条作废旧会话的路径（resetSession / openChat / 关抽屉）都是同步函数，
+// 没法 await，于是把 in-flight 的 promise 寄存在这里，由建会话前的一刻等它。
+// releaseSession 自己吞掉网络错，所以这些 promise 不会 reject。
+//
+// 收**集**而不是只存最后一个：连点 A→B→A 时第二个 release 会在第一个还没
+// 落地时盖掉它，被盖掉的那个请求照样发去了网关、却没人等它——下一次恢复又
+// 可能抢先，回到这条闸门本来要消灭的竞态。集合里的每一项都 awaited，代价
+// 只是多等几次已经并发发出的本地请求，不会串行化。
+let pendingReleases: Promise<void>[] = [];
+
+/** 登记一次让出占用（不等它）。之后 awaitPendingRelease() 会等到它们全部落地。 */
+export function releaseSessionQueued(sessionId: string, baseUrl = AGENT_URL): void {
+  pendingReleases.push(releaseSession(sessionId, baseUrl));
+}
+
+/** 等已登记的让出占用全部落地。幂等：没有待办的立即返回（绝不因此卡住建会话）。 */
+export async function awaitPendingRelease(): Promise<void> {
+  // 整体取走（而不是逐项 await 后留着）：等待期间新登记的 release 属于下一轮
+  // 建会话，该由它自己去等，不该让这一轮无限追下去。
+  const all = pendingReleases;
+  if (!all.length) return;
+  pendingReleases = [];
+  for (const p of all) await p;
+}
+
 /** 权限卡应答。404 = 请求已超时/已收敛/回合已取消（网关按不存在处理），一律 false 不抛错。 */
 export async function answerPermission(
   sessionId: string,
@@ -249,7 +290,7 @@ export interface SessionSummary {
 
 export interface SessionListResponse { sessions: SessionSummary[] }
 
-/** 列某配置下的历史。筛选四维与网关一致。 */
+/** 列某配置下的历史。筛选两维（agent/cwd）与网关一致。 */
 export async function listSessions(
   filter: { agent?: string; cwd?: string; provider?: string; model?: string },
   baseUrl = AGENT_URL,
@@ -312,4 +353,47 @@ export function localResumeCommand(s: SessionSummary): string | null {
     return `claude --resume ${s.ccSessionId}`;
   }
   return null; // acp 等：没有互通路径，UI 据此不显示复制按钮
+}
+
+/**
+ * 把一条历史消息的 content 拆成渲染用的块序列。
+ *
+ * 恢复渲染循环此前把非 text 块画成 `[${blk.type}]`，思维链于是显示成
+ * `[thinking]`。cc 的 block 是 Anthropic 标准形状（`{type:'text',text}` /
+ * `{type:'thinking',thinking}`），与 pi 存进 messages 的完全一致，故这里
+ * 只做分流、不做转换。
+ *
+ * 提成纯函数是因为 `free-models.astro` 的脚本内联在 .astro 里，vitest
+ * import 不到（node 环境也没有 DOM）——与 drawer.ts / prompt.ts 同一模式。
+ */
+export type HistoryBlock =
+  | { kind: 'thinking'; text: string }
+  | { kind: 'text'; text: string }
+  | { kind: 'image'; text: string }
+  | { kind: 'unknown'; text: string };
+
+export function historyBlocks(content: unknown): HistoryBlock[] {
+  // 字符串 content（少数模型/早期记录）：一条正文，不必假装有块结构。
+  if (typeof content === 'string') return [{ kind: 'text', text: content }];
+  if (!Array.isArray(content)) return [];
+  const out: HistoryBlock[] = [];
+  for (const raw of content) {
+    const blk = raw as { type?: unknown; text?: unknown; thinking?: unknown } | null;
+    const type = blk && typeof blk === 'object' ? blk.type : undefined;
+    if (type === 'thinking') out.push({ kind: 'thinking', text: String(blk!.thinking ?? '') });
+    else if (type === 'text') out.push({ kind: 'text', text: String(blk!.text ?? '') });
+    else if (type === 'image') out.push({ kind: 'image', text: '[图片]' });
+    // 其他未知块：只报类型名，不编内容。缺 type 的（null / {}）什么都说不出，跳过。
+    else if (typeof type === 'string') out.push({ kind: 'unknown', text: `[${type}]` });
+  }
+  return out;
+}
+
+/**
+ * 历史列表行的模型小标。记录里本来就有 model 字段（曾是筛选键，现降级为
+ * 展示元数据）；拿不到就返回空串，由调用方不渲染这个 span——不猜、不显示「未知」。
+ */
+export function sessionModelLabel(s: { model?: unknown }): string {
+  const m = (s as { model?: unknown }).model;
+  return typeof m === 'string' ? m : '';
 }

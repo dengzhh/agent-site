@@ -23,7 +23,7 @@ const DEFAULT_ORIGINS = ['https://dengzhh.github.io'];
 // transcripts.mjs 的 ID_SOURCE），否则一处放宽另一处仍 404。预先编译，
 // 别在每个请求里 new RegExp。
 const SESSION_ROUTE = Object.fromEntries(
-  ['', '/messages', '/permission', '/abort'].map((tail) => [tail, new RegExp(`^/sessions/(${ID_SOURCE})${tail}$`)]),
+  ['', '/messages', '/permission', '/abort', '/release'].map((tail) => [tail, new RegExp(`^/sessions/(${ID_SOURCE})${tail}$`)]),
 );
 
 // 上游字段可能缺失或非数值。统一成 number|null：UI 拿到 null 才知道"不知道"，
@@ -187,17 +187,25 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
       }
 
       // 历史列表：某配置下的会话，newest first，只带元数据（见 TranscriptStore.list）。
-      // 筛选四维与 pi 的 cacheKey 一致：换模型不该串到别的模型的历史里。
+      // 只按 agent + cwd 筛。曾经是四维（provider/model 也在内），注释写「与 pi 的
+      // cacheKey 一致」——那把两件事混为一谈了：cacheKey（pi.mjs）是**内存 Agent
+      // 缓存**的键，换模型必须换 Agent（否则上一模型的上下文与凭据被带过去）；
+      // 而记录里的 model/provider 只是「这条会话最后一次用什么跑的」元数据。
+      // 两个可恢复适配器都跨模型续命：pi 把 rec.messages 喂回 initialState.messages、
+      // Agent 用新模型重建；cc 的 --resume 由本次请求定模型。按模型分格是我们自己
+      // 加的约束，后果是换模型进 chat 历史整排消失（用户 2026-10-23 报的）。
+      // provider/model 仍是记录字段（列表行拿它标模型），只是不再是筛选键。
+      // list() 的四维能力保留：是这里不再传，不是 store 不再支持。
       if (req.method === 'GET' && url.pathname === '/sessions') {
         const filter = {};
-        for (const k of ['agent', 'cwd', 'provider', 'model']) {
+        for (const k of ['agent', 'cwd']) {
           const v = url.searchParams.get(k);
           if (v != null && v !== '') filter[k] = v;
         }
         // piSessionDir 不是记录字段（记录里只有镜像文件的 id），是网关配置——
         // 由这里补进去：UI 的「本机续接命令」要靠它知道去哪个目录找镜像文件。
         // 记录里没有它，所以不加的话界面拿到的是空目录，给出的命令必然找不到会话。
-        // hideEmpty：建会话即落盘（四维筛选要立即可查）会留下没发过消息的空壳，
+        // hideEmpty：建会话即落盘（筛选键要立即可查）会留下没发过消息的空壳，
         // 用户看到的就是一排「(无标题)」。只挡列表，不影响 DELETE/sweep。
         const dir = piSessionDir();
         const list = store.list(filter, { hideEmpty: true }).map((r) => (
@@ -273,9 +281,10 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
         record.dispose = () => { denyPendingPerms(record); adapter.disposeSession?.(id); };
         sessions.set(record);
         // 配置字段由网关写：适配器只写自己那几个（pi 写 messages，cc 写
-        // ccSessionId/configDir），筛选四维（agent/cwd/provider/model）与
-        // title 只有网关知道——没有这次写入，GET /sessions 的筛选永远命中
-        // 0 条，前端「会话」行会一直空着。逐字段合并，不会盖掉适配器写的。
+        // ccSessionId/configDir），筛选键（agent/cwd 两维——provider/model
+        // 已从筛选降级为展示元数据，见 GET /sessions 上方的注释，但仍由这里
+        // 写入）与 title 只有网关知道——没有这次写入，GET /sessions 的筛选
+        // 永远命中 0 条，前端「会话」行会一直空着。逐字段合并，不会盖掉适配器写的。
         //
         // ⚠️ 缺省字段传 undefined（而不是 null）：save() 逐字段合并时
         // undefined =「没给」，保留盘上的旧值；null 是「显式值」，会把
@@ -334,13 +343,16 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
       if (req.method === 'POST' && url.pathname === '/sessions/clear') {
         const body = await readJson(req);
         const filter = {};
-        for (const k of ['agent', 'cwd', 'provider', 'model']) {
+        for (const k of ['agent', 'cwd']) {
           if (typeof body?.[k] === 'string' && body[k]) filter[k] = body[k];
         }
         // 一个筛选条件都没认出来 = 请求体写错了（字段名拼错/类型不对）。
         // 转发空筛选会让 store.clear() 抛 TypeError（500），而把非法筛选悄悄
         // 丢掉再清全部更糟——按「请求有问题」明确拒掉。
-        if (!Object.keys(filter).length) return json(400, { error: 'at least one of agent/cwd/provider/model is required' });
+        // 与 GET 同一边界：只按 agent/cwd 清。请求体里仍可能带 provider/model
+        // （前端尚未改），被忽略而不是拿它再筛一遍——否则「清空此目录的历史」
+        // 这个按钮实际只清一个模型下的，标签就成了谎话。
+        if (!Object.keys(filter).length) return json(400, { error: 'at least one of agent/cwd is required' });
         // 与 DELETE 的 409 同一原则：活跃会话的记录不删（内存里还攥着运行时，
         // 下一轮会把整份历史重新写回去）。跳过它们，返回的 cleared 只数真删的。
         const cleared = store.clear(filter, { skipActive: (id) => sessions.peek(id) });
@@ -487,6 +499,21 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
         session.pendingPerms.delete(body.reqId);
         cb(body.decision === 'allow');
         return json(200, { ok: true });
+      }
+
+      // 让出一个会话的占用（不删任何持久状态）。语义只有「这个标签页不再用它了」：
+      // 换模型卡片、换 agent、改 cwd/级别、关抽屉——前端每条作废路径都走这里。
+      // 没有它，同一标签页内换模型卡片后旧会话仍占着内存，下一次带 persistId 的
+      // POST /sessions 命中上面那条 409，前端只能转开新对话，历史照样不出现
+      // （用户原话「切换模型后会话历史应该不变」的实见路径）。
+      // ⚠️ 与 DELETE 刻意分开：DELETE 删的是「这条历史」（记录 + cc config dir），
+      // 这里一个字都不删。混用一个路由等于让「换个模型看看」变成「删掉历史」。
+      const releaseMatch = req.method === 'POST' && url.pathname.match(SESSION_ROUTE['/release']);
+      if (releaseMatch) {
+        // 幂等 204：没在占用（从没建过 / 已逐出 / 重启后）也是成功——调用方不该
+        // 为「已经不活跃了」处理一条失败。
+        sessions.release(releaseMatch[1]);
+        return res.writeHead(204, cors).end();
       }
 
       const abortMatch = req.method === 'POST' && url.pathname.match(SESSION_ROUTE['/abort']);

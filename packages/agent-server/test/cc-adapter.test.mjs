@@ -595,3 +595,162 @@ test('cc adapter leaves store-owned config dirs intact when the host process exi
     rmSync(storeDir, { recursive: true, force: true });
   }
 });
+
+// ── restore 把 CLI 的对话读回来（2026-10-23）───────────────────────────────
+// cc 的历史在 CLI 自己的 projects/<slug>/<id>.jsonl 里，我们的记录只有指针。
+// restore() 读它，经 POST /sessions 已有的 material.messages 契约交出去，
+// 网页于是能画出思维链 + 正文。判据是行首 type（user/assistant）——
+// 实测噪声行（api-request-blob 之类）也带 message.role，按 role 筛会把
+// 8474 字符的 system prompt 当用户消息渲染出来。
+
+// 造一个假 configDir + 一份最小 jsonl。行序即真实对话序。
+const plantTranscript = (dir, sessionId, lines) => {
+  mkdirSync(join(dir, 'projects', 'fake-slug'), { recursive: true });
+  writeFileSync(join(dir, 'projects', 'fake-slug', `${sessionId}.jsonl`), lines.join('\n') + '\n');
+};
+
+const DIALOGUE_LINES = [
+  JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: '写一个贪吃蛇' }] } }),
+  JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [
+    { type: 'thinking', thinking: '先想清楚游戏循环' },
+    { type: 'text', text: '好的，我来写。' },
+  ] } }),
+];
+
+test('cc restore reads the dialogue out of the CLI jsonl', (t) => {
+  const store = mkStore(t);
+  const cc = createCcAdapter({ cliPath: FIXTURE, transcripts: store });
+  const dir = mkdtempSync(join(tmpdir(), 'atbx-cc-tx-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  plantTranscript(dir, 'sess-x', [
+    ...DIALOGUE_LINES,
+    // 噪声：attachment 没有 message；api-request-blob 带 message.role —— 按 role 筛会中招
+    JSON.stringify({ type: 'attachment', attachment: { type: 'x' } }),
+    JSON.stringify({ type: 'api-request-blob', message: { role: 'user', content: 'x'.repeat(8474) } }),
+    JSON.stringify({ type: 'queue-operation', operation: 'add' }),
+  ]);
+  store.save({ id: 'sess-x', adapter: 'cc', ccSessionId: 'sess-x', configDir: dir });
+
+  const restored = cc.restore('sess-x');
+  assert.deepEqual(restored.messages, [
+    { role: 'user', content: [{ type: 'text', text: '写一个贪吃蛇' }] },
+    { role: 'assistant', content: [
+      { type: 'thinking', thinking: '先想清楚游戏循环' },
+      { type: 'text', text: '好的，我来写。' },
+    ] },
+  ], 'only the dialogue lines, blocks passed through verbatim');
+  // 指针照旧给：下一轮 --resume 仍要靠它们。
+  assert.equal(restored.ccSessionId, 'sess-x');
+  assert.equal(restored.configDir, dir);
+});
+
+// 按 role 筛的回归防线：噪声行同样带 role。
+test('cc restore ignores noise lines that also carry a role', (t) => {
+  const store = mkStore(t);
+  const cc = createCcAdapter({ cliPath: FIXTURE, transcripts: store });
+  const dir = mkdtempSync(join(tmpdir(), 'atbx-cc-tx-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  plantTranscript(dir, 'sess-y', [
+    JSON.stringify({ type: 'api-request-blob', message: { role: 'user', content: 'system prompt…' } }),
+    JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } }),
+  ]);
+  store.save({ id: 'sess-y', adapter: 'cc', ccSessionId: 'sess-y', configDir: dir });
+  assert.deepEqual(cc.restore('sess-y').messages,
+    [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+    'type decides, not message.role');
+});
+
+// 绝不返回空数组：那会让前端画出「已恢复历史对话，0 条消息」的假横幅。
+// 宁可退回指针-only（前端照现在的提示走），不假装有历史。
+test('cc restore falls back to pointers alone when the jsonl is gone', (t) => {
+  const store = mkStore(t);
+  const cc = createCcAdapter({ cliPath: FIXTURE, transcripts: store });
+  const dir = mkdtempSync(join(tmpdir(), 'atbx-cc-tx-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  // 目录在、但里面没有 jsonl（被手删 / 被清）
+  store.save({ id: 'sess-z', adapter: 'cc', ccSessionId: 'gone', configDir: dir });
+  assert.deepEqual(cc.restore('sess-z'), null, 'no transcript file at all: not restorable');
+  // 有文件、但一行对话都没有
+  plantTranscript(dir, 'sess-z2', [JSON.stringify({ type: 'attachment' })]);
+  store.save({ id: 'sess-z2', adapter: 'cc', ccSessionId: 'sess-z2', configDir: dir });
+  const r = cc.restore('sess-z2');
+  assert.equal(r.messages, undefined, 'no dialogue lines: omit messages, do not return []');
+  assert.equal(r.ccSessionId, 'sess-z2', '--resume still gets its pointers');
+});
+
+// ── 钉住 readCcDialogue 承诺过的四种边界行为（review 补缺，2026-10-23）──────
+// 代码注释声称了这些行为却没有测试看着；守卫被删掉时对应用例要独立变红。
+
+// 1. 截断的末行：「单行坏了只丢那一行」——一份 213 KB 的文件不该因为末尾
+//    半行而整个读不出来。
+test('cc restore drops a truncated trailing line but keeps the dialogue', (t) => {
+  const store = mkStore(t);
+  const cc = createCcAdapter({ cliPath: FIXTURE, transcripts: store });
+  const dir = mkdtempSync(join(tmpdir(), 'atbx-cc-tx-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const truncated = JSON.stringify(DIALOGUE_LINES[1] && {
+    type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: '被截断的行' }] },
+  }).slice(0, 40);
+  plantTranscript(dir, 'sess-trunc', [
+    DIALOGUE_LINES[0],
+    truncated,
+    DIALOGUE_LINES[1],
+  ]);
+  store.save({ id: 'sess-trunc', adapter: 'cc', ccSessionId: 'sess-trunc', configDir: dir });
+  const r = cc.restore('sess-trunc');
+  assert.deepEqual(r.messages, [
+    { role: 'user', content: [{ type: 'text', text: '写一个贪吃蛇' }] },
+    { role: 'assistant', content: [
+      { type: 'thinking', thinking: '先想清楚游戏循环' },
+      { type: 'text', text: '好的，我来写。' },
+    ] },
+  ], 'bad line dropped, both good lines kept');
+});
+
+// 2. 字符串 content：代码明确接受 typeof content === 'string'，原样透传给
+//    前端的字符串渲染路径——钉住它，防止悄悄退化成只支持块数组。
+test('cc restore passes string content through verbatim', (t) => {
+  const store = mkStore(t);
+  const cc = createCcAdapter({ cliPath: FIXTURE, transcripts: store });
+  const dir = mkdtempSync(join(tmpdir(), 'atbx-cc-tx-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  plantTranscript(dir, 'sess-str', [
+    JSON.stringify({ type: 'user', message: { role: 'user', content: 'plain string' } }),
+  ]);
+  store.save({ id: 'sess-str', adapter: 'cc', ccSessionId: 'sess-str', configDir: dir });
+  assert.deepEqual(cc.restore('sess-str').messages,
+    [{ role: 'user', content: 'plain string' }],
+    'string content goes through untouched');
+});
+
+// 3. message 不是对象 / 缺失：守卫抛异常会让 POST /sessions 的恢复路径 500。
+//    这里最要紧的是「不抛」。
+test('cc restore survives lines whose message is not an object or is missing', (t) => {
+  const store = mkStore(t);
+  const cc = createCcAdapter({ cliPath: FIXTURE, transcripts: store });
+  const dir = mkdtempSync(join(tmpdir(), 'atbx-cc-tx-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  plantTranscript(dir, 'sess-badmsg', [
+    JSON.stringify({ type: 'user', message: 'oops' }),
+    JSON.stringify({ type: 'assistant' }),
+    DIALOGUE_LINES[0],
+  ]);
+  store.save({ id: 'sess-badmsg', adapter: 'cc', ccSessionId: 'sess-badmsg', configDir: dir });
+  const r = cc.restore('sess-badmsg'); // 不抛即是过半
+  assert.deepEqual(r.messages,
+    [{ role: 'user', content: [{ type: 'text', text: '写一个贪吃蛇' }] }],
+    'bad-message lines skipped, good line kept');
+});
+
+// 4. 空文件：文件在、零行——只回指针（messages 为 undefined），绝不回 []。
+test('cc restore falls back to pointers for an empty transcript file', (t) => {
+  const store = mkStore(t);
+  const cc = createCcAdapter({ cliPath: FIXTURE, transcripts: store });
+  const dir = mkdtempSync(join(tmpdir(), 'atbx-cc-tx-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  plantTranscript(dir, 'sess-empty', []);
+  store.save({ id: 'sess-empty', adapter: 'cc', ccSessionId: 'sess-empty', configDir: dir });
+  const r = cc.restore('sess-empty');
+  assert.equal(r.messages, undefined, 'empty file: no messages key');
+  assert.equal(r.ccSessionId, 'sess-empty');
+});

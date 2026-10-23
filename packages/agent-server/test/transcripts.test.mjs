@@ -86,7 +86,7 @@ test('list omits the messages payload (listing must stay cheap)', (t) => {
 });
 
 // ── hideEmpty：把「建了会话但没说过话」的空壳挡在历史列表之外 ──────────────
-// 背景：网关在建会话时就落盘（筛选四维必须及时写，否则 GET /sessions 命中 0 条，
+// 背景：网关在建会话时就落盘（筛选键必须及时写，否则 GET /sessions 命中 0 条，
 // 前端自动恢复会废掉），于是每开一次抽屉就留一条无 messages 的记录，用户看到
 // 一排「(无标题)」。落盘时机不能改（Task 6 的地基），故在读取侧过滤。
 //
@@ -99,7 +99,7 @@ test('list omits the messages payload (listing must stay cheap)', (t) => {
 test('list({hideEmpty:true}) drops records with no messages', (t) => {
   const { store } = tmpStore(t);
   store.save(base({ id: 'real', lastUsed: 200 }));
-  // 空会话：建会话时 server.mjs 只写配置四维，没有 messages
+  // 空会话：建会话时 server.mjs 只写配置字段，没有 messages
   store.save({ id: 'empty', adapter: 'pi', agent: 'pi', provider: 'zai',
                model: 'glm-4.7-flash', cwd: '/tmp/x', toolTier: 'full' });
   // cc 的桩记录：configDir 已建、ccSessionId 显式为 null，也还没有 messages
@@ -202,8 +202,8 @@ test('hideEmpty hides the stub but remove() still reclaims its configDir', (t) =
   assert.ok(!existsSync(cfg), 'remove() reclaims the cc config dir');
 });
 
-// hideEmpty 与筛选四维同时用时，两个条件都要成立才算命中。
-test('hideEmpty composes with the four-dimension filter', (t) => {
+// hideEmpty 与筛选条件同时用时，两个条件都要成立才算命中。
+test('hideEmpty composes with the multi-dimension filter', (t) => {
   const { store } = tmpStore(t);
   store.save(base({ id: 'match' }));
   store.save(base({ id: 'other-cwd', cwd: '/tmp/elsewhere' }));
@@ -621,4 +621,36 @@ test('an unsafe id is reported truncated', (t) => {
     assert.ok(err instanceof TypeError);
     assert.ok(err.message.length < 100, `message must be short, got: ${err.message}`);
   }
+});
+
+// ── 筛选降维：网关不再按 model/provider 筛，但 store 的能力保留 ────────────
+// 背景：2026-10-23 起 GET /sessions 只按 {agent, cwd} 筛（见 server.mjs 的
+// filter 构造处）。**这不是把能力从 store 里删掉**——list()/clear() 仍支持
+// 四维，只是网关不再传那两个参数。这两条用例就是凭证：谁要是顺手把 model
+// 从 list() 的判断里删了，这里会红。
+test('list({agent,cwd}) spans models and providers — the gateway no longer splits by them', (t) => {
+  const { store } = tmpStore(t);
+  const msg = [{ role: 'user', content: 'hi', timestamp: 1 }];
+  store.save(base({ id: 'glm', provider: 'zai', model: 'glm-4.7-flash' }));
+  store.save(base({ id: 'claude', provider: 'openrouter', model: 'claude-sonnet-5-5' }));
+  store.save(base({ id: 'elsewhere', cwd: '/tmp/other' }));
+  // 同 provider 不同 model：单独把 model 从筛选里删掉时，这条会冒出来
+  // 把四维断言打红（只有 provider 维度兜不住它）。
+  store.save(base({ id: 'glm-other-model', provider: 'zai', model: 'glm-4.6' }));
+  const hits = store.list({ agent: 'pi', cwd: '/tmp/x' });
+  assert.deepEqual(hits.map((h) => h.id).sort(), ['claude', 'glm', 'glm-other-model'],
+    'a model switch must not hide the history — cwd is the boundary, not the model');
+  assert.ok(!hits.some((h) => h.id === 'elsewhere'), 'cwd is still a real boundary');
+  // 能力保留：同一个 store 上按四维筛仍只返回匹配的那条。
+  assert.deepEqual(store.list({ agent: 'pi', cwd: '/tmp/x', provider: 'zai', model: 'glm-4.7-flash' })
+    .map((h) => h.id), ['glm'], 'the four-dimension filter still works for callers that want it');
+});
+
+test('clear({agent,cwd}) spans models — capability unchanged', (t) => {
+  const { store } = tmpStore(t);
+  store.save(base({ id: 'glm', provider: 'zai', model: 'glm-4.7-flash' }));
+  store.save(base({ id: 'claude', provider: 'openrouter', model: 'claude-sonnet-5-5' }));
+  store.save(base({ id: 'keep', cwd: '/tmp/other' }));
+  assert.equal(store.clear({ agent: 'pi', cwd: '/tmp/x' }), 2, 'both models cleared');
+  assert.ok(store.get('keep'), 'a different cwd is untouched');
 });
