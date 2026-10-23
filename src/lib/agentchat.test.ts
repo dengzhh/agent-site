@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseSSEChunk, keyFor, probeHealth, createSession, fetchOpenRouterQuota, formatQuota, answerPermission, historyBlocks, sessionModelLabel, type OpenRouterQuota } from './agentchat';
+import { parseSSEChunk, keyFor, probeHealth, createSession, releaseSession, fetchOpenRouterQuota, formatQuota, answerPermission, historyBlocks, sessionModelLabel, type OpenRouterQuota } from './agentchat';
 
 
 describe('parseSSEChunk', () => {
@@ -251,5 +251,34 @@ describe('sessionModelLabel', () => {
   it('says nothing rather than guessing when the record has no model', () => {
     expect(sessionModelLabel({ model: '' })).toBe('');
     expect(sessionModelLabel({})).toBe('');
+  });
+});
+
+describe('releaseSession', () => {
+  // 这条盯着「换模型后历史不变」的最后一块：网关侧占着旧会话不放，前端就只能
+  // 撞 409 转开新对话。请求必须真的发出去（方法 + 路径 + id 编码），否则页面
+  // 「看起来改了」而时序毫无变化。
+  it('posts to /sessions/:id/release', async () => {
+    const original = globalThis.fetch;
+    let url = ''; let method = '';
+    globalThis.fetch = (async (u: RequestInfo, init?: RequestInit) => {
+      url = String(u); method = init?.method ?? 'GET';
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+    try {
+      await releaseSession('abc 123', 'http://gw');
+      expect(method).toBe('POST');
+      expect(url).toBe('http://gw/sessions/abc%20123/release');
+    } finally { globalThis.fetch = original; }
+  });
+
+  // 网关对「本来就没在占用」也回 204；前端在每条作废路径上都发它，失败若往上抛
+  // 会让 resetSession 的调用链炸掉（它不 catch），所以必须静默。
+  it('swallows a failed release', async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = (async () => { throw new Error('gateway down'); }) as typeof fetch;
+    try {
+      await expect(releaseSession('s-1', 'http://gw')).resolves.toBeUndefined();
+    } finally { globalThis.fetch = original; }
   });
 });

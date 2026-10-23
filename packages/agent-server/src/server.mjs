@@ -23,7 +23,7 @@ const DEFAULT_ORIGINS = ['https://dengzhh.github.io'];
 // transcripts.mjs 的 ID_SOURCE），否则一处放宽另一处仍 404。预先编译，
 // 别在每个请求里 new RegExp。
 const SESSION_ROUTE = Object.fromEntries(
-  ['', '/messages', '/permission', '/abort'].map((tail) => [tail, new RegExp(`^/sessions/(${ID_SOURCE})${tail}$`)]),
+  ['', '/messages', '/permission', '/abort', '/release'].map((tail) => [tail, new RegExp(`^/sessions/(${ID_SOURCE})${tail}$`)]),
 );
 
 // 上游字段可能缺失或非数值。统一成 number|null：UI 拿到 null 才知道"不知道"，
@@ -499,6 +499,21 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
         session.pendingPerms.delete(body.reqId);
         cb(body.decision === 'allow');
         return json(200, { ok: true });
+      }
+
+      // 让出一个会话的占用（不删任何持久状态）。语义只有「这个标签页不再用它了」：
+      // 换模型卡片、换 agent、改 cwd/级别、关抽屉——前端每条作废路径都走这里。
+      // 没有它，同一标签页内换模型卡片后旧会话仍占着内存，下一次带 persistId 的
+      // POST /sessions 命中上面那条 409，前端只能转开新对话，历史照样不出现
+      // （用户原话「切换模型后会话历史应该不变」的实见路径）。
+      // ⚠️ 与 DELETE 刻意分开：DELETE 删的是「这条历史」（记录 + cc config dir），
+      // 这里一个字都不删。混用一个路由等于让「换个模型看看」变成「删掉历史」。
+      const releaseMatch = req.method === 'POST' && url.pathname.match(SESSION_ROUTE['/release']);
+      if (releaseMatch) {
+        // 幂等 204：没在占用（从没建过 / 已逐出 / 重启后）也是成功——调用方不该
+        // 为「已经不活跃了」处理一条失败。
+        sessions.release(releaseMatch[1]);
+        return res.writeHead(204, cors).end();
       }
 
       const abortMatch = req.method === 'POST' && url.pathname.match(SESSION_ROUTE['/abort']);

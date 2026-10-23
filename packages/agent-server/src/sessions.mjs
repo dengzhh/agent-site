@@ -31,6 +31,18 @@ export class SessionStore {
     return s;
   }
   peek(id) { return this.map.get(id); }        // 不 touch（测试/内部用）
+  /**
+   * 主动让出一个会话的占用（标签页作废/换模型/关抽屉）。与逐出同一条路径
+   * （#drop：自清理 + 移出 Map），但不删除任何持久状态——记录、cc 的 config
+   * dir、pi 的 messages 全留在盘上，下一个 persistId 请求照样能恢复它。
+   * @returns {boolean} 是否真的让出了一个活跃会话（幂等：没在占用也返回 false，
+   *   不报错——调用方在每条作废路径上都会发，不该为「已经不活跃了」处理失败）
+   */
+  release(id) {
+    if (!this.map.has(id)) return false;
+    this.#drop(id);
+    return true;
+  }
   set(session) {
     this.#sweep();
     // 缺 lastUsed 会让 NaN 比较永不过期（永生会话）；0 则立即被清扫。由 store 兜底盖章。

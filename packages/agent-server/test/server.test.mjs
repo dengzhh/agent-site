@@ -1608,3 +1608,67 @@ test('switching models resumes the same cc session, with its dialogue', async (t
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// 同一个标签页内换模型卡片：前端 openChat 造新 chat、作废旧 sessionId，但**不关抽屉**，
+// 于是网关侧那条内存会话还活着。不释放的话第二次 POST /sessions{persistId} 命中
+// server.mjs 的 409「session already active」，前端只能转开新对话——历史照样不出现
+// （这正是用户原话「切换模型后会话历史应该不变」的实见路径，探针实测复现）。
+// release 是这条路的出口：语义只有「这个标签页不再占用它」，磁盘记录与历史原样留着。
+test('release frees the live session so a model switch can resume it', async (t) => {
+  const store = mkStore(t);
+  const { json, srv } = await withFauxServer(t, ['http://localhost:4321'], undefined, store);
+  const msg = [{ role: 'user', content: 'hi', timestamp: 1 }];
+  store.save({ id: 'live-one', adapter: 'pi', agent: 'pi', cwd: '/tmp', provider: 'zai', model: 'glm-4.7-flash', lastUsed: 1, messages: msg });
+
+  // 先在模型 A 下把它开成活跃会话（= 用户此时正在这张卡里聊天）
+  const a = await json('/sessions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ agent: 'pi', cwd: '/tmp', provider: 'zai', model: 'glm-4.7-flash', persistId: 'live-one' }),
+  });
+  assert.equal(a.status, 200);
+  assert.equal(a.body.resumed, true);
+
+  // 不释放就换模型：409，前端只能开新对话（历史不出现）
+  const blocked = await json('/sessions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ agent: 'pi', cwd: '/tmp', provider: 'openrouter', model: 'claude-sonnet-5-5', persistId: 'live-one' }),
+  });
+  assert.equal(blocked.status, 409, 'the live session still blocks a resume');
+
+  // release：只让出占用。记录和历史一个字不动。
+  const rel = await json('/sessions/live-one/release', { method: 'POST' });
+  assert.equal(rel.status, 204);
+  assert.ok(store.get('live-one'), 'release keeps the record on disk');
+  assert.deepEqual(store.get('live-one').messages, msg, 'release keeps the history');
+
+  // 现在换模型恢复得了，且历史跟着一起回来
+  const b = await json('/sessions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ agent: 'pi', cwd: '/tmp', provider: 'openrouter', model: 'claude-sonnet-5-5', persistId: 'live-one' }),
+  });
+  assert.equal(b.status, 200);
+  assert.equal(b.body.sessionId, 'live-one', 'still the same session');
+  assert.equal(b.body.resumed, true, 'it really resumed');
+  assert.equal(b.body.messages?.length, 1, 'the dialogue came back with it');
+  assert.equal(b.body.model, 'claude-sonnet-5-5', 'the new model is recorded');
+});
+
+// release 的边界：没在占用（从没建过 / 已逐出 / 重启后）→ 204 幂等。
+// 前端在关抽屉、换 agent 等每条作废路径上都会发它，不能因为「已经不活跃了」报错——
+// 那会让每条作废路径都多一个要忽略的失败。
+test('release is idempotent for a session that is not active', async (t) => {
+  const { json } = await withFauxServer(t, ['http://localhost:4321']);
+  const r = await json('/sessions/never-existed/release', { method: 'POST' });
+  assert.equal(r.status, 204);
+});
+
+// 非法 id 必须在门口就拦（它会被当磁盘文件名用），而不是走到 store 里抛 TypeError
+// 被当成 500。与 DELETE 同一把尺子。
+test('release rejects an unsafe id', async (t) => {
+  const { json } = await withFauxServer(t, ['http://localhost:4321']);
+  const r = await json('/sessions/..%2Fetc%2Fpasswd/release', { method: 'POST' });
+  assert.ok(r.status === 400 || r.status === 404, `unsafe id rejected, got ${r.status}`);
+});

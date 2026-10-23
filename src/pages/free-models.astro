@@ -313,7 +313,7 @@ const fmtCtx = (n: number) =>
 <script>
   import data from '../data/free-models.json';
   import { generateConfig, type ConfigTarget } from '../lib/freeconfig';
-  import { probeHealth, createSession, streamMessage, abortSession, fetchOpenRouterQuota, answerPermission, listSessions, deleteSession, clearSessions, localResumeCommand, historyBlocks, sessionModelLabel, type SessionSummary, keyStorage, type ChatEvent, formatQuota } from '../lib/agentchat';
+  import { probeHealth, createSession, streamMessage, abortSession, releaseSession, fetchOpenRouterQuota, answerPermission, listSessions, deleteSession, clearSessions, localResumeCommand, historyBlocks, sessionModelLabel, type SessionSummary, keyStorage, type ChatEvent, formatQuota } from '../lib/agentchat';
 
   import { openDrawer, closeDrawers, stopScroll } from '../lib/drawer';
 
@@ -676,6 +676,13 @@ const fmtCtx = (n: number) =>
     if (c.streaming && c.streamAbort) c.streamAbort.abort();
     c.streaming = false;
     resetStreamButtons();
+    // 让出网关侧的占用（只此一件事：不删历史）。少了它，下一次带 persistId 的
+    // POST /sessions 命中 409「session already active」——前端只能转开新对话，
+    // 历史不出现。这正是「切换模型后会话历史应该不变」的实见路径：换模型卡片
+    // 时 openChat 已把 sessionId 清成 null，但网关还攥着那条内存会话。
+    // ⚠️ 必须在清 c.sessionId 之前取它；fresh（删/清空）也照发——记录反正没了，
+    //    让出占用是唯一能让「删掉的那条不再被写回来」生效的前提。
+    const staleId = c.sessionId;
     c.sessionId = null;
     // 改了 agent/cwd/级别 = 用户要的已经不是那条历史了：解绑，别在
     // ensureSession 里拿新参数去恢复旧记录（会把记录的 cwd/tier 冲掉，
@@ -683,6 +690,7 @@ const fmtCtx = (n: number) =>
     // undefined（而非 null）：让下一次 openChat 仍走「自动选最近一条」。
     // fresh（删/清空了当前会话）：明确开全新对话，绝不自动恢复别的记录。
     c.persistId = fresh ? null : undefined;
+    if (staleId) void releaseSession(staleId);
     configGen++; // 在途的建会话/额度结果因此作废（见各 await 后的核对）
     usageEl.hidden = true;
     usageEl.textContent = '';
@@ -734,6 +742,8 @@ const fmtCtx = (n: number) =>
     } catch (e) {
       // 409：这条历史正被另一个标签页的会话占着（内存里活跃）。别把抽屉卡在
       // 「没有会话」——转开新会话并说明，历史本身不动。
+      // 本标签页自己的占用已在 openChat / resetSession / 关抽屉时释放（release），
+      // 所以走到这里基本只剩真的第二个标签页——提示说的是实话，不是兜底话术。
       if (target && (e as { status?: number }).status === 409) {
         if (stale()) return;
         chatMsg('hint', '这条会话正在另一个标签页里使用，已改为开始新对话。');
@@ -866,6 +876,10 @@ const fmtCtx = (n: number) =>
     // 的 Send 停在 disabled、Stop 指向死会话
     resetStreamButtons();
     configGen++; // 上一个模型在途的建会话/额度结果一并作废
+    // 让出上一个会话在网关侧的占用。换模型卡片走的是这里而不是 resetSession
+    // （那条路会顺带 tryGoChat 重建，此处要的是「先释放再建」），不释放的话
+    // ensureSession 的自动挑档会挑回同一条记录、POST 时撞 409 → 转开新对话。
+    if (chat?.sessionId) void releaseSession(chat.sessionId);
     chat = {
       provider: a.dataset.provider!, model: a.dataset.model!, base: a.dataset.base ?? '',
       anthropicApi: a.dataset.anthropic ?? '',
@@ -938,6 +952,9 @@ const fmtCtx = (n: number) =>
     chat?.streamAbort?.abort();
     resetStreamButtons(); // 旧流的 finally 因 gen++ 会跳过复位，重开前的按钮先归位
     configGen++; // 抽屉关了 = 会话作废：在途的建会话/额度结果别再落 UI
+    // 占用也一并让出：不释放的话重开抽屉时 ensureSession 会挑回这条记录，
+    // 而网关还认为它活跃 → 409 → 用户看到「正在另一个标签页里使用」的假提示。
+    if (chat?.sessionId) void releaseSession(chat.sessionId);
     $('chat-config-row').hidden = true;
     usageEl.hidden = true;
   });

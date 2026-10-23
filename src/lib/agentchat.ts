@@ -145,6 +145,17 @@ export async function abortSession(sessionId: string, baseUrl = AGENT_URL): Prom
   await fetch(`${baseUrl}/sessions/${sessionId}/abort`, { method: 'POST' }).catch(() => {});
 }
 
+/**
+ * 让出一个会话的占用（不删任何持久状态）。换模型卡片、换 agent、改 cwd/级别、
+ * 关抽屉——前端每条作废旧会话的路径都要走它：不释放的话网关侧那条内存会话还
+ * 活着，下一次带 persistId 的 POST /sessions 会命中 409「session already active」，
+ * 前端只能转开新对话，历史照样不出现。
+ * 网关对「本来就没在占用」也回 204，所以这里刻意不返回值、不抛错。
+ */
+export async function releaseSession(sessionId: string, baseUrl = AGENT_URL): Promise<void> {
+  await fetch(`${baseUrl}/sessions/${encodeURIComponent(sessionId)}/release`, { method: 'POST' }).catch(() => {});
+}
+
 /** 权限卡应答。404 = 请求已超时/已收敛/回合已取消（网关按不存在处理），一律 false 不抛错。 */
 export async function answerPermission(
   sessionId: string,
