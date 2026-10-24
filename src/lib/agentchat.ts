@@ -326,35 +326,6 @@ export async function clearSessions(
   } catch { return 0; }
 }
 
-// 单引号包裹 + 把内部的 ' 转义成 '\''：POSIX sh 通用。
-function shellQuote(s: string): string {
-  return `'${s.replace(/'/g, "'\\''")}'`;
-}
-
-/**
- * 本机续接命令：把「统一管理」落到用户手里的那一行。
- * pi 需要 --session-dir（共享目录扁平存放，CLI 默认按 cwd 分子目录）；
- * cc 用 --resume，跨目录时 CLI 自己会问要不要 fork。
- */
-export function localResumeCommand(s: SessionSummary): string | null {
-  if (s.agent === 'pi' && s.piSessionId && s.piSessionDir) {
-    // 目录必须是镜像实际所在的 <piSessionDir>：指向 ~/.pi/agent/sessions 这种
-    // 「默认目录的父目录」时，listSessionsFromDir 只扫描这一层，而 CLI 自己的
-    // 会话在 <父>/--<cwdSlug>--/ 子目录里，只会得到 "No session found matching"。
-    // 命令里按 shell 规则加引号（路径可能含空格）。
-    const dir = shellQuote(s.piSessionDir);
-    const id = shellQuote(s.piSessionId);
-    // 用 --fork 而不是 --session：用户几乎总在**别的目录**里粘贴这条命令，
-    // 跨 cwd 时 --session 会停在 "Fork this session into current directory?
-    // [y/N]" 等输入（实测 0.84.3，非交互下直接静默退出）；--fork 直接续上。
-    return `pi --session-dir ${dir} --fork ${id}`;
-  }
-  if ((s.agent === 'cc' || s.adapter === 'cc') && s.ccSessionId) {
-    return `claude --resume ${s.ccSessionId}`;
-  }
-  return null; // acp 等：没有互通路径，UI 据此不显示复制按钮
-}
-
 /**
  * 把一条历史消息的 content 拆成渲染用的块序列。
  *

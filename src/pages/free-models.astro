@@ -236,9 +236,9 @@ const fmtCtx = (n: number) =>
   /* ---------- 会话列表：整块 :global ----------
      这些节点全部是 renderSessionList 里 createElement 出来的，**带不上** Astro 的
      scoped 属性（`.chat-session-item[data-astro-cid-x]` 永不命中）。写成普通 scoped
-     选择器的后果是整套样式静默失效：历史行没有边框/内边距/圆角，「复制本机命令」
-     更是被 global.css 的裸 `button` 规则（背景 var(--cobalt)）整个盖掉，变成每行
-     一个蓝色实心大按钮。与下方 .chat-msg 同一处教训，那里早已 :global 化。
+     选择器的后果是整套样式静默失效：历史行没有边框/内边距/圆角，里面的裸 `button`
+     更是会被 global.css 的规则（背景 var(--cobalt)）整个盖掉，变成蓝色实心大按钮。
+     与下方 .chat-msg 同一处教训，那里早已 :global 化。
      ⚠️ 这里改的是**运行时节点**的样式，dev/prod 都要在浏览器里复核一遍再信。 */
   :global(.chat-session-item) {
     display: flex; align-items: center; gap: .4rem;
@@ -250,16 +250,6 @@ const fmtCtx = (n: number) =>
   :global(.chat-session-item-main) { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   :global(.chat-session-item-model) { flex: 0 0 auto; color: var(--ink-soft); font-size: .72rem; font-family: var(--font-mono); }
   :global(.chat-session-time) { flex: 0 0 auto; color: var(--ink-soft); font-size: .75rem; }
-  /* 复制本机命令：一行小字，不是按钮。button 元素只是为了让键盘/语义正确，
-     视觉上必须压过 global.css 的裸 button 规则——裸 `button` 与本规则同权重但
-     加载在后，不写 !important 就会被盖回蓝色实心。 */
-  :global(.chat-session-resume) {
-    flex: 0 0 auto; background: none !important; border: 0 !important; padding: 0 .2rem !important;
-    color: var(--cobalt) !important; font-size: .76rem !important; font-weight: 500 !important;
-    cursor: pointer; text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--cobalt) 35%, transparent);
-    text-underline-offset: 2px; border-radius: 4px;
-  }
-  :global(.chat-session-resume:hover) { text-decoration-color: var(--cobalt); }
   :global(.chat-session-del) { flex: 0 0 auto; background: none !important; border: 0 !important; padding: 0 .2rem !important; color: var(--ink-soft); cursor: pointer; font-size: .9rem; }
   :global(.chat-session-del:hover) { color: #ff8f8f; }
   .chat-session-foot { display: flex; justify-content: space-between; gap: .5rem; }
@@ -330,7 +320,7 @@ const fmtCtx = (n: number) =>
 <script>
   import data from '../data/free-models.json';
   import { generateConfig, type ConfigTarget } from '../lib/freeconfig';
-  import { probeHealth, createSession, streamMessage, abortSession, releaseSessionQueued, awaitPendingRelease, fetchOpenRouterQuota, answerPermission, listSessions, deleteSession, clearSessions, localResumeCommand, historyBlocks, sessionModelLabel, carriedSessionId, type SessionSummary, keyStorage, type ChatEvent, formatQuota } from '../lib/agentchat';
+  import { probeHealth, createSession, streamMessage, abortSession, releaseSessionQueued, awaitPendingRelease, fetchOpenRouterQuota, answerPermission, listSessions, deleteSession, clearSessions, historyBlocks, sessionModelLabel, carriedSessionId, type SessionSummary, keyStorage, type ChatEvent, formatQuota } from '../lib/agentchat';
 
   import { openDrawer, closeDrawers, stopScroll } from '../lib/drawer';
 
@@ -658,22 +648,6 @@ const fmtCtx = (n: number) =>
         renderSessionList();
       });
       item.append(main, ...(tag ? [tag] : []), time, del);
-      // 没 key 时本机命令先不给：下面会切到填 key 面板，复制出去也跑不起来，
-      // 还让人看不到要填的东西。
-      const cmd = keyStorage.get(chat?.provider ?? '') ? localResumeCommand(s) : null;
-      if (cmd) {
-        const resume = document.createElement('button');
-        resume.type = 'button';
-        resume.className = 'chat-session-resume';
-        resume.textContent = '复制本机命令';
-        resume.addEventListener('click', async (e) => {
-          e.stopPropagation();
-          try { await navigator.clipboard.writeText(cmd); resume.textContent = '已复制'; }
-          catch { resume.textContent = '复制失败'; }
-          setTimeout(() => { resume.textContent = '复制本机命令'; }, 1500);
-        });
-        item.append(resume);
-      }
       item.addEventListener('click', () => {
         if (!canRestore(s)) { chatMsg('hint', '这个 agent 无法恢复上下文，将开始新对话。'); return; }
         openChat(currentPickEl!, { persistId: s.id });
