@@ -233,18 +233,35 @@ const fmtCtx = (n: number) =>
   .chat-session-head { display: flex; justify-content: space-between; align-items: center; gap: .5rem; }
   .chat-session-head label { margin: 0; }
   .chat-session-list { display: flex; flex-direction: column; gap: .3rem; margin: .5rem 0; max-height: 11rem; overflow-y: auto; }
-  .chat-session-item {
+  /* ---------- 会话列表：整块 :global ----------
+     这些节点全部是 renderSessionList 里 createElement 出来的，**带不上** Astro 的
+     scoped 属性（`.chat-session-item[data-astro-cid-x]` 永不命中）。写成普通 scoped
+     选择器的后果是整套样式静默失效：历史行没有边框/内边距/圆角，「复制本机命令」
+     更是被 global.css 的裸 `button` 规则（背景 var(--cobalt)）整个盖掉，变成每行
+     一个蓝色实心大按钮。与下方 .chat-msg 同一处教训，那里早已 :global 化。
+     ⚠️ 这里改的是**运行时节点**的样式，dev/prod 都要在浏览器里复核一遍再信。 */
+  :global(.chat-session-item) {
     display: flex; align-items: center; gap: .4rem;
     padding: .35rem .5rem; border: 1px solid var(--line); border-radius: 8px;
     background: var(--surface); cursor: pointer; font-size: .85rem; text-align: left;
   }
-  .chat-session-item:hover { border-color: var(--cobalt); }
-  .chat-session-item.is-active { border-color: var(--cobalt); background: var(--cobalt-wash); }
-  .chat-session-item-main { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .chat-session-item-model { flex: 0 0 auto; color: var(--ink-soft); font-size: .72rem; font-family: var(--font-mono); }
-  .chat-session-time { flex: 0 0 auto; color: var(--ink-soft); font-size: .75rem; }
-  .chat-session-del { flex: 0 0 auto; background: transparent; border: 0; color: var(--ink-soft); cursor: pointer; padding: 0 .2rem; font-size: .9rem; }
-  .chat-session-resume { background: transparent; border: 0; color: var(--cobalt); cursor: pointer; padding: 0 .2rem; font-size: .78rem; }
+  :global(.chat-session-item:hover) { border-color: var(--cobalt); }
+  :global(.chat-session-item.is-active) { border-color: var(--cobalt); background: var(--cobalt-wash); }
+  :global(.chat-session-item-main) { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  :global(.chat-session-item-model) { flex: 0 0 auto; color: var(--ink-soft); font-size: .72rem; font-family: var(--font-mono); }
+  :global(.chat-session-time) { flex: 0 0 auto; color: var(--ink-soft); font-size: .75rem; }
+  /* 复制本机命令：一行小字，不是按钮。button 元素只是为了让键盘/语义正确，
+     视觉上必须压过 global.css 的裸 button 规则——裸 `button` 与本规则同权重但
+     加载在后，不写 !important 就会被盖回蓝色实心。 */
+  :global(.chat-session-resume) {
+    flex: 0 0 auto; background: none !important; border: 0 !important; padding: 0 .2rem !important;
+    color: var(--cobalt) !important; font-size: .76rem !important; font-weight: 500 !important;
+    cursor: pointer; text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--cobalt) 35%, transparent);
+    text-underline-offset: 2px; border-radius: 4px;
+  }
+  :global(.chat-session-resume:hover) { text-decoration-color: var(--cobalt); }
+  :global(.chat-session-del) { flex: 0 0 auto; background: none !important; border: 0 !important; padding: 0 .2rem !important; color: var(--ink-soft); cursor: pointer; font-size: .9rem; }
+  :global(.chat-session-del:hover) { color: #ff8f8f; }
   .chat-session-foot { display: flex; justify-content: space-between; gap: .5rem; }
   .chat-session-foot button { background: transparent; border: 0; color: var(--ink-soft); cursor: pointer; padding: .2rem 0; font-size: .8rem; font-weight: 500; }
   .chat-session-foot button:hover { color: var(--cobalt); }
@@ -313,7 +330,7 @@ const fmtCtx = (n: number) =>
 <script>
   import data from '../data/free-models.json';
   import { generateConfig, type ConfigTarget } from '../lib/freeconfig';
-  import { probeHealth, createSession, streamMessage, abortSession, releaseSessionQueued, awaitPendingRelease, fetchOpenRouterQuota, answerPermission, listSessions, deleteSession, clearSessions, localResumeCommand, historyBlocks, sessionModelLabel, type SessionSummary, keyStorage, type ChatEvent, formatQuota } from '../lib/agentchat';
+  import { probeHealth, createSession, streamMessage, abortSession, releaseSessionQueued, awaitPendingRelease, fetchOpenRouterQuota, answerPermission, listSessions, deleteSession, clearSessions, localResumeCommand, historyBlocks, sessionModelLabel, carriedSessionId, type SessionSummary, keyStorage, type ChatEvent, formatQuota } from '../lib/agentchat';
 
   import { openDrawer, closeDrawers, stopScroll } from '../lib/drawer';
 
@@ -879,6 +896,8 @@ const fmtCtx = (n: number) =>
   let currentPickEl: HTMLElement | null = null;
 
   // 调用点传的都是 button.chat-pick，但签名收 HTMLElement（dataset 两者都有）。
+  // opts.persistId 三种含义：string = 用户点了某条历史；null = 「新对话」按钮；
+  // undefined（从模型卡片进来）= 复用当前这条会话，见下面的续接逻辑。
   function openChat(a: HTMLElement, opts: { persistId?: string | null } = {}) {
     stopProbe(); // 上一次会话（若在等本地服务）的轮询要停掉，否则旧 timer 会打到新 chat 上
     chat?.streamAbort?.abort(); // 上一个会话还在流式：一并中止，别让旧流写进新对话
@@ -887,9 +906,16 @@ const fmtCtx = (n: number) =>
     resetStreamButtons();
     configGen++; // 上一个模型在途的建会话/额度结果一并作废
     // 让出上一个会话在网关侧的占用。换模型卡片走的是这里而不是 resetSession
-    // （那条路会顺带 tryGoChat 重建，此处要的是「先释放再建」），不释放的话
-    // ensureSession 的自动挑档会挑回同一条记录、POST 时撞 409 → 转开新对话。
-    if (chat?.sessionId) releaseSessionQueued(chat.sessionId);
+    // （那条路会顺带 tryGoChat 重建，此处要的是「先释放、再恢复」），不释放的话
+    // 恢复请求会撞 409「session already active」（见 lib 里 awaitPendingRelease 的说明）。
+    const staleId = chat?.sessionId ?? null;
+    if (staleId) releaseSessionQueued(staleId);
+    // 上一个会话的「归属快照」：只有换了工作目录 / agent / 工具级别，才算用户要的
+    // 已经不是那条历史了（与 resetSession 里同一把尺子）。换模型卡片**不属于**
+    // 这几种——它只是换个模型接着聊，会话必须原样续上。
+    const prev = chat
+      ? { sessionId: chat.sessionId, cwd: chat.cwd, agent: chat.agent, toolTier: chat.toolTier }
+      : null;
     chat = {
       provider: a.dataset.provider!, model: a.dataset.model!, base: a.dataset.base ?? '',
       anthropicApi: a.dataset.anthropic ?? '',
@@ -899,8 +925,11 @@ const fmtCtx = (n: number) =>
       agent: null,
       cwd: '', toolTier: 'none',
       sessionId: null, streaming: false,
-      // persistId：显式给的（用户点了某条历史 / 新对话）直接用；否则 undefined =
-      // 由 ensureSession（配置从 UI 读回之后）自动挑默认要恢复的那条。
+      // persistId 三值语义：
+      //  · string = 用户点了某条历史 → 恢复它；
+      //  · null   = 「新对话」按钮 → 明确开全新对话，绝不去自动挑一条；
+      //  · undefined = 从模型卡片进来 → 见下方「续接」：工作目录/agent/级别都没变
+      //    就复用当前这条会话（换模型 ≠ 换会话），否则留给 ensureSession 自动挑。
       persistId: opts.persistId,
     };
     $('chat-model-name').textContent = chat.name;
@@ -921,10 +950,27 @@ const fmtCtx = (n: number) =>
     quotaText = '';
     // 上次缓存的 health 直接先填一次下拉（避免闪烁）；tryGoChat 成功后再刷新
     if (lastHealth) fillAgentSelect(lastHealth);
-    // persistId：显式给的（点某条历史 / 新对话）已经由 applyConfig → resetSession
-    // 带到新会话上；没给（从卡片进来）留作 undefined。⚠️ 不在这里挑「最近一条」：
-    // 此刻 c.cwd 还是抽屉初值（''），拿它去恢复会把记录的 cwd/tier 冲掉。默认
-    // 恢复只发生在 ensureSession()，那时配置已从 UI 读回。
+    // ── 续接：换模型卡片不该换会话 ────────────────────────────────────────
+    // 用户 2026-10-24 报：切换模型进 chat「创建了不同的会话」，历史上面还总是挂着
+    // 一个复制恢复命令的蓝色按钮。根因是换模型时 persistId 落到 undefined，
+    // ensureSession 于是按列表重新挑一条；挑不中（空目录 / 网关还攥着那条会话
+    // → 409 兜底）就新建，于是一次切换多一条空壳。
+    // 规则（用户原话）：「不创建新会话，除非用户修改了工作目录或点击了『新会话』」
+    // —— 判据提纯在 lib/carriedSessionId（agentchat.ts），与 resetSession 同一把尺子。
+    // ⚠️ 位置在 fillAgentSelect 之后：chat.agent 要到那时才从 atbx:agent 填回，
+    //    提前比只会拿初值 null 去比，永远不等、永远新建。
+    // ⚠️ 只在「尺子量出该续」时赋值：carriedSessionId 返回 undefined 表示没话说，
+    //    此时 opts.persistId（用户点的历史 / 新对话）必须原样留着——直接赋值会
+    //    把用户的显式意图冲成「自动挑档」。
+    const carried = carriedSessionId({
+      persistId: opts.persistId,
+      prev,
+      next: { cwd: chat.cwd, agent: chat.agent, toolTier: chat.toolTier },
+    });
+    if (carried !== undefined) chat.persistId = carried;
+    // persistId：显式给的（点某条历史 / 新对话）直接用；「续接」在上面按
+    // cwd/agent/级别 是否变化定好；剩下的 undefined 留给 ensureSession 自动挑
+    // ——⚠️ 只能在那里挑：cwd/tier 已从 UI 读回，不会把记录的参数冲掉。
     void refreshSessionList({ collapse: true });
     openDrawer(bothDrawers(), $('chat-drawer'));
     void tryGoChat();

@@ -397,3 +397,52 @@ export function sessionModelLabel(s: { model?: unknown }): string {
   const m = (s as { model?: unknown }).model;
   return typeof m === 'string' ? m : '';
 }
+
+/** 「这条会话归谁」的三元组：一变就说明用户要的已经不是这条历史了。 */
+export interface SessionOwnership {
+  cwd: string;
+  agent: string | null;
+  toolTier: string;
+}
+
+/**
+ * 换模型卡片时，该不该续上当前这条会话？
+ *
+ * 规则（用户 2026-10-24 原话）：「不创建新会话，除非用户修改了工作目录或
+ * 点击了『新会话』」。换模型卡片**不属于**这两种——它只是换个模型接着聊，
+ * 所以同一条会话要原样续上。
+ *
+ * 为什么需要这把尺子：persistId 落在 undefined 时，ensureSession 会按列表
+ * 重新挑一条恢复；挑不中（空目录 / 网关还攥着那条会话 → 409 兜底）就新建，
+ * 于是一次切换模型多一条空壳，历史区上面还挂着个复制恢复命令的按钮。
+ *
+ * @param opts.persistId 显式意图。string = 用户点了某条历史（照办，不用尺子量）；
+ *   null = 「新对话」按钮（明确要新的，绝不该续）；undefined = 从模型卡片进来，
+ *   才轮到这把尺子说话。
+ * @param opts.prev 上一会话的归属快照；null = 还没有会话（第一次进 chat），
+ *   仍走自动挑档，不该续。
+ * @param opts.next 新配置的归属快照（⚠️ 必须在 fillAgentSelect 之后取，
+ *   chat.agent 到那时才从 atbx:agent 填回，提前取只会拿到初值 null）。
+ * @returns 要续上的会话 id；不适用（无会话可续 / 归属已变 / 有显式意图）时
+ *   返回 undefined——**不是 null**：null 是「明确开新对话」这个用户意图，
+ *   用它表示「尺子没说话」会把用户点的历史/新对话一起冲掉。
+ */
+export function carriedSessionId(
+  opts: {
+    persistId?: string | null;
+    prev: (SessionOwnership & { sessionId: string | null }) | null;
+    next: SessionOwnership;
+  },
+): string | undefined {
+  const { persistId, prev, next } = opts;
+  // 没会话可续（第一次进 chat）：留给 ensureSession 自动挑。
+  if (persistId === undefined && prev?.sessionId) {
+    // 归属没变 → 续上。变了（cwd/agent/级别）→ 解绑，让 ensureSession 按新
+    // 配置自己挑；与 resetSession 同一把尺子，两边必须一致，否则同一个动作
+    // 在两条路径上给出相反的答案。
+    if (prev.cwd === next.cwd && prev.agent === next.agent && prev.toolTier === next.toolTier) {
+      return prev.sessionId;
+    }
+  }
+  return undefined;
+}

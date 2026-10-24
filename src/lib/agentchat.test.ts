@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseSSEChunk, keyFor, probeHealth, createSession, releaseSession, releaseSessionQueued, awaitPendingRelease, fetchOpenRouterQuota, formatQuota, answerPermission, historyBlocks, sessionModelLabel, type OpenRouterQuota } from './agentchat';
+import { parseSSEChunk, keyFor, probeHealth, createSession, releaseSession, releaseSessionQueued, awaitPendingRelease, fetchOpenRouterQuota, formatQuota, answerPermission, historyBlocks, sessionModelLabel, carriedSessionId, type OpenRouterQuota } from './agentchat';
 
 
 describe('parseSSEChunk', () => {
@@ -400,5 +400,85 @@ describe('release → resume ordering', () => {
       late.go?.(); // 放走 late，别把测试挂在未 settle 的 promise 上
       await new Promise((r) => setTimeout(r, 0));
     } finally { globalThis.fetch = original; }
+  });
+});
+
+// ── 换模型卡片该不该换会话（2026-10-24）─────────────────────────────────────
+// 用户报：切换模型进 chat「创建了不同的会话」，历史上面还总是挂着一个复制
+// 恢复命令的按钮。判据提纯成纯函数才能被这些用例钉住：.astro 的脚本 import
+// 不进来（node 环境也没有 DOM），页面里那段 if 是测不到的。
+// 返回值用 **undefined 表示「尺子没说话」**，而不是 null：null 是用户
+// 「明确开新对话」的意图，拿它表示「不适用」会把用户的显式选择冲掉。
+describe('carriedSessionId', () => {
+  const prev = { sessionId: 'sess-1', cwd: '/repo', agent: 'cc', toolTier: 'read' };
+
+  it('carries the same session when only the model changed', () => {
+    // 换模型 = 只换 provider/model，归属三元组一个都没动 → 必须续上同一条。
+    expect(carriedSessionId({
+      persistId: undefined,
+      prev,
+      next: { cwd: '/repo', agent: 'cc', toolTier: 'read' },
+    })).toBe('sess-1');
+  });
+
+  it('says nothing (undefined) rather than "new chat" when the work dir changed', () => {
+    // 用户点名的第一个例外。解绑后 ensureSession 按新 cwd 自己挑，挑不中就新建
+    // ——这是用户明确要的行为。返回 undefined 而非 null：这里不该顺带把
+    // persistId 冲掉，那是调用方的事（见下一条）。
+    expect(carriedSessionId({
+      persistId: undefined,
+      prev,
+      next: { cwd: '/other', agent: 'cc', toolTier: 'read' },
+    })).toBeUndefined();
+  });
+
+  it('unbinds when the tool tier changed', () => {
+    // read→full 换了权限边界，恢复旧记录会把它记录的 tier 冲掉。
+    expect(carriedSessionId({
+      persistId: undefined,
+      prev,
+      next: { cwd: '/repo', agent: 'cc', toolTier: 'full' },
+    })).toBeUndefined();
+  });
+
+  it('unbinds when the agent changed', () => {
+    // cc ↔ pi 是两套历史存储，续不上就是错的。
+    expect(carriedSessionId({
+      persistId: undefined,
+      prev,
+      next: { cwd: '/repo', agent: 'pi', toolTier: 'read' },
+    })).toBeUndefined();
+  });
+
+  it('never carries an explicit "new chat" request', () => {
+    // 用户点名的第二个例外：点了「＋ 新对话」就必须是全新会话，
+    // 哪怕归属三元组一个都没变。
+    expect(carriedSessionId({
+      persistId: null,
+      prev,
+      next: { cwd: '/repo', agent: 'cc', toolTier: 'read' },
+    })).toBeUndefined();
+  });
+
+  it('never overrides a history row the user picked', () => {
+    // 显式点了列表里某一条：那是用户的手指，不是尺子能推翻的。
+    expect(carriedSessionId({
+      persistId: 'sess-9',
+      prev,
+      next: { cwd: '/repo', agent: 'cc', toolTier: 'read' },
+    })).toBeUndefined();
+  });
+
+  it('leaves the first entry into chat to the auto-pick', () => {
+    // prev 为 null = 还没有会话。此时续无可续，交给 ensureSession 挑最近一条。
+    // 守卫是 `prev?.sessionId` 而不是 `prev`：少了 `?.`，这条会变成 TypeError。
+    // 只写 `prev` 也能过这条测试——但那种退化在此测得出，故不另立「已释放」
+    // 一例：sessionId 为 null 时「跳过」与「返回 prev.sessionId」答案相同
+    // （都是 null），那条用例恒绿，属空转测试（本仓库踩过的坑，不重复）。
+    expect(carriedSessionId({
+      persistId: undefined,
+      prev: null,
+      next: { cwd: '/repo', agent: 'cc', toolTier: 'read' },
+    })).toBeUndefined();
   });
 });
