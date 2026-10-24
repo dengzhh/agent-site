@@ -5,6 +5,8 @@ import { startServer } from '../src/server.mjs';
 import { VERSION } from '../src/version.mjs';
 import { TranscriptStore } from '../src/transcripts.mjs';
 import { loadConfig, grantDir, revokeDir, DEFAULT_CONFIG_PATH, sessionStoreDir, sessionTtlMs } from '../src/config.mjs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 // CLI 子命令：grant / list / revoke。浏览器无法提供本地路径，故授权只能由终端发起。
 // 必须在 --port 解析之前处理（子命令是本进程的一次性动作，不启动服务器）。
@@ -79,8 +81,18 @@ const allowedOrigins = [
   ...(process.env.AGENT_ALLOWED_ORIGINS ?? '').split(',').map((s) => s.trim()).filter(Boolean),
 ];
 
+// 本地 claude 的 home。缺省 ~/.claude；尊重用户自己设的 CLAUDE_CONFIG_DIR
+// （有些人的 claude 装在别处）。**只读目录项，不解析 transcript 内容**。
+function claudeHome() {
+  return process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude');
+}
+
 const models = createModels();
-const srv = await startServer({ port, allowedOrigins, models });
+// localCcRoot：本地 claude 的 home，让网页 chat 看得见用户在本机终端里聊的会话
+// （见 cc.mjs 的 adoptLocalCcSession）。**必须在这里显式给**——startServer 的
+// 缺省是不导入，因为缺省读 ~/.claude 会让测试也去扫开发者真实的会话数据。
+// 这个值是本进程唯一一次「我要读用户本地 claude 历史」的声明，写在明处。
+const srv = await startServer({ port, allowedOrigins, models, localCcRoot: claudeHome() });
 console.log(`agenttoolbox-agent v${VERSION} listening on http://127.0.0.1:${srv.port}`);
 console.log(`allowed origins: ${allowedOrigins.join(', ')}`);
 console.log(`logging requests/turns to this console${process.env.ATBX_VERBOSE === '1' ? ' (+ agent stderr, verbose)' : ' (set ATBX_VERBOSE=1 for agent stderr)'}`);

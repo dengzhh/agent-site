@@ -84,7 +84,7 @@ function denyPendingPerms(session) {
   for (const cb of cbs) cb(false);
 }
 
-export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOrigins = DEFAULT_ORIGINS, resolve = resolveModel, models, registry, acpProbe, approvalTimeoutMs = 120_000, transcripts = null, sessionTtlMs: ttlMs }) {
+export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOrigins = DEFAULT_ORIGINS, resolve = resolveModel, models, registry, acpProbe, approvalTimeoutMs = 120_000, transcripts = null, sessionTtlMs: ttlMs, localCcRoot = null }) {
   // 磁盘 transcript：跨重启/跨逐出的历史。缺省自建（生产路径），测试注入临时目录。
   // 清扫只在我们自己建了这份 store 时做——它的语义是「启动时回收超期历史」，
   // 是**所有权**的事，不是「每建一个 server 就顺手删别人盘上的东西」。注入的
@@ -102,6 +102,18 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
     acpAdapter,
   ]);
   const sessions = new SessionStore();
+  // cc 适配器的「本机会话导入」入口。**不用 await reg.pick()**：那是可用性探活
+  // （会 fork 出去跑 which），列表接口每开一次抽屉都跑，不该为此起进程；而且
+  // cc 二进制此刻不在也不该让整个历史列表报错。reg.get 直接取实例即可。
+  // store 缺失时（没注入 transcripts 的测试夹具）禁用：没有 store 就没有
+  // companionDir 可落，import 只会失败。
+  // **localCcRoot 缺省禁用导入，不是缺省读 ~/.claude**：这是安全默认。缺省读真实
+  // home 的话，任何用 /tmp 之类公共目录名当 cwd 的测试都会去扫开发者真实的
+  // ~/.claude/projects/-tmp，断言时红时绿（谁在那儿跑过一次 claude 都会变），
+  // 而且测试根本不该碰真实用户数据。生产路径由 bin 显式传 ~/.claude。
+  const adoptLocal = (store && localCcRoot)
+    ? { adapter: reg.get('cc'), localRoot: localCcRoot }
+    : null;
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
@@ -212,9 +224,39 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
         // hideEmpty：建会话即落盘（筛选键要立即可查）会留下没发过消息的空壳，
         // 用户看到的就是一排「(无标题)」。只挡列表，不影响 DELETE/sweep。
         const dir = piSessionDir();
-        const list = store.list(filter, { hideEmpty: true }).map((r) => (
+        let list = store.list(filter, { hideEmpty: true }).map((r) => (
           r.adapter === 'pi' && dir ? { ...r, piSessionDir: dir } : r
         ));
+        // 把用户在本机终端用 `claude` 聊的会话接进来（硬链接 + 落记录），否则
+        // 这个列表只看得见网关自己建的，用户的需求是「上次会话不管在哪发起的」。
+        // **必须在 GET 做，不能等 POST**：前端只有先在这里看见某条会话，下一次
+        // POST 才会带上它的 id；列表里没有 → target=null（明确新对话）→ 永远接不到。
+        // 只在 agent 明确是 cc（或没筛 agent）且有 cwd 时做：别的 agent 不适用，
+        // 没 cwd 时不知道去哪个 slug 找，硬猜会捞到别的项目的会话。
+        if (adoptLocal?.adapter && filter.cwd && (!filter.agent || filter.agent === 'cc')) {
+          // 已导入过的 ccSessionId：这个接口每开一次抽屉都跑，重复导入会每次多落
+          // 一条记录（history 行越刷越多）。inode 校验在 adopt 里兜底。
+          const known = new Set(list.map((r) => r.ccSessionId).filter(Boolean));
+          // **只看最近一条本地会话**，不是「最近一条还没导入的」。后者是个坑：
+          // 本机终端里最常发生的事就是最新那条已经导过了，此时若继续往下找一条
+          // 没导过的来导，用户每开一次抽屉列表就多出一行他从未在网页里创建过的
+          // 历史——实测 3 次 GET 白拿了 3 条，直到把用户全部本地会话翻出来。
+          // 正确语义：最新那条已经在册 → 什么都不做；不在册 → 只导它。
+          const newest = adoptLocal.adapter.localSessions(filter.cwd, adoptLocal.localRoot)[0];
+          if (newest && !known.has(newest.ccSessionId)) {
+            const id = adoptLocal.adapter.adoptLocalSession({
+              cwd: filter.cwd, ccSessionId: newest.ccSessionId,
+              gatewaySessionId: randomUUID(), lastUsed: newest.mtimeMs,
+              localRoot: adoptLocal.localRoot,
+            });
+            if (id) {
+              const rec = store.get(id);
+              if (rec) list.push(rec);
+            }
+            // 接不上（跨文件系统等）就算了：宁可这条不可见，也不造第二份真源。
+          }
+          list.sort((a, b) => b.lastUsed - a.lastUsed); // 与 store.list 同序
+        }
         return json(200, { sessions: list });
       }
 
@@ -317,6 +359,29 @@ export async function startServer({ port = 0, hostname = '127.0.0.1', allowedOri
           });
         } catch (err) {
           log('session', `transcript save failed for ${id.slice(0, 8)}: ${preview(err?.message ?? err, 120)}`);
+        }
+        // 导入的本地 CLI 会话在这里补标题。它没有 title 字段（title 只可能由看得见
+        // 消息的这里派生），GET /sessions 时又不该读 jsonl 内容（那是列表路径，
+        // 每次开抽屉都跑），所以放到此刻——material.messages 正是 restore() 刚从
+        // jsonl 读出来的那份，首句已经在手边。不写的话列表显示「(无标题)」，
+        // 那是用户抱怨过的显示。只在没有标题时写，别覆盖用户改过的。
+        //
+        // ⚠️ 要跳过 CLI 的 local-command 噪声行：用户在终端跑过 `/model` 之类的
+        // slash 命令，transcript 里前几条就是 <local-command-caveat> /
+        // <command-name> / <local-command-stdout> 包裹的 XML。拿第一条当标题，
+        // 列表会显示成「<local-command-caveat>The command below 」——
+        // 「(无标题)」的换皮版本，一样看不懂。真对话从这些行之后才开始。
+        if (existing && !existing.title && material?.messages) {
+          const textOf = (m) => (typeof m?.content === 'string' ? m.content
+            : (Array.isArray(m?.content)
+              ? m.content.filter((b) => b?.type === 'text').map((b) => b.text).join('')
+              : ''));
+          const isNoise = (text) => /^\s*<(local-command|command-name|command-message|command-args|local-command-stdout|local-command-stderr)\b/.test(text);
+          const first = material.messages.find((m) => m.role === 'user' && !isNoise(textOf(m)));
+          const title = deriveTitle(textOf(first));
+          if (title) {
+            try { store.save({ id, title }); } catch { /* 标题不是关键路径 */ }
+          }
         }
         log('session', `+ ${id.slice(0, 8)} via ${acpAgentId ? `acp:${acpAgentId}` : adapter.id}` +
           ` provider=${body.provider} model=${body.model} cwd=${cwd ?? '-'} tier=${toolTier}`);

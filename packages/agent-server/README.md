@@ -45,10 +45,12 @@ pass as `agents`. Two adapters ship today:
   `PATH`. Use it for models that are only served behind an agentic harness — e.g.
   OpenRouter's gated `:free` models, which reject plain API clients.
 
-The `cc` adapter runs the CLI against a throwaway `CLAUDE_CONFIG_DIR` (a fresh
-temp directory per turn), so it never loads or mutates your own
-`~/.claude/settings.json` — your personal model, hooks, and plugins stay out of
-the session.
+The `cc` adapter runs the CLI against a private `CLAUDE_CONFIG_DIR` (one per
+session, kept on disk with the transcript record), so it never loads or mutates
+your own `~/.claude/settings.json` — your personal model, hooks, and plugins stay
+out of the session. Sessions you start in the terminal yourself are still listed
+and resumable from the web UI: the gateway hard-links their transcript in, so both
+sides stay the same file.
 
 ### `acp` — one adapter, five more agents
 
@@ -188,8 +190,13 @@ a different directory than the session's cwd:
     pi --session-dir <ATBX_PI_SESSION_DIR> --fork <piSessionId> "…"
 
 The drawer shows that exact command with a copy button. `cc` sessions resume
-locally with `claude --resume <ccSessionId>`. Sessions you start in the
-terminal yourself are not listed in the web UI — that direction is one-way.
+locally with `claude --resume <ccSessionId>` — for sessions that were started in
+the terminal (the gateway hard-links the transcript rather than copying it, so the
+local file and the gateway's view are the same inode). For sessions you started in
+the web UI, that command cannot find the transcript: it lives under the gateway's
+private config dir. Terminal sessions appear in the web history list too, with a
+title derived from your first message, and deleting them there removes only the
+link — your local transcript is left untouched.
 
 Terminal management (the web UI can only clear the current directory's scope):
 

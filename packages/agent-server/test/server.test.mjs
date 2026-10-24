@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, statSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1692,4 +1692,241 @@ test('release rejects an unsafe id', async (t) => {
   const { json } = await withFauxServer(t, ['http://localhost:4321']);
   const r = await json('/sessions/..%2Fetc%2Fpasswd/release', { method: 'POST' });
   assert.ok(r.status === 400 || r.status === 404, `unsafe id rejected, got ${r.status}`);
+});
+
+// ── 本地 CLI 会话的导入（GET /sessions 时硬链接进来）──────────────────────
+// 用户需求：进 chat 恢复的是「该工作目录的上次会话，不管在网站还是本地终端发起」。
+// 前端挑档逻辑没动（ensureSession 的 list.find(canRestore)），全靠这个列表
+// 看得见 CLI 会话。**导入必须在 GET 做**：前端只有先在列表里见到某条会话，
+// 下一次 POST 才会带上它的 id；列表里没有 → target=null → 永远接不到。
+const CC_FIXTURE = () => join(dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-claude.sh');
+const slugOf = (cwd) => String(cwd).replace(/[/.]/g, '-');
+
+// 造一个假「本地 ~/.claude」：projects/<slug(cwd)>/<uuid>.jsonl，内容纯合成
+// （字段形状照真实行，缺字段 CLI 会认为不是有效会话）。按精确路径回收。
+function fakeLocalCc(t, cwd, texts = ['本地终端问的那句']) {
+  const root = freshDir();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const sid = randomUUID();
+  const dir = join(root, 'projects', slugOf(cwd));
+  mkdirSync(dir, { recursive: true });
+  const line = (type, text, uuid) => JSON.stringify({
+    type, sessionId: sid, uuid, parentUuid: null, timestamp: new Date().toISOString(),
+    cwd, gitBranch: 'main', userType: 'external', version: '2.0.14', isSidechain: false,
+    message: {
+      role: type, id: `msg_${uuid.slice(0, 8)}`, type: 'message', model: 'claude-sonnet-4-5',
+      content: [{ type: 'text', text, citations: null }],
+      stop_reason: type === 'user' ? null : 'end_turn', stop_sequence: null,
+      usage: { input_tokens: 1, output_tokens: 1 },
+    },
+  });
+  writeFileSync(join(dir, `${sid}.jsonl`), [
+    line('user', texts[0], randomUUID()),
+    line('assistant', '本地终端答的那句', randomUUID()),
+  ].join('\n') + '\n');
+  return { root, sid };
+}
+
+// 起一个带 cc 适配器、且开了本地导入的网关。
+async function withCcServer(t, { localRoot, cwd }) {
+  const { createRegistry } = await import('../src/adapters/registry.mjs');
+  const { createCcAdapter } = await import('../src/adapters/cc.mjs');
+  const store = mkStore(t);
+  const registry = createRegistry([createCcAdapter({ cliPath: CC_FIXTURE(), transcripts: store })]);
+  const srv = await startServer({
+    port: 0, allowedOrigins: ['http://localhost:4321'], registry,
+    acpProbe: async () => false, transcripts: store,
+    localCcRoot: localRoot,
+  });
+  t.after(() => srv.close());
+  const base = `http://127.0.0.1:${srv.port}`;
+  const json = async (path, opts = {}) => {
+    const res = await fetch(base + path, { ...opts, headers: { Origin: 'http://localhost:4321', ...(opts.headers ?? {}) } });
+    return { status: res.status, body: await res.json().catch(() => null) };
+  };
+  return { srv, base, json, store };
+}
+
+// 安全默认：不给 localCcRoot 就**不导入**。否则每个用公共目录名当 cwd 的测试
+// 都会去扫开发者真实的 ~/.claude/projects/-tmp，断言时红时绿。
+test('GET /sessions without a local cc root imports nothing', async (t) => {
+  const { json } = await withCcServer(t, { localRoot: null, cwd: '/tmp' });
+  const { status, body } = await json('/sessions?agent=cc&cwd=%2Ftmp');
+  assert.equal(status, 200);
+  assert.equal(body.sessions.length, 0, '没有任何导入');
+});
+
+test('GET /sessions imports the local CLI session for that cwd', async (t) => {
+  const { root, sid } = fakeLocalCc(t, '/tmp');
+  const { json, store } = await withCcServer(t, { localRoot: root, cwd: '/tmp' });
+  const { status, body } = await json('/sessions?agent=cc&cwd=%2Ftmp');
+  assert.equal(status, 200);
+  assert.equal(body.sessions.length, 1, '本地那条会话出现在列表里');
+  const row = body.sessions[0];
+  assert.equal(row.ccSessionId, sid);
+  assert.equal(row.adapter, 'cc');
+  assert.equal(row.cwd, '/tmp');
+  assert.ok(row.lastUsed > 0, 'lastUsed 用本地 mtime，排得到真实位置');
+  // 落成了真记录（不是只在响应里拼一行）：前端下一次 POST 才带得上它的 id
+  const recs = store.list({ cwd: '/tmp' });
+  assert.equal(recs.length, 1);
+  assert.equal(recs[0].ccSessionId, sid);
+  // 而且是硬链接：同一 inode，CLI append 时两边天然同步
+  const local = join(root, 'projects', slugOf('/tmp'), `${sid}.jsonl`);
+  const linked = join(store.companionDir(recs[0].id), 'projects', slugOf('/tmp'), `${sid}.jsonl`);
+  assert.equal(statSync(local).ino, statSync(linked).ino, 'same inode => hardlink');
+});
+
+// 只导最近一条：用户要的是「上次会话」，一次导一串会让列表突然多出一堆
+// 用户没在网页里创建过的行。
+test('GET /sessions imports only the most recent local session', async (t) => {
+  const root = freshDir();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const dir = join(root, 'projects', slugOf('/tmp'));
+  mkdirSync(dir, { recursive: true });
+  const mk = (sid, text, mtime) => {
+    writeFileSync(join(dir, `${sid}.jsonl`), JSON.stringify({
+      type: 'user', sessionId: sid, uuid: randomUUID(), parentUuid: null,
+      timestamp: new Date().toISOString(), cwd: '/tmp', gitBranch: 'main',
+      userType: 'external', version: '2.0.14', isSidechain: false,
+      message: { role: 'user', id: 'm', type: 'message', content: [{ type: 'text', text }] },
+    }) + '\n');
+    utimesSync(join(dir, `${sid}.jsonl`), mtime, mtime);
+  };
+  const old = randomUUID(); const recent = randomUUID();
+  mk(old, '旧会话', new Date(Date.now() - 3 * 86400_000));
+  mk(recent, '新会话', new Date());
+  const { json } = await withCcServer(t, { localRoot: root, cwd: '/tmp' });
+
+  const { body } = await json('/sessions?agent=cc&cwd=%2Ftmp');
+  assert.equal(body.sessions.length, 1, '只接一条');
+  assert.equal(body.sessions[0].ccSessionId, recent, '接的是最近那条');
+});
+
+// 已导入过的不重复接：这个接口每开一次抽屉都跑，重复导入会让历史行越刷越多。
+test('GET /sessions does not re-import a session it already has', async (t) => {
+  const { root, sid } = fakeLocalCc(t, '/tmp');
+  const { json, store } = await withCcServer(t, { localRoot: root, cwd: '/tmp' });
+  await json('/sessions?agent=cc&cwd=%2Ftmp');
+  await json('/sessions?agent=cc&cwd=%2Ftmp');
+  await json('/sessions?agent=cc&cwd=%2Ftmp');
+  assert.equal(store.list({ cwd: '/tmp' }).length, 1, '还是一条记录');
+});
+
+// 上面那条夹具只造了一条本地会话，所以「往下找一条没导过的」这个坑碰不到——
+// 真实场景是本地有多条，最新那条已导入。**这条钉的是语义，不是数量**：
+// 已导过最新那条之后，再开抽屉必须什么都不做，而不是把用户第二条、第三条
+// 本地会话也翻出来（实测旧实现 3 次 GET 白拿 3 条，直到翻完用户全部历史）。
+test('GET /sessions stops after the newest session, it does not walk further back', async (t) => {
+  const root = freshDir();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const dir = join(root, 'projects', slugOf('/tmp'));
+  mkdirSync(dir, { recursive: true });
+  const mk = (sid, text, when) => {
+    writeFileSync(join(dir, `${sid}.jsonl`), JSON.stringify({
+      type: 'user', sessionId: sid, uuid: randomUUID(), parentUuid: null,
+      timestamp: new Date().toISOString(), cwd: '/tmp', gitBranch: 'main',
+      userType: 'external', version: '2.0.14', isSidechain: false,
+      message: { role: 'user', id: 'm', type: 'message', content: [{ type: 'text', text }] },
+    }) + '\n');
+    utimesSync(join(dir, `${sid}.jsonl`), when, when);
+  };
+  const newest = randomUUID();
+  const older = randomUUID();
+  const oldest = randomUUID();
+  mk(newest, '最新会话', new Date());
+  mk(older, '旧一点的会话', new Date(Date.now() - 2 * 86400_000));
+  mk(oldest, '最旧的会话', new Date(Date.now() - 4 * 86400_000));
+
+  const { json, store } = await withCcServer(t, { localRoot: root, cwd: '/tmp' });
+  for (let i = 0; i < 4; i++) await json('/sessions?agent=cc&cwd=%2Ftmp');
+
+  const recs = store.list({ cwd: '/tmp' });
+  assert.equal(recs.length, 1, '只导了最新那条，没有再往前翻');
+  assert.equal(recs[0].ccSessionId, newest);
+});
+
+// 别的 cwd 不捞：没有 cwd 时不知道去哪个 slug 找，硬猜会捞到别的项目的会话。
+test('GET /sessions for another cwd does not see the local session', async (t) => {
+  const { root } = fakeLocalCc(t, '/tmp');
+  const { json } = await withCcServer(t, { localRoot: root, cwd: '/tmp' });
+  const { body } = await json('/sessions?agent=pi&cwd=%2Ftmp');
+  assert.equal(body.sessions.length, 0, '筛 pi 时不导入 cc 的');
+  const { body: b2 } = await json('/sessions?agent=cc');
+  assert.equal(b2.sessions.length, 0, '没 cwd 时不猜');
+});
+
+// 标题：导入的会话没有 title 字段，而 GET 是列表路径不该读 jsonl 内容。
+// 所以在 POST（restore 已经读过对话）那一刻补，用户第一次点进这条会话时出现。
+// 不写的话列表显示「(无标题)」——用户抱怨过的显示。
+test('an imported session gets a title derived from the first user message', async (t) => {
+  const { root, sid } = fakeLocalCc(t, '/tmp', ['暗号是什么']);
+  const { json, store } = await withCcServer(t, { localRoot: root, cwd: '/tmp' });
+  const listed = await json('/sessions?agent=cc&cwd=%2Ftmp');
+  const id = listed.body.sessions[0].id;
+
+  const created = await json('/sessions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ provider: 'openrouter', model: 'm:free', agent: 'cc', cwd: '/tmp', persistId: id }),
+  });
+  assert.equal(created.status, 200);
+  assert.equal(created.body.resumed, true, '恢复的是导入的那条');
+  assert.equal(store.get(id).title, '暗号是什么', '标题来自导入对话的首句');
+});
+
+// 删导入的历史只删网关这条记录和它的链接，用户本地 transcript 完好无损。
+// 这是硬链接方案的安全底线：我们从未拥有那份文件。
+test('deleting an imported session leaves the local transcript intact', async (t) => {
+  const { root, sid } = fakeLocalCc(t, '/tmp');
+  const { json, store } = await withCcServer(t, { localRoot: root, cwd: '/tmp' });
+  const listed = await json('/sessions?agent=cc&cwd=%2Ftmp');
+  const id = listed.body.sessions[0].id;
+  const local = join(root, 'projects', slugOf('/tmp'), `${sid}.jsonl`);
+  const before = readFileSync(local, 'utf8');
+  assert.equal(statSync(local).nlink, 2, '导入后两个名字');
+
+  const del = await json(`/sessions/${id}`, { method: 'DELETE' });
+  assert.equal(del.status, 204);
+  assert.equal(store.get(id), null, '记录没了');
+  assert.equal(readFileSync(local, 'utf8'), before, '本地原件一个字节没动');
+  assert.equal(statSync(local).nlink, 1, '只删了链接');
+});
+
+// local-command 噪声行不能当标题。用户在终端跑过 /model 之类的 slash 命令，
+// transcript 前几条就是 <local-command-caveat>/<command-name>/<local-command-stdout>
+// 包裹的 XML。拿第一条当标题，列表显示成「<local-command-caveat>The command below 」——
+// 「(无标题)」的换皮版本，一样看不懂。
+test('an imported session skips local-command noise when deriving its title', async (t) => {
+  const root = freshDir();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const dir = join(root, 'projects', slugOf('/tmp'));
+  mkdirSync(dir, { recursive: true });
+  const sid = randomUUID();
+  const line = (type, text, uuid) => JSON.stringify({
+    type, sessionId: sid, uuid, parentUuid: null, timestamp: new Date().toISOString(),
+    cwd: '/tmp', gitBranch: 'main', userType: 'external', version: '2.0.14', isSidechain: false,
+    message: {
+      role: type, id: `msg_${uuid.slice(0, 8)}`, type: 'message', model: 'claude-sonnet-4-5',
+      content: [{ type: 'text', text, citations: null }],
+      stop_reason: type === 'user' ? null : 'end_turn', stop_sequence: null,
+      usage: { input_tokens: 1, output_tokens: 1 },
+    },
+  });
+  writeFileSync(join(dir, `${sid}.jsonl`), [
+    line('user', '<local-command-caveat>The command below was run directly', randomUUID()),
+    line('user', '<command-name>/model</command-name>', randomUUID()),
+    line('user', '<local-command-stdout>Set model to x</local-command-stdout>', randomUUID()),
+    line('user', '暗号是什么', randomUUID()),
+  ].join('\n') + '\n');
+
+  const { json, store } = await withCcServer(t, { localRoot: root, cwd: '/tmp' });
+  const listed = await json('/sessions?agent=cc&cwd=%2Ftmp');
+  const id = listed.body.sessions[0].id;
+  await json('/sessions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ provider: 'openrouter', model: 'm:free', agent: 'cc', cwd: '/tmp', persistId: id }),
+  });
+  assert.equal(store.get(id).title, '暗号是什么', '跳过噪声行，取真对话首句');
 });

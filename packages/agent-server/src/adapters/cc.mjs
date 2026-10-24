@@ -3,8 +3,11 @@
 // ~/.claude/settings.json（否则会用用户默认模型并执行其 hooks——已实测）。
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { mkdtempSync, existsSync, rmSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import {
+  mkdtempSync, existsSync, rmSync, mkdirSync, readdirSync, readFileSync,
+  linkSync, statSync,
+} from 'node:fs';
+import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { parseCcLine, isGateError, summarizeToolInput, buildControlResponse } from './cc-stream.mjs';
 import { VERBOSE, logErr } from '../log.mjs';
@@ -19,8 +22,8 @@ import { sanitizeChildEnv } from '../child-env.mjs';
 // 记录**（configDir 字段）。磁盘记录让目录跨进程存活（网关重启 / LRU 逐出后
 // 仍可 resume），与历史本身同生共死（remove()/sweep() 删记录时一并回收目录）。
 // 没传 transcripts 的调用方退回内存 Map（0.5.2 的行为）：同一进程内同
-// sessionId 复用目录，进程退出兜底统一回收——server.mjs 目前正是这条路
-// （还没把 store 接进来），删了它线上立刻回到「第 2 条消息报错」。
+// sessionId 复用目录，进程退出兜底统一回收——只有直接 new 适配器、不经
+// server.mjs 的调用方才走这条路（server.mjs 始终注入 store）。
 
 // 无 store 时的后备缓存：sessionId → { dir, lastUsed }。仅进程内有效；
 // 谁来删见 configDirFor 的注释与 sweepSync。
@@ -386,6 +389,16 @@ export function createCcAdapter({ cliPath = 'claude', env = {}, transcripts = nu
       fallbackDirs.delete(id);
       try { rmSync(hit.dir, { recursive: true, force: true }); } catch { /* 尽力而为 */ }
     },
+    // 本地 CLI 在某 cwd 下的会话（mtime 降序）。给 GET /sessions 用：让列表
+    // 看得见用户在本机终端里聊的那些。只读目录项，不碰 jsonl 内容。
+    localSessions(cwd, localRoot) {
+      return localCcSessions(cwd, localRoot);
+    },
+    // 把一条本地 CLI 会话接进网关（硬链接 + 落记录）。签名同上面的模块级函数，
+    // transcripts 由闭包带上——调用方不该自己传 store。
+    adoptLocalSession(opts) {
+      return adoptLocalCcSession({ transcripts, ...opts });
+    },
     // 恢复材料：重启 / 内存逐出后由 server 调用，拿到 config dir 和上次的
     // cc session id，下一轮 turn 才能带 --resume。强校验：configDir 与
     // ccSessionId 都在、目录存在、且 projects/ 下真有 <ccSessionId>.jsonl——
@@ -494,4 +507,109 @@ function findCcTranscript(configDir, ccSessionId) {
 // 单个 turn 结束时删。
 function dropOwnedDir(dir) {
   try { rmSync(dir, { recursive: true, force: true }); } catch { /* 尽力而为 */ }
+}
+
+// ── 本地 CLI 会话的可见性 ────────────────────────────────────────────────────
+// 上面的安全设计（CLAUDE_CONFIG_DIR 指向私有目录）有个副作用：用户在本地终端
+// 用 `claude` 聊的会话写在 ~/.claude/projects/<slug>/<uuid>.jsonl，网关的
+// `--resume` 只在私有目录里找，于是**看不见也续不上**。用户的需求很直接：
+// 「进入 chat 时恢复工作目录的上次会话，不管是在网站发起的还是在命令行发起的」。
+//
+// 做法：把本地那份 jsonl **硬链接**进私有 config dir 的 projects/<slug>/。
+//   · 为什么不是符号链接——实测（2026-10-24）三种粒度全被 CLI 拒认：
+//     projects/<slug> 链、projects 整目录链、单个 jsonl 链，`--resume` 一律报
+//     "No conversation found"。CLI 对 slug 用 isDirectory() 筛、对文件也做了
+//     真实路径校验。硬链接在 stat 看来就是普通文件，能过。
+//   · 为什么不是复制——复制会造出第二份真源，两端各写各的必然分叉，违背
+//     readCcDialogue 注释里那条既有原则。硬链接是**同一 inode**：CLI 是
+//     append-only 写（实测 inode 不变），网页发一轮本地 `claude --resume` 立刻
+//     看得到，反之亦然。
+//   · 为什么不链整个 projects 目录——那样网关自己的会话也会写进用户的
+//     ~/.claude/projects/，污染不属于我们的资产。
+//
+// 安全性：
+//   · CLAUDE_CONFIG_DIR 仍指向私有目录，用户 ~/.claude/settings.json（默认模型
+//     + hooks）依然不会被加载。这条边界一点没让。
+//   · 删网关历史只删硬链接（rmSync 不跟链接），用户本地 transcript 完好——
+//     实测 link count 2→1、内容不变。
+//   · 这里**只读目录项和 mtime**，绝不解析 jsonl 内容（PII 边界 + 这是列表路径，
+//     每次都跑）。
+
+// cwd → CLI 的 projects/<slug> 名。实测规则（2026-10-24，5 个观测点）：
+// `/` 和 `.` 都转成 `-`，下划线/连字符原样保留，前导 `/` 变成前导 `-`。
+// ⚠️ 只转 `/` 是错的——含点的路径会推出另一个 slug，导入就静默失效。
+// 例：/tmp/atbx-append.PcpWFn/cwd → -tmp-atbx-append-PcpWFn-cwd
+function cwdSlug(cwd) {
+  return String(cwd).replace(/[/.]/g, '-');
+}
+
+// 本地 CLI 在某 cwd 下的会话，按 mtime 降序（= 「上次会话」在最前面）。
+// 只回 id 和时间，不读内容。目录不存在/读不了 → []（用户没在本地跑过 claude
+// 是常态，不是错误）。绝不抛错：列表接口不该因为这事整个挂掉。
+//
+// localRoot 可注入（默认 ~/.claude）：测试必须传临时目录。**不可注入是个真缺陷**——
+// 网关会去读开发者真实的 ~/.claude，测试用 /tmp 这种公共目录名时结果完全不确定
+// （任何人在 /tmp 跑过一次 claude 都会改变测试结论），而且测试不该碰真实用户数据。
+function localCcSessions(cwd, localRoot = join(homedir(), '.claude')) {
+  if (!cwd) return [];
+  const dir = join(localRoot, 'projects', cwdSlug(cwd));
+  let names;
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const name of names) {
+    if (!name.endsWith('.jsonl')) continue;
+    // id 就是文件名去掉扩展名。形如 UUID；不是 UUID 的（用户手放的别的文件）
+    // 一律跳过——拿它当 ccSessionId 会让 --resume 报一个莫名的错。
+    const id = name.slice(0, -'.jsonl'.length);
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) continue;
+    let mtimeMs;
+    try { mtimeMs = statSync(join(dir, name)).mtimeMs; } catch { continue; }
+    out.push({ ccSessionId: id, mtimeMs });
+  }
+  return out.sort((a, b) => b.mtimeMs - a.mtimeMs);
+}
+
+// 把本地 CLI 会话接进网关：硬链接 + 落一条 transcript 记录。
+// 返回新落盘的网关 session id；没接（跨文件系统/本地没会话/已导入过）→ null。
+//
+// 调用方（server.mjs 的 GET /sessions）负责两件事，这里不碰：
+//   · 决定「哪几条还没被网关记录覆盖」（避免每次开抽屉都重复导入）；
+//   · 拿到返回值后把记录并进这次响应，让前端立刻看得见。
+function adoptLocalCcSession({ transcripts, cwd, ccSessionId, gatewaySessionId, lastUsed, localRoot }) {
+  const root = localRoot ?? join(homedir(), '.claude');
+  const local = join(root, 'projects', cwdSlug(cwd), `${ccSessionId}.jsonl`);
+  if (!existsSync(local)) return null;
+  // 私有 config dir 复用既有推导（<store>/<id>.cc），不另立一套目录规则。
+  const configDir = transcripts?.companionDir?.(gatewaySessionId);
+  if (!configDir) return null;
+  const slugDir = join(configDir, 'projects', cwdSlug(cwd));
+  const target = join(slugDir, `${ccSessionId}.jsonl`);
+  try {
+    mkdirSync(slugDir, { recursive: true, mode: 0o700 });
+    // linkSync 的目标已存在会 EEXIST。同一会话被重复导入时目标当然在——
+    // 幂等：确认它确实链的是同一份（同 inode）就当作成功。
+    if (!existsSync(target)) linkSync(local, target);
+    else if (statSync(target).ino !== statSync(local).ino) return null; // 同名不同源，别动它
+  } catch (err) {
+    // 最常见是 EXDEV（本地 ~/.claude 与 store 不在同一文件系统）。**刻意不降级
+    // 成复制**：那会造出第二份真源、悄悄分叉，比「这个会话不可见」更糟。
+    // 只留一条诊断，用户看不到任何坏结果。
+    if (VERBOSE) {
+      logErr('cc:adopt', `hardlink failed: cwd=${cwd} session=${ccSessionId} ${err?.code || err?.message}`);
+    }
+    return null;
+  }
+  // lastUsed 用**本地文件的 mtime**，不用 now：save() 缺省会盖成当下，导入的历史
+  // 于是全排到最前面，把用户真正常用的会话挤下去（列表按 lastUsed 降序）。
+  transcripts.save({
+    id: gatewaySessionId,
+    adapter: 'cc', agent: 'cc',
+    cwd, ccSessionId, configDir,
+    lastUsed: lastUsed ?? undefined,
+  });
+  return gatewaySessionId;
 }
