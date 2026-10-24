@@ -88,6 +88,27 @@ test('preflight includes PNA header', async (t) => {
   assert.equal(res.headers.get('access-control-allow-private-network'), 'true');
 });
 
+// CORS 的方法白名单漏一个，对应的路由就从浏览器里**整条消失**：fetch 连
+// preflight 都过不去，前端只拿到一个 reject，于是把配置 bug 说成「重试」。
+// DELETE 就这么消失过——删单条历史（`DELETE /sessions/:id`）在网页上从来没
+// 成功过，而错误提示让人以为是会话还在运行。这张表等于网关对外的方法全集，
+// 四个方法一个都不能少，逐个钉住。
+test('preflight allows every method the gateway routes', async (t) => {
+  const { base } = await withFauxServer(t);
+  for (const method of ['GET', 'POST', 'DELETE', 'OPTIONS']) {
+    const res = await fetch(base + '/sessions', {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'http://localhost:4321',
+        'Access-Control-Request-Method': method,
+      },
+    });
+    assert.equal(res.status, 204, `preflight for ${method}`);
+    const allowed = (res.headers.get('access-control-allow-methods') ?? '').split(',').map((m) => m.trim());
+    assert.ok(allowed.includes(method), `${method} must be in access-control-allow-methods, got: ${allowed.join(' ')}`);
+  }
+});
+
 test('session + message round-trip streams SSE', async (t) => {
   const { json, base, faux } = await withFauxServer(t);
   faux.setResponses([fauxAssistantMessage([fauxText('Hello from faux!')])]);

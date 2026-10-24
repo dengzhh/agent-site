@@ -634,16 +634,27 @@ const fmtCtx = (n: number) =>
       del.setAttribute('aria-label', '删除这条历史');
       del.addEventListener('click', async (e) => {
         e.stopPropagation(); // 别触发 item 的恢复
+        const c = chat;
+        const isCurrent = !!c && c.sessionId === s.id;
+        // 删当前这条之前先让出网关侧的占用：不释放的话网关认为它还活跃，
+        // DELETE 直接 409（server.mjs 的 `sessions.peek(id)` 守卫），用户就
+        // 永远删不掉正在看的那条。释放只放弃内存里的运行时，不碰记录本身。
+        if (isCurrent && !c!.streaming) releaseSessionQueued(s.id);
         const ok = await deleteSession(s.id);
         // 删除失败原因不定（网络错/404/409），措辞覆盖各种情况。
-        if (!ok) { chatMsg('hint', '没能删除这条历史，可以稍后再试；若它还在运行，先关掉它。'); return; }
+        if (!ok) {
+          // 还在流式时上面没发 release，网关必然 409——照实说，别拿「再试」
+          // 让人去点一个注定失败的按钮。
+          chatMsg('hint', isCurrent && c!.streaming
+            ? '这条正在回复中，先点停止再删除。'
+            : '没能删除这条历史，可以稍后再试。');
+          return;
+        }
         sessionSummaries = sessionSummaries.filter((x) => x.id !== s.id);
         // 删掉的恰好是当前会话：它的 transcript 已经不在了，不解绑的话下一轮
         // 会把它整份写回来（等于删了又活）。解绑并开一个全新对话（fresh = 明确
-        // 新建，别自动恢复下一条）；若它是正在跑的那条，网关已拒绝（409，上面
-        // 的 ok 检查挡住）——只更新列表，别动现场。
-        const c = chat;
-        if (c && c.sessionId === s.id && !c.streaming) resetSession({ fresh: true });
+        // 新建，别自动恢复下一条）。
+        if (isCurrent) resetSession({ fresh: true });
         renderSessionList();
       });
       item.append(main, ...(tag ? [tag] : []), time, del);

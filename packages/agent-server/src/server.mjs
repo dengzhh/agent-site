@@ -48,7 +48,11 @@ function corsHeaders(origin, allowed) {
   if (!origin || !allowed.includes(origin)) return null;
   return {
     'access-control-allow-origin': origin,
-    'access-control-allow-methods': 'GET, POST, OPTIONS',
+    // DELETE 必须在列：删单条历史走 `DELETE /sessions/:id`，不写的话浏览器
+    // 连 preflight 都过不去（「Method DELETE is not allowed by
+    // Access-Control-Allow-Methods」），前端只能拿到一个 fetch reject。
+    // 四个方法一个都不能少——这张表就是网关对外支持的方法全集。
+    'access-control-allow-methods': 'GET, POST, DELETE, OPTIONS',
     'access-control-allow-headers': 'content-type',
     'access-control-max-age': '86400',
     vary: 'Origin',
