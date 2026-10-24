@@ -780,6 +780,9 @@ const fmtCtx = (n: number) =>
         for (const blk of historyBlocks(m.content)) {
           if (blk.kind === 'text') chatMsg(m.role as 'user' | 'assistant', blk.text);
           else if (blk.kind === 'thinking') chatMsg('thinking', blk.text);
+          // 工具块画成和实时流同款的 ⚙ 行（send() 里就是这么画的），不是 hint：
+          // 至少得看得出是哪个工具跑的。
+          else if (blk.kind === 'tool') chatMsg('activity', blk.text);
           else chatMsg('hint', blk.text); // 图片 / 未知块：一行说明，不抢正文
         }
       }

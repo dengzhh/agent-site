@@ -341,7 +341,37 @@ export type HistoryBlock =
   | { kind: 'thinking'; text: string }
   | { kind: 'text'; text: string }
   | { kind: 'image'; text: string }
+  /** 工具调用 / 工具结果：只留名字，不留参数、不留输出（见 toolLabel）。 */
+  | { kind: 'tool'; text: string }
   | { kind: 'unknown'; text: string };
+
+/**
+ * 工具块的说明行。工具名是 schema 字段，不是用户/模型写的内容——可以显示；
+ * **参数和结果一律不显示**：tool_use.input 里可能是整段文件内容，tool_result
+ * 里可能是整段命令输出，把它们铺进历史区既是噪音也可能含敏感值。
+ *
+ * tool_result 块自带的名字字段**未经核实**（标准形状靠 tool_use_id 反查，CLI
+ * 的 jsonl 会不会多写 name，本仓库没有真实样本可核对——读真实 transcript 有
+ * PII 边界）。所以有名字就用，没有就写「工具结果」：它说明了这一行是什么；
+ * 对 tool_use 则写「未知工具」，因为那本该有名字而没有，是个异常。
+ */
+function toolLabel(blk: { type?: unknown; name?: unknown; is_error?: unknown; isError?: unknown }): string {
+  const name = typeof blk.name === 'string' && blk.name.trim() ? blk.name.trim() : null;
+  const failed = blk.is_error === true || blk.isError === true;
+  if (blk.type === 'tool_result') return `⚙ ${name ?? '工具结果'}${failed ? '（失败）' : ''}`;
+  return `⚙ ${name ?? '未知工具'}${failed ? ' 失败' : ''}`;
+}
+
+// 名字串起来。`name` 为 null = 这一块自己没名字（tool_result 多半这样）：
+// 只把失败标到前一行上，不凭空多出一种叫「工具结果」/「未知工具」的工具。
+// 紧挨着的多次调用（read_file、grep、read_file）并成一行，同一名字不重复。
+function mergeToolRows(prev: string, label: string, name: string | null): string {
+  const failed = label.endsWith('失败') || label.endsWith('（失败）');
+  if (name === null) return failed && !prev.endsWith(' 失败') ? `${prev} 失败` : prev;
+  const names = prev.slice(2).split('、');
+  if (names.includes(name)) return prev; // 同一工具的调用+结果，不重复报
+  return failed ? `${prev}、${name}（失败）` : `${prev}、${name}`;
+}
 
 export function historyBlocks(content: unknown): HistoryBlock[] {
   // 字符串 content（少数模型/早期记录）：一条正文，不必假装有块结构。
@@ -349,11 +379,22 @@ export function historyBlocks(content: unknown): HistoryBlock[] {
   if (!Array.isArray(content)) return [];
   const out: HistoryBlock[] = [];
   for (const raw of content) {
-    const blk = raw as { type?: unknown; text?: unknown; thinking?: unknown } | null;
+    const blk = raw as { type?: unknown; text?: unknown; thinking?: unknown; name?: unknown } | null;
     const type = blk && typeof blk === 'object' ? blk.type : undefined;
     if (type === 'thinking') out.push({ kind: 'thinking', text: String(blk!.thinking ?? '') });
     else if (type === 'text') out.push({ kind: 'text', text: String(blk!.text ?? '') });
     else if (type === 'image') out.push({ kind: 'image', text: '[图片]' });
+    // 工具调用/结果：光秃秃一个 `[tool_use]` / `[tool_result]` 不告诉用户任何
+    // 事（用户原话：「并没有附上任何工具信息」），至少把工具名给出来。
+    // 结果合并成一个块，返回一个叫 edit_file，就有两个；贴一排图更糟。
+    else if (type === 'tool_use' || type === 'tool_result') {
+      const name = typeof blk!.name === 'string' && blk!.name.trim() ? blk!.name.trim() : null;
+      const label = toolLabel(blk as { type?: unknown; name?: unknown; is_error?: unknown });
+      const prev = out[out.length - 1];
+      // 无名的 tool_result 永远并入前一行；有名字的才可能自己起一行。
+      if (prev?.kind === 'tool') prev.text = mergeToolRows(prev.text, label, name);
+      else out.push({ kind: 'tool', text: type === 'tool_result' ? '⚙ 工具结果' : label });
+    }
     // 其他未知块：只报类型名，不编内容。缺 type 的（null / {}）什么都说不出，跳过。
     else if (typeof type === 'string') out.push({ kind: 'unknown', text: `[${type}]` });
   }

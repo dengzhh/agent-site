@@ -209,21 +209,51 @@ describe('historyBlocks', () => {
     expect(historyBlocks('plain')).toEqual([{ kind: 'text', text: 'plain' }]);
   });
 
-  it('labels images and unknown blocks without inventing content', () => {
+  it('labels images and reports a bare tool block without inventing a name', () => {
     expect(historyBlocks([{ type: 'image' }, { type: 'tool_use' }])).toEqual([
       { kind: 'image', text: '[图片]' },
-      { kind: 'unknown', text: '[tool_use]' },
+      { kind: 'tool', text: '⚙ 未知工具' },
     ]);
   });
 
-  it('keeps unknown blocks to a bare type label, leaking no field values', () => {
-    // 真实 tool_use 带 id/name/input，redacted_thinking 带 data——都只报类型名，
-    // 字段值一个不外带（不编内容，也不替用户把敏感值画上屏）。
+  it('names the tool but leaks no input or output', () => {
+    // 用户原话：「并没有附上任何工具信息」。名字要；input/输出一个字段都不上屏。
     expect(historyBlocks([
       { type: 'tool_use', id: 'toolu_secret', name: 'Bash', input: { cmd: 'rm -rf /' } },
-      { type: 'redacted_thinking', data: 's3cret' },
+      { type: 'tool_result', tool_use_id: 'toolu_secret', content: 'SECRET_OUTPUT' },
+    ])).toEqual([{ kind: 'tool', text: '⚙ Bash' }]);
+  });
+
+  it('marks a failed tool result', () => {
+    expect(historyBlocks([
+      { type: 'tool_use', name: 'read_file' },
+      { type: 'tool_result', is_error: true, content: 'ENOENT' },
+    ])).toEqual([{ kind: 'tool', text: '⚙ read_file 失败' }]);
+  });
+
+  it('says what an orphan tool result is instead of calling it an unknown tool', () => {
+    // 上面那条：curl 开头就是 tool_result（工具调用在前一个窗口）。
+    expect(historyBlocks([{ type: 'tool_result', tool_use_id: 'x', content: 'ok' }])).toEqual([
+      { kind: 'tool', text: '⚙ 工具结果' },
+    ]);
+  });
+
+  it('folds consecutive tool calls into one row, keeping distinct names', () => {
+    // 一轮里连调三个工具，画三行会把正文挤没；但名字不能丢——用户抱怨的正是
+    // 「没有任何工具信息」。
+    expect(historyBlocks([
+      { type: 'tool_use', name: 'read_file' },
+      { type: 'tool_use', name: 'grep' },
+      { type: 'tool_use', name: 'read_file' },
+      { type: 'text', text: '看完了' },
     ])).toEqual([
-      { kind: 'unknown', text: '[tool_use]' },
+      { kind: 'tool', text: '⚙ read_file、grep' },
+      { kind: 'text', text: '看完了' },
+    ]);
+  });
+
+  it('still keeps other unknown blocks to a bare type label', () => {
+    expect(historyBlocks([{ type: 'redacted_thinking', data: 's3cret' }])).toEqual([
       { kind: 'unknown', text: '[redacted_thinking]' },
     ]);
   });
