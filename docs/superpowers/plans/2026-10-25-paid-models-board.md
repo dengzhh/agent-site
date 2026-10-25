@@ -28,6 +28,13 @@
 
 ### Task 1: 同步脚本 `sync-paid-models.mjs`（TDD）
 
+> **勘误（2026-10-25 代码审查后）**：本任务的参考 fixture 有三处缺陷，实施后已按审查意见修复：
+> ① `f/free-ish` 原先没有 rankings 行，付费过滤用例空转（删掉过滤代码测试照样绿）——已补
+> `RANK('f/free-ish', …)`；② `d/d`/`e/e` 缺模型条目，变体过滤的回归只能靠无关报错间接抓住——已补；
+> ③ 覆盖率防线有零值盲区（上游字段改名 → totalRaw=0 → 防线跳过 → 发空榜）——已改为
+> `standardRows>0 && ratio<0.5` 抛错，并加了字段改名/字符串数值两个用例（共 9 个）。
+> 下文 Step 1/Step 3 的代码块是**修复前**的原始参考，以仓库实际代码为准。
+
 **Files:**
 - Create: `scripts/sync-paid-models.mjs`
 - Test: `scripts/sync-paid-models.test.mjs`
