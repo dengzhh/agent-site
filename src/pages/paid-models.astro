@@ -45,11 +45,11 @@ const heatOf = (m: { heat: { promptTokens: number; completionTokens: number } })
     <table>
       <thead><tr>
         <th scope="col">#</th>
-        <th scope="col" class="sortable num" data-key="heat" aria-sort="descending">Weekly usage</th>
+        <th scope="col" class="sortable num" data-key="heat" aria-sort="descending" tabindex="0">Weekly usage</th>
         <th scope="col">Model</th>
-        <th scope="col" class="sortable num" data-key="in" aria-sort="none">In $/M</th>
-        <th scope="col" class="sortable num" data-key="out" aria-sort="none">Out $/M</th>
-        <th scope="col" class="sortable num" data-key="ctx" aria-sort="none">Context</th>
+        <th scope="col" class="sortable num" data-key="in" aria-sort="none" tabindex="0">In $/M</th>
+        <th scope="col" class="sortable num" data-key="out" aria-sort="none" tabindex="0">Out $/M</th>
+        <th scope="col" class="sortable num" data-key="ctx" aria-sort="none" tabindex="0">Context</th>
         <th scope="col">Capabilities</th>
         <th scope="col">Config</th>
       </tr></thead>
@@ -118,11 +118,17 @@ const heatOf = (m: { heat: { promptTokens: number; completionTokens: number } })
       th.setAttribute('aria-sort', th.dataset.key === key ? (desc ? 'descending' : 'ascending') : 'none');
     }
   }
+  // 表头是 <th>（不是 button），键盘焦点进不来——tabindex + 回车/空格补上，
+  // 与免费页能力筛选 chip（真 button）保持同一无障碍水位。
   for (const th of heads) {
-    th.addEventListener('click', () => {
+    const activate = () => {
       const k = th.dataset.key as Key;
       if (k === key) desc = !desc; else { key = k; desc = true; }
       render();
+    };
+    th.addEventListener('click', activate);
+    th.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activate(); }
     });
   }
 </script>
