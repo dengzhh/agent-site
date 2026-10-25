@@ -11,7 +11,7 @@ const MODELS_URL = 'https://openrouter.ai/api/v1/models';
 // （2026-10-24 实测：精确命中仅 20% 模型数 / 1.5% 用量；剥后缀兜底后覆盖 95.2%
 // 用量）。热度必须按 resolve 出来的 models id 聚合——同族日期快照才会合并。
 const stripDate = (s) => s.replace(/-[0-9]{8}$/, '');
-const resolveId = (slug, ids) => (ids.has(slug) ? slug : (ids.has(stripDate(slug)) ? stripDate(slug) : null));
+export const resolveId = (slug, ids) => (ids.has(slug) ? slug : (ids.has(stripDate(slug)) ? stripDate(slug) : null));
 
 export function buildPaidBoard(rankings, modelsApi, opts = {}) {
   const rows = Array.isArray(rankings?.data) ? rankings.data : [];
@@ -21,9 +21,14 @@ export function buildPaidBoard(rankings, modelsApi, opts = {}) {
   // 1) 只取 standard；2) 聚合到 resolved id
   const heat = new Map(); // resolvedId -> {prompt, completion}
   const rawHeat = new Map(); // 原始 slug 总量（算覆盖率用，不能被 resolve 抬高）
+  let standardRows = 0;
   for (const r of rows) {
     if (r?.variant !== 'standard' || !r?.model_permaslug) continue;
-    const pt = r.total_prompt_tokens ?? 0, ct = r.total_completion_tokens ?? 0;
+    standardRows += 1;
+    // 上游把数值改成字符串（'100'）或缺字段时：?? 0 会漏、+ 会字符串拼接。
+    // 统一 Number 化，非有限值按 0——坏一行不至于让整个榜单报废。
+    const num = (v) => { const n = Number(v ?? 0); return Number.isFinite(n) ? n : 0; };
+    const pt = num(r.total_prompt_tokens), ct = num(r.total_completion_tokens);
     rawHeat.set(r.model_permaslug, (rawHeat.get(r.model_permaslug) ?? 0) + pt + ct);
     const id = resolveId(r.model_permaslug, byId);
     if (!id) continue;
@@ -32,11 +37,13 @@ export function buildPaidBoard(rankings, modelsApi, opts = {}) {
     heat.set(id, acc);
   }
 
-  // 用量覆盖率防线：rankings 大改版时宁可同步失败，不悄悄发残榜
+  // 用量覆盖率防线：rankings 大改版（字段改名/全零）时宁可同步失败，不悄悄发残榜。
+  // standardRows>0 但 totalRaw===0（字段全改名）视同覆盖率 0。
   const totalRaw = [...rawHeat.values()].reduce((n, v) => n + v, 0);
   const joined = [...heat.values()].reduce((n, a) => n + a.prompt + a.completion, 0);
-  if (totalRaw > 0 && joined / totalRaw < 0.5) {
-    throw new Error(`join coverage ${(joined / totalRaw * 100).toFixed(1)}% < 50% — upstream shape likely changed`);
+  const ratio = totalRaw > 0 ? joined / totalRaw : 0;
+  if (standardRows > 0 && ratio < 0.5) {
+    throw new Error(`join coverage ${(ratio * 100).toFixed(1)}% < 50% — upstream shape likely changed`);
   }
 
   // 3) 付费过滤 + canonical 去重（同族不同 id 留最热）
@@ -48,7 +55,7 @@ export function buildPaidBoard(rankings, modelsApi, opts = {}) {
     if (!(pin > 0 || pout > 0)) continue; // 付费榜：全零价归免费页
     const key = m.canonical_slug || id;
     const prev = byCanonical.get(key);
-    if (!prev || heatOf(h) > heatOf(prev.heat)) byCanonical.set(key, { m, id, heat: h });
+    if (!prev || heatOf(h) > heatOf(prev.heat)) byCanonical.set(key, { m, id, heat: h, pin, pout });
   }
 
   const candidates = [...byCanonical.values()]
@@ -61,12 +68,14 @@ export function buildPaidBoard(rankings, modelsApi, opts = {}) {
     source: 'openrouter rankings + models api',
     windowDays: new Set(rows.map((r) => r.date)).size,
     totalCandidates: candidates.length,
-    models: candidates.slice(0, opts.topN ?? TOP_N).map(({ m, id, heat: h }) => ({
+    models: candidates.slice(0, opts.topN ?? TOP_N).map(({ m, id, heat: h, pin, pout }) => ({
       id,
       name: m.name ?? id,
       canonicalSlug: m.canonical_slug ?? null,
       heat: { promptTokens: h.prompt, completionTokens: h.completion },
-      price: { input: perM(m.pricing.prompt), output: perM(m.pricing.completion) },
+      // 复用过滤时算好的 pin/pout：emission 直接读 m.pricing.prompt 在字段缺失时
+      // 会产出 null（NaN 序列化），到构建期才炸、离病因很远。
+      price: { input: perM(pin), output: perM(pout) },
       context: m.context_length ?? 0,
       maxOutput: m.top_provider?.max_completion_tokens ?? null,
       toolCall: (m.supported_parameters ?? []).includes('tools'),
@@ -92,6 +101,14 @@ async function fetchJson(url, tries = 3) {
 
 async function main() {
   const [rankings, modelsApi] = await Promise.all([fetchJson(RANKINGS_URL), fetchJson(MODELS_URL)]);
+  // stdout 记未关联上的 slug 数（设计文档 §4：join 健康度要在 Actions 日志里可见）
+  const ids = new Set((modelsApi?.data ?? []).map((m) => m.id));
+  let skipped = 0;
+  for (const r of rankings?.data ?? []) {
+    if (r?.variant !== 'standard' || !r?.model_permaslug) continue;
+    if (!resolveId(r.model_permaslug, ids)) skipped += 1;
+  }
+  console.log(`skipped: ${skipped}`);
   const board = buildPaidBoard(rankings, modelsApi);
   console.log(`paid board: ${board.models.length} of ${board.totalCandidates} candidates, window ${board.windowDays}d`);
   console.log(`top: ${board.models.slice(0, 3).map((m) => `${m.id}(${((m.heat.promptTokens + m.heat.completionTokens) / 1e12).toFixed(1)}T)`).join(', ')}`);

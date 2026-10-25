@@ -25,6 +25,7 @@ describe('buildPaidBoard', () => {
     RANK('e/e', '2026-10-19', 999, 999, 'batch'),        // batch 变体排除
     RANK('x/x', '2026-10-19', 500, 500),                 // models 里没有 → 跳过（但计覆盖率）
     RANK('z/z', '2026-10-19', 10, 5),                    // 同族不同 id，热度低于 a → canonical 去重丢弃
+    RANK('f/free-ish', '2026-10-19', 50, 50),            // 全零价但有用量 → 付费过滤必须丢弃（此前无 rankings 行，用例空转）
   ] };
   const models = { data: [
     MODEL('a/a-20261019', { canonical: 'fam-a', in: 0.0000001, out: 0.0000005 }),
@@ -32,6 +33,7 @@ describe('buildPaidBoard', () => {
     MODEL('b/b'), MODEL('c/c'),
     MODEL('z/z', { canonical: 'fam-a' }),
     MODEL('f/free-ish', { in: 0, out: 0 }),              // 全零价 → 付费过滤丢弃
+    MODEL('d/d'), MODEL('e/e'),                          // free/batch 变体的模型条目：变体过滤若失效，d/d 会以 999+999 的热度进榜，第一条用例的 ids 断言会红
   ] };
   // 覆盖率防线要看到"能 join 的大头"：没有这条时 joined/raw ≈ 18% 会误触发
   // coverage 防线（x/x 1000 加入 raw 但 join 不上）。
@@ -89,5 +91,23 @@ describe('buildPaidBoard', () => {
   it('throws when the result would be empty', () => {
     expect(() => buildPaidBoard({ data: [] }, models)).toThrow(/empty/);
     expect(() => buildPaidBoard({ data: [RANK('d/d', '2026-10-19', 1, 1, 'free')] }, models)).toThrow(/empty/);
+  });
+
+  it('throws when standard rows carry no recognizable token fields (renamed upstream)', () => {
+    const renamed = { data: [
+      { date: '2026-10-19', model_permaslug: 'a/a-20261019', variant: 'standard', tokens_in: 100, tokens_out: 50 },
+    ] };
+    expect(() => buildPaidBoard(renamed, models)).toThrow(/coverage/);
+  });
+
+  it('coerces string token counts instead of concatenating', () => {
+    const board = buildPaidBoard(
+      { data: [
+        { date: '2026-10-19', model_permaslug: 'a/a-20261019', variant: 'standard',
+          total_prompt_tokens: '100', total_completion_tokens: '50' },
+      ] },
+      { data: [MODEL('a/a-20261019', { canonical: 'fam-a' })] },
+    );
+    expect(board.models[0].heat).toEqual({ promptTokens: 100, completionTokens: 50 });
   });
 });
