@@ -160,6 +160,10 @@ const fmtCtx = (n: number) =>
       <pre class="chat-cmd"><code>npx agenttoolbox-agent@latest</code></pre>
       <button id="chat-copy-cmd" type="button" class="cap-chip">Copy command</button>
       <p class="chat-sub">Waiting for the local service…</p>
+      {/* 跨来源页面（如线上部署域）探测不到本机网关，多半不是没装，而是网关的
+          AGENT_ALLOWED_ORIGINS 没放行当前页面的来源——不写这句，装了网关的用户
+          会被"去装本地服务"的引导带偏。 */}
+      <p class="chat-sub">Already running? Start it with <code>AGENT_ALLOWED_ORIGINS</code> covering this page's origin ({`http://localhost:4321`} by default).</p>
     </div>
     <div id="chat-cc" class="chat-pane" hidden>
       <p>This model is only served by agentic harnesses. Your local service is running, but Claude Code isn't installed — install it, then reopen this chat:</p>

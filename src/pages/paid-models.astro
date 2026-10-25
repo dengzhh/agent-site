@@ -43,6 +43,13 @@ const heatOf = (m: { heat: { promptTokens: number; completionTokens: number } })
 
   <div class="tablewrap">
     <table>
+      {/* 定宽列：table-layout:fixed 下不定宽就 8 列均分，最后的 Config 列装不下
+          Configure+Chat 两个按钮，Chat 被裁一半（用户线上实测报告）。Model 列吃剩余宽度。 */}
+      <colgroup>
+        <col style="width:2.75rem" /><col style="width:6.5rem" /><col style="width:auto" />
+        <col style="width:5.5rem" /><col style="width:5.5rem" /><col style="width:6rem" />
+        <col style="width:9.5rem" /><col style="width:12.5rem" />
+      </colgroup>
       <thead><tr>
         <th scope="col">#</th>
         <th scope="col" class="sortable num" data-key="heat" aria-sort="descending" tabindex="0">Weekly usage</th>
