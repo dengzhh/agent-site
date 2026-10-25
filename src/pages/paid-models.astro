@@ -1,0 +1,128 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import SyncBadge from '../components/SyncBadge.astro';
+import data from '../data/paid-models.json';
+import type { PaidBoard } from '../lib/paid-models';
+import { fmtTokens, fmtPrice } from '../lib/paid-models';
+const idx = data as PaidBoard;
+const BASE_URL = import.meta.env.BASE_URL.replace(/\/?$/, '/');
+
+const caps = (m: { toolCall: boolean; reasoning: boolean; attachment: boolean }) =>
+  [m.toolCall && 'tools', m.reasoning && 'reasoning', m.attachment && 'vision'].filter(Boolean) as string[];
+
+const fmtCtx = (n: number) =>
+  n >= 1e6 ? `${(n / 1048576).toFixed(1).replace(/\.0$/, '')}M` : n >= 1000 ? `${Math.round(n / 1024)}K` : String(n);
+
+// Chat/Configure 是跨页链接（Task 4 在免费页接 query）：base/envKey 等元数据由
+// 免费页按 provider 自己查，URL 只带免费页没有的信息（模型 id/名称/上下文）。
+const chatHref = (m: { id: string; name: string; context: number; maxOutput: number | null }) => {
+  const qs = new URLSearchParams({ chat: 'openrouter', model: m.id, name: m.name, ctx: String(m.context) });
+  if (m.maxOutput) qs.set('maxout', String(m.maxOutput));
+  return `${BASE_URL}free-models/?${qs}`;
+};
+const cfgHref = (m: { id: string }) =>
+  `${BASE_URL}free-models/?${new URLSearchParams({ configure: 'openrouter', model: m.id })}`;
+
+// 排序键 ↔ tr data 属性：值都是数字，JS 端不再解析
+const heatOf = (m: { heat: { promptTokens: number; completionTokens: number } }) => m.heat.promptTokens + m.heat.completionTokens;
+---
+<BaseLayout
+  title="Trending Paid LLM Models — Ranked by Weekly OpenRouter Usage"
+  description="The most-used paid LLMs on OpenRouter by weekly token volume, with per-million-token prices, context windows and capabilities. Synced daily."
+>
+  <h1>Trending paid LLM models</h1>
+  <SyncBadge date={idx.syncedAt} detail="auto-synced daily from OpenRouter" />
+  <p>
+    The {idx.models.length} most-used paid models on OpenRouter over the last {idx.windowDays} days,
+    ranked by token volume ({idx.totalCandidates} paid models have usage data). Click a column header to re-sort.
+  </p>
+  <p class="muted-note">
+    Usage = OpenRouter weekly prompt+completion tokens. Prices are OpenRouter aggregate rates
+    per 1M tokens (input/output) — not the vendors' direct-list prices.
+  </p>
+
+  <div class="tablewrap">
+    <table>
+      <thead><tr>
+        <th scope="col">#</th>
+        <th scope="col" class="sortable num" data-key="heat" aria-sort="descending">Weekly usage</th>
+        <th scope="col">Model</th>
+        <th scope="col" class="sortable num" data-key="in" aria-sort="none">In $/M</th>
+        <th scope="col" class="sortable num" data-key="out" aria-sort="none">Out $/M</th>
+        <th scope="col" class="sortable num" data-key="ctx" aria-sort="none">Context</th>
+        <th scope="col">Capabilities</th>
+        <th scope="col">Config</th>
+      </tr></thead>
+      <tbody>
+        {idx.models.map((m, i) => (
+          <tr data-heat={heatOf(m)} data-in={m.price.input} data-out={m.price.output} data-ctx={m.context}>
+            <td class="num rank">{i + 1}</td>
+            <td class="num">{fmtTokens(heatOf(m))}</td>
+            <td class="col-model">
+              <a href={m.detailUrl} target="_blank" rel="noopener" title="OpenRouter model page">{m.name}</a>
+              <code class="model-id">{m.id}</code>
+            </td>
+            <td class="num">{fmtPrice(m.price.input)}</td>
+            <td class="num">{fmtPrice(m.price.output)}</td>
+            <td class="num">{fmtCtx(m.context)}</td>
+            <td>{caps(m).length ? caps(m).join(' · ') : '—'}</td>
+            <td class="col-config">
+              <a class="btn" href={cfgHref(m)}>Configure</a>
+              <a class="btn" href={chatHref(m)}>Chat</a>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </div>
+
+  <p class="muted-note">
+    Chat and Configure jump to the free-models page and open the same drawers there — bring your
+    own OpenRouter key.
+  </p>
+</BaseLayout>
+
+<style>
+  .tablewrap { overflow-x: auto; }
+  .tablewrap table { table-layout: fixed; min-width: 860px; border-collapse: collapse; width: 100%; }
+  th, td { padding: .5rem .6rem; text-align: left; border-bottom: 1px solid rgba(127,127,127,0.18); font-size: .92rem; }
+  th.sortable { cursor: pointer; user-select: none; }
+  th.sortable:hover { color: var(--cobalt); }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.rank { color: var(--ink-soft); }
+  td.col-model { overflow-wrap: anywhere; }
+  .model-id { display: block; font-size: .72rem; color: var(--ink-soft); }
+  td.col-config { white-space: nowrap; }
+  .btn { font: inherit; font-size: .85rem; padding: .3rem .65rem; margin-right: .3rem;
+    border: 1px solid color-mix(in srgb, var(--ink) 25%, transparent); border-radius: 8px;
+    background: none; color: var(--ink); text-decoration: none; cursor: pointer; }
+  .btn:hover { background: var(--cobalt-wash); border-color: var(--cobalt); }
+</style>
+
+<script>
+  // 列排序：默认热度降序（服务端已排好），点表头切换键/方向。行内 # 是热度名次，
+  // 换排序键后保留——它标注的是"热度榜里的第几"，不是当前视图的第几。
+  type Key = 'heat' | 'in' | 'out' | 'ctx';
+  const tbody = document.querySelector('table tbody')!;
+  const heads = Array.from(document.querySelectorAll<HTMLTableCellElement>('th.sortable'));
+  let key: Key = 'heat';
+  let desc = true;
+  const rows = () => Array.from(tbody.querySelectorAll<HTMLTableRowElement>('tr'));
+  function render() {
+    rows()
+      .sort((a, b) => desc
+        ? Number(b.dataset[key]) - Number(a.dataset[key])
+        : Number(a.dataset[key]) - Number(b.dataset[key]))
+      .forEach((tr) => tbody.append(tr));
+    for (const th of heads) {
+      th.setAttribute('aria-sort', th.dataset.key === key ? (desc ? 'descending' : 'ascending') : 'none');
+    }
+  }
+  for (const th of heads) {
+    th.addEventListener('click', () => {
+      const k = th.dataset.key as Key;
+      if (k === key) desc = !desc; else { key = k; desc = true; }
+      render();
+    });
+  }
+</script>
