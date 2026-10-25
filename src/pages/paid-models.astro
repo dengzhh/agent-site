@@ -20,8 +20,8 @@ const chatHref = (m: { id: string; name: string; context: number; maxOutput: num
   if (m.maxOutput) qs.set('maxout', String(m.maxOutput));
   return `${BASE_URL}free-models/?${qs}`;
 };
-const cfgHref = (m: { id: string }) =>
-  `${BASE_URL}free-models/?${new URLSearchParams({ configure: 'openrouter', model: m.id })}`;
+const cfgHref = (m: { id: string; name: string }) =>
+  `${BASE_URL}free-models/?${new URLSearchParams({ configure: 'openrouter', model: m.id, name: m.name })}`;
 
 // 排序键 ↔ tr data 属性：值都是数字，JS 端不再解析
 const heatOf = (m: { heat: { promptTokens: number; completionTokens: number } }) => m.heat.promptTokens + m.heat.completionTokens;
