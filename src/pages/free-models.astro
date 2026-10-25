@@ -322,6 +322,7 @@ const fmtCtx = (n: number) =>
   import { generateConfig, type ConfigTarget } from '../lib/freeconfig';
   import { probeHealth, createSession, streamMessage, abortSession, releaseSessionQueued, awaitPendingRelease, fetchOpenRouterQuota, answerPermission, listSessions, deleteSession, clearSessions, historyBlocks, sessionModelLabel, carriedSessionId, type SessionSummary, keyStorage, type ChatEvent, formatQuota } from '../lib/agentchat';
   import { parseOpenChatParams, parseOpenConfigParams } from '../lib/chatlink';
+  import type { FreeModel } from '../lib/free-models';
 
   import { openDrawer, closeDrawers, stopScroll } from '../lib/drawer';
 
@@ -356,7 +357,15 @@ const fmtCtx = (n: number) =>
 
   function render() {
     const p = idx.providers.find((x) => x.id === provSel.value)!;
-    const m = p.models.find((x) => x.id === modelSel.value) ?? p.models[0];
+    // select 里可能躺着 p.models 没有的条目：?configure= 跨页链接（/paid-models）
+    // 会往 select 追加一个付费模型 option（见 openConfig）。此时绝不能退回
+    // p.models[0]——那会静默生成**另一个模型**的配置片段（选 opus 复制出
+    // inkling-small:free）。generateConfig 只读 m.id/name，按当前选中项合成。
+    const m = p.models.find((x) => x.id === modelSel.value)
+      ?? (modelSel.value
+        ? { id: modelSel.value, name: modelSel.selectedOptions[0]?.textContent || modelSel.value } as FreeModel
+        : null)
+      ?? p.models[0];
     if (!m) { out.textContent = ''; return; }
     out.textContent = generateConfig(
       targetSel.value as ConfigTarget, p, m,
