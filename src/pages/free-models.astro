@@ -321,6 +321,8 @@ const fmtCtx = (n: number) =>
   import data from '../data/free-models.json';
   import { generateConfig, type ConfigTarget } from '../lib/freeconfig';
   import { probeHealth, createSession, streamMessage, abortSession, releaseSessionQueued, awaitPendingRelease, fetchOpenRouterQuota, answerPermission, listSessions, deleteSession, clearSessions, historyBlocks, sessionModelLabel, carriedSessionId, type SessionSummary, keyStorage, type ChatEvent, formatQuota } from '../lib/agentchat';
+  import { parseOpenChatParams, parseOpenConfigParams } from '../lib/chatlink';
+  import type { FreeModel } from '../lib/free-models';
 
   import { openDrawer, closeDrawers, stopScroll } from '../lib/drawer';
 
@@ -355,7 +357,15 @@ const fmtCtx = (n: number) =>
 
   function render() {
     const p = idx.providers.find((x) => x.id === provSel.value)!;
-    const m = p.models.find((x) => x.id === modelSel.value) ?? p.models[0];
+    // select 里可能躺着 p.models 没有的条目：?configure= 跨页链接（/paid-models）
+    // 会往 select 追加一个付费模型 option（见 openConfig）。此时绝不能退回
+    // p.models[0]——那会静默生成**另一个模型**的配置片段（选 opus 复制出
+    // inkling-small:free）。generateConfig 只读 m.id/name，按当前选中项合成。
+    const m = p.models.find((x) => x.id === modelSel.value)
+      ?? (modelSel.value
+        ? { id: modelSel.value, name: modelSel.selectedOptions[0]?.textContent || modelSel.value } as FreeModel
+        : null)
+      ?? p.models[0];
     if (!m) { out.textContent = ''; return; }
     out.textContent = generateConfig(
       targetSel.value as ConfigTarget, p, m,
@@ -382,6 +392,14 @@ const fmtCtx = (n: number) =>
   function openConfig(provider: string, model: string, label: string): void {
     provSel.value = provider;
     fillModels();
+    // 跨页链接进来的模型（/paid-models）不在 free-models.json 里，select 没有
+    // 对应 option 时直接赋 value 会静默失败停在第一项——追加一个再选中。
+    if (model && !Array.from(modelSel.options).some((o) => o.value === model)) {
+      const o = document.createElement('option');
+      o.value = model;
+      o.textContent = label || model;
+      modelSel.append(o);
+    }
     modelSel.value = model;
     render();
     ($('config-pick-label') as HTMLElement).textContent = label;
@@ -967,6 +985,34 @@ const fmtCtx = (n: number) =>
   document.querySelectorAll<HTMLButtonElement>('button.chat-pick').forEach((a) => {
     a.addEventListener('click', (e) => { e.preventDefault(); currentPickEl = a; openChat(a); });
   });
+
+  // ── 跨页打开（/paid-models 的按钮）：URL query → 已有抽屉路径 ──────────
+  // provider 元数据（base/anthropic/envKey）从 idx.providers 查，不在 URL 里
+  // 重复携带。未知 provider 静默忽略——免费页自身行为零变化。
+  (() => {
+    const open = parseOpenChatParams(location.search);
+    const cfg = open ? null : parseOpenConfigParams(location.search);
+    if (open) {
+      const p = idx.providers.find((x) => x.id === open.provider);
+      if (!p) return;
+      // openChat 只读 dataset：合成一个元素即可，不必挂进 DOM。agents 用 pi——
+      // 付费 openrouter 模型不在 :free 的 harness gate 范围。
+      const el = document.createElement('div');
+      el.dataset.provider = open.provider;
+      el.dataset.model = open.model;
+      el.dataset.base = p.api ?? '';
+      el.dataset.anthropic = p.anthropicApi ?? '';
+      el.dataset.envkey = p.envKey;
+      el.dataset.ctx = String(open.ctx);
+      el.dataset.maxout = String(open.maxout);
+      el.dataset.name = open.name ?? open.model;
+      el.dataset.agents = 'pi';
+      currentPickEl = el;
+      openChat(el);
+    } else if (cfg && idx.providers.some((x) => x.id === cfg.provider)) {
+      openConfig(cfg.provider, cfg.model, cfg.name ?? cfg.model);
+    }
+  })();
   ($('chat-new-session') as HTMLButtonElement).addEventListener('click', () => {
     if (currentPickEl) openChat(currentPickEl, { persistId: null });
   });
