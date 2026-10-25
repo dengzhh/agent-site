@@ -1,5 +1,5 @@
 {
-  "syncedAt": "2026-10-24T08:16:33.721Z",
+  "syncedAt": "2026-10-25T08:34:25.241Z",
   "source": "models.dev + openrouter/api/v1/models",
   "totalFree": 113,
   "providers": [
@@ -46,22 +46,6 @@
           "detailUrl": "https://openrouter.ai/thinkingmachines/inkling:free"
         },
         {
-          "id": "nvidia/nemotron-3-ultra-550b-a55b:free",
-          "name": "Nemotron 3 Ultra (free)",
-          "context": 1000000,
-          "maxOutput": 65536,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": false,
-          "openWeights": true,
-          "lastUpdated": "2026-06-04",
-          "agents": [
-            "cc",
-            "pi"
-          ],
-          "detailUrl": "https://openrouter.ai/nvidia/nemotron-3-ultra-550b-a55b:free"
-        },
-        {
           "id": "nvidia/nemotron-3.5-super-vl:free",
           "name": "Nemotron 3.5 Super VL (free)",
           "context": 1000000,
@@ -94,6 +78,22 @@
           "detailUrl": "https://openrouter.ai/nvidia/nemotron-3.5-lightning:free"
         },
         {
+          "id": "nvidia/nemotron-3-ultra-550b-a55b:free",
+          "name": "Nemotron 3 Ultra (free)",
+          "context": 1000000,
+          "maxOutput": 65536,
+          "toolCall": true,
+          "reasoning": true,
+          "attachment": false,
+          "openWeights": true,
+          "lastUpdated": "2026-06-04",
+          "agents": [
+            "cc",
+            "pi"
+          ],
+          "detailUrl": "https://openrouter.ai/nvidia/nemotron-3-ultra-550b-a55b:free"
+        },
+        {
           "id": "dots-studio/dots-3-note-preview:free",
           "name": "Dots3-Note Preview (free)",
           "context": 512000,
@@ -108,22 +108,6 @@
             "pi"
           ],
           "detailUrl": "https://openrouter.ai/dots-studio/dots-3-note-preview:free"
-        },
-        {
-          "id": "nvidia/nemotron-3-super-120b-a12b:free",
-          "name": "Nemotron 3 Super (free)",
-          "context": 262144,
-          "maxOutput": 235929,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": false,
-          "openWeights": true,
-          "lastUpdated": "2026-03-11",
-          "agents": [
-            "cc",
-            "pi"
-          ],
-          "detailUrl": "https://openrouter.ai/nvidia/nemotron-3-super-120b-a12b:free"
         },
         {
           "id": "poolside/laguna-xs-2.1:free",
@@ -156,22 +140,6 @@
             "pi"
           ],
           "detailUrl": "https://openrouter.ai/poolside/laguna-s-2.1:free"
-        },
-        {
-          "id": "recursive/flint-v1.0:free",
-          "name": "Flint (free)",
-          "context": 262144,
-          "maxOutput": 235929,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": false,
-          "openWeights": true,
-          "lastUpdated": "2026-10-21",
-          "agents": [
-            "cc",
-            "pi"
-          ],
-          "detailUrl": "https://openrouter.ai/recursive/flint-v1.0:free"
         },
         {
           "id": "xingchen-agi/xing4.0-29b-a4b:free",
@@ -222,20 +190,36 @@
           "detailUrl": "https://openrouter.ai/google/gemma-4-26b-a4b-it:free"
         },
         {
-          "id": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
-          "name": "Nemotron 3 Nano Omni (free)",
-          "context": 256000,
-          "maxOutput": 65536,
+          "id": "recursive/flint-v1.0:free",
+          "name": "Flint (free)",
+          "context": 262144,
+          "maxOutput": 235929,
           "toolCall": true,
           "reasoning": true,
-          "attachment": true,
+          "attachment": false,
           "openWeights": true,
-          "lastUpdated": "2026-04-28",
+          "lastUpdated": "2026-10-21",
           "agents": [
             "cc",
             "pi"
           ],
-          "detailUrl": "https://openrouter.ai/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+          "detailUrl": "https://openrouter.ai/recursive/flint-v1.0:free"
+        },
+        {
+          "id": "nvidia/nemotron-3-super-120b-a12b:free",
+          "name": "Nemotron 3 Super (free)",
+          "context": 262144,
+          "maxOutput": 235929,
+          "toolCall": true,
+          "reasoning": true,
+          "attachment": false,
+          "openWeights": true,
+          "lastUpdated": "2026-03-11",
+          "agents": [
+            "cc",
+            "pi"
+          ],
+          "detailUrl": "https://openrouter.ai/nvidia/nemotron-3-super-120b-a12b:free"
         },
         {
           "id": "cohere/north-mini-code:free",
@@ -252,6 +236,22 @@
             "pi"
           ],
           "detailUrl": "https://openrouter.ai/cohere/north-mini-code:free"
+        },
+        {
+          "id": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+          "name": "Nemotron 3 Nano Omni (free)",
+          "context": 256000,
+          "maxOutput": 65536,
+          "toolCall": true,
+          "reasoning": true,
+          "attachment": true,
+          "openWeights": true,
+          "lastUpdated": "2026-04-28",
+          "agents": [
+            "cc",
+            "pi"
+          ],
+          "detailUrl": "https://openrouter.ai/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
         },
         {
           "id": "nvidia/nemotron-3.5-content-safety:free",
@@ -299,15 +299,15 @@
       "modelsUrl": "https://build.nvidia.com/models",
       "models": [
         {
-          "id": "stepfun-ai/step-5-preview",
-          "name": "Step 5 Preview",
+          "id": "moonshotai/kimi-k3",
+          "name": "Kimi K3",
           "context": 1048576,
-          "maxOutput": 1048576,
+          "maxOutput": 131072,
           "toolCall": true,
           "reasoning": true,
           "attachment": true,
           "openWeights": true,
-          "lastUpdated": "2026-09-20",
+          "lastUpdated": "2026-07-16",
           "agents": [
             "pi"
           ]
@@ -327,15 +327,15 @@
           ]
         },
         {
-          "id": "moonshotai/kimi-k3",
-          "name": "Kimi K3",
+          "id": "stepfun-ai/step-5-preview",
+          "name": "Step 5 Preview",
           "context": 1048576,
-          "maxOutput": 131072,
+          "maxOutput": 1048576,
           "toolCall": true,
           "reasoning": true,
           "attachment": true,
           "openWeights": true,
-          "lastUpdated": "2026-07-16",
+          "lastUpdated": "2026-09-20",
           "agents": [
             "pi"
           ]
@@ -350,20 +350,6 @@
           "attachment": true,
           "openWeights": true,
           "lastUpdated": "2026-09-10",
-          "agents": [
-            "pi"
-          ]
-        },
-        {
-          "id": "nvidia/nemotron-3-ultra-550b-a55b",
-          "name": "Nemotron 3 Ultra 550B A55B",
-          "context": 1000000,
-          "maxOutput": 65536,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": false,
-          "openWeights": true,
-          "lastUpdated": "2026-06-04",
           "agents": [
             "pi"
           ]
@@ -397,15 +383,15 @@
           ]
         },
         {
-          "id": "nvidia/nemotron-3.5-lightning-30b-a3b",
-          "name": "Nemotron 3.5 Lightning 30B A3B",
-          "context": 262144,
-          "maxOutput": 262144,
+          "id": "nvidia/nemotron-3-ultra-550b-a55b",
+          "name": "Nemotron 3 Ultra 550B A55B",
+          "context": 1000000,
+          "maxOutput": 65536,
           "toolCall": true,
           "reasoning": true,
           "attachment": false,
           "openWeights": true,
-          "lastUpdated": "2026-08-11",
+          "lastUpdated": "2026-06-04",
           "agents": [
             "pi"
           ]
@@ -453,15 +439,15 @@
           ]
         },
         {
-          "id": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
-          "name": "Nemotron 3 Nano Omni",
-          "context": 256000,
-          "maxOutput": 65536,
+          "id": "nvidia/nemotron-3.5-lightning-30b-a3b",
+          "name": "Nemotron 3.5 Lightning 30B A3B",
+          "context": 262144,
+          "maxOutput": 262144,
           "toolCall": true,
           "reasoning": true,
-          "attachment": true,
+          "attachment": false,
           "openWeights": true,
-          "lastUpdated": "2026-04-28",
+          "lastUpdated": "2026-08-11",
           "agents": [
             "pi"
           ]
@@ -476,6 +462,20 @@
           "attachment": true,
           "openWeights": true,
           "lastUpdated": "2026-04-02",
+          "agents": [
+            "pi"
+          ]
+        },
+        {
+          "id": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+          "name": "Nemotron 3 Nano Omni",
+          "context": 256000,
+          "maxOutput": 65536,
+          "toolCall": true,
+          "reasoning": true,
+          "attachment": true,
+          "openWeights": true,
+          "lastUpdated": "2026-04-28",
           "agents": [
             "pi"
           ]
@@ -509,57 +509,15 @@
           ]
         },
         {
-          "id": "mistralai/mistral-medium-3-instruct",
-          "name": "Mistral Medium 3",
-          "context": 131072,
-          "maxOutput": 32768,
-          "toolCall": false,
-          "reasoning": false,
-          "attachment": true,
-          "openWeights": false,
-          "lastUpdated": "2025-05-07",
-          "agents": [
-            "pi"
-          ]
-        },
-        {
-          "id": "nvidia/cosmos-reason2-8b",
-          "name": "Cosmos Reason2 8B",
+          "id": "google/gemma-3-12b-it",
+          "name": "Gemma 3 12B IT",
           "context": 131072,
           "maxOutput": 16384,
           "toolCall": true,
-          "reasoning": true,
+          "reasoning": false,
           "attachment": true,
           "openWeights": true,
-          "lastUpdated": "2025-12-01",
-          "agents": [
-            "pi"
-          ]
-        },
-        {
-          "id": "openai/gpt-oss-20b",
-          "name": "GPT OSS 20B",
-          "context": 131072,
-          "maxOutput": 32768,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": false,
-          "openWeights": true,
-          "lastUpdated": "2025-08-05",
-          "agents": [
-            "pi"
-          ]
-        },
-        {
-          "id": "meta/muse-glimmer-30b",
-          "name": "Muse Glimmer 30B",
-          "context": 131072,
-          "maxOutput": 131072,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": true,
-          "openWeights": true,
-          "lastUpdated": "2026-08-10",
+          "lastUpdated": "2025-03-12",
           "agents": [
             "pi"
           ]
@@ -579,169 +537,71 @@
           ]
         },
         {
-          "id": "google/gemma-3-12b-it",
-          "name": "Gemma 3 12B IT",
+          "id": "openai/gpt-oss-20b",
+          "name": "GPT OSS 20B",
+          "context": 131072,
+          "maxOutput": 32768,
+          "toolCall": true,
+          "reasoning": true,
+          "attachment": false,
+          "openWeights": true,
+          "lastUpdated": "2025-08-05",
+          "agents": [
+            "pi"
+          ]
+        },
+        {
+          "id": "mistralai/mistral-medium-3-instruct",
+          "name": "Mistral Medium 3",
+          "context": 131072,
+          "maxOutput": 32768,
+          "toolCall": false,
+          "reasoning": false,
+          "attachment": true,
+          "openWeights": false,
+          "lastUpdated": "2025-05-07",
+          "agents": [
+            "pi"
+          ]
+        },
+        {
+          "id": "meta/muse-glimmer-30b",
+          "name": "Muse Glimmer 30B",
+          "context": 131072,
+          "maxOutput": 131072,
+          "toolCall": true,
+          "reasoning": true,
+          "attachment": true,
+          "openWeights": true,
+          "lastUpdated": "2026-08-10",
+          "agents": [
+            "pi"
+          ]
+        },
+        {
+          "id": "nvidia/cosmos-reason2-8b",
+          "name": "Cosmos Reason2 8B",
           "context": 131072,
           "maxOutput": 16384,
           "toolCall": true,
-          "reasoning": false,
-          "attachment": true,
-          "openWeights": true,
-          "lastUpdated": "2025-03-12",
-          "agents": [
-            "pi"
-          ]
-        },
-        {
-          "id": "nvidia/streampetr",
-          "name": "streampetr",
-          "context": 128000,
-          "maxOutput": 8192,
-          "toolCall": false,
-          "reasoning": false,
-          "attachment": true,
-          "openWeights": true,
-          "lastUpdated": "2025-11-13",
-          "agents": [
-            "pi"
-          ]
-        },
-        {
-          "id": "nvidia/llama-3.1-nemotron-ultra-253b-v1",
-          "name": "Llama 3.1 Nemotron Ultra 253B",
-          "context": 128000,
-          "maxOutput": 16384,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": false,
-          "openWeights": true,
-          "lastUpdated": "2025-04-07",
-          "agents": [
-            "pi"
-          ]
-        },
-        {
-          "id": "nvidia/riva-translate-4b-instruct-v1.1",
-          "name": "riva-translate-4b-instruct-v1_1",
-          "context": 128000,
-          "maxOutput": 4096,
-          "toolCall": false,
-          "reasoning": false,
-          "attachment": false,
-          "openWeights": true,
-          "lastUpdated": "2025-12-12",
-          "agents": [
-            "pi"
-          ]
-        },
-        {
-          "id": "nvidia/usdcode",
-          "name": "usdcode",
-          "context": 128000,
-          "maxOutput": 4096,
-          "toolCall": false,
-          "reasoning": false,
-          "attachment": false,
-          "openWeights": false,
-          "lastUpdated": "2026-01-01",
-          "agents": [
-            "pi"
-          ]
-        },
-        {
-          "id": "nvidia/nemotron-3.5-content-safety",
-          "name": "Nemotron 3.5 Content Safety",
-          "context": 128000,
-          "maxOutput": 8192,
-          "toolCall": false,
           "reasoning": true,
           "attachment": true,
           "openWeights": true,
-          "lastUpdated": "2026-06-02",
+          "lastUpdated": "2025-12-01",
           "agents": [
             "pi"
           ]
         },
         {
-          "id": "nvidia/rerank-qa-mistral-4b",
-          "name": "rerank-qa-mistral-4b",
-          "context": 128000,
-          "maxOutput": 4096,
-          "toolCall": false,
-          "reasoning": false,
-          "attachment": false,
-          "openWeights": true,
-          "lastUpdated": "2025-01-17",
-          "agents": [
-            "pi"
-          ]
-        },
-        {
-          "id": "nvidia/sparsedrive",
-          "name": "sparsedrive",
+          "id": "google/google-paligemma",
+          "name": "paligemma",
           "context": 128000,
           "maxOutput": 8192,
           "toolCall": false,
           "reasoning": false,
           "attachment": true,
           "openWeights": true,
-          "lastUpdated": "2025-07-20",
-          "agents": [
-            "pi"
-          ]
-        },
-        {
-          "id": "nvidia/bevformer",
-          "name": "bevformer",
-          "context": 128000,
-          "maxOutput": 8192,
-          "toolCall": false,
-          "reasoning": false,
-          "attachment": true,
-          "openWeights": true,
-          "lastUpdated": "2025-07-20",
-          "agents": [
-            "pi"
-          ]
-        },
-        {
-          "id": "nvidia/llama-3.1-nemotron-70b-instruct",
-          "name": "Llama 3.1 Nemotron 70B Instruct",
-          "context": 128000,
-          "maxOutput": 8192,
-          "toolCall": true,
-          "reasoning": false,
-          "attachment": false,
-          "openWeights": true,
-          "lastUpdated": "2025-04-15",
-          "agents": [
-            "pi"
-          ]
-        },
-        {
-          "id": "nvidia/llama-3.1-nemotron-safety-guard-8b-v3",
-          "name": "llama-3.1-nemotron-safety-guard-8b-v3",
-          "context": 128000,
-          "maxOutput": 4096,
-          "toolCall": false,
-          "reasoning": false,
-          "attachment": false,
-          "openWeights": true,
-          "lastUpdated": "2025-10-28",
-          "agents": [
-            "pi"
-          ]
-        },
-        {
-          "id": "nvidia/nemotron-voicechat",
-          "name": "nemotron-voicechat",
-          "context": 128000,
-          "maxOutput": 8192,
-          "toolCall": true,
-          "reasoning": false,
-          "attachment": true,
-          "openWeights": true,
-          "lastUpdated": "2026-03-16",
+          "lastUpdated": "2024-08-26",
           "agents": [
             "pi"
           ]
@@ -775,15 +635,155 @@
           ]
         },
         {
-          "id": "google/google-paligemma",
-          "name": "paligemma",
+          "id": "nvidia/usdcode",
+          "name": "usdcode",
+          "context": 128000,
+          "maxOutput": 4096,
+          "toolCall": false,
+          "reasoning": false,
+          "attachment": false,
+          "openWeights": false,
+          "lastUpdated": "2026-01-01",
+          "agents": [
+            "pi"
+          ]
+        },
+        {
+          "id": "nvidia/rerank-qa-mistral-4b",
+          "name": "rerank-qa-mistral-4b",
+          "context": 128000,
+          "maxOutput": 4096,
+          "toolCall": false,
+          "reasoning": false,
+          "attachment": false,
+          "openWeights": true,
+          "lastUpdated": "2025-01-17",
+          "agents": [
+            "pi"
+          ]
+        },
+        {
+          "id": "nvidia/streampetr",
+          "name": "streampetr",
           "context": 128000,
           "maxOutput": 8192,
           "toolCall": false,
           "reasoning": false,
           "attachment": true,
           "openWeights": true,
-          "lastUpdated": "2024-08-26",
+          "lastUpdated": "2025-11-13",
+          "agents": [
+            "pi"
+          ]
+        },
+        {
+          "id": "nvidia/nemotron-3.5-content-safety",
+          "name": "Nemotron 3.5 Content Safety",
+          "context": 128000,
+          "maxOutput": 8192,
+          "toolCall": false,
+          "reasoning": true,
+          "attachment": true,
+          "openWeights": true,
+          "lastUpdated": "2026-06-02",
+          "agents": [
+            "pi"
+          ]
+        },
+        {
+          "id": "nvidia/bevformer",
+          "name": "bevformer",
+          "context": 128000,
+          "maxOutput": 8192,
+          "toolCall": false,
+          "reasoning": false,
+          "attachment": true,
+          "openWeights": true,
+          "lastUpdated": "2025-07-20",
+          "agents": [
+            "pi"
+          ]
+        },
+        {
+          "id": "nvidia/llama-3.1-nemotron-safety-guard-8b-v3",
+          "name": "llama-3.1-nemotron-safety-guard-8b-v3",
+          "context": 128000,
+          "maxOutput": 4096,
+          "toolCall": false,
+          "reasoning": false,
+          "attachment": false,
+          "openWeights": true,
+          "lastUpdated": "2025-10-28",
+          "agents": [
+            "pi"
+          ]
+        },
+        {
+          "id": "nvidia/llama-3.1-nemotron-ultra-253b-v1",
+          "name": "Llama 3.1 Nemotron Ultra 253B",
+          "context": 128000,
+          "maxOutput": 16384,
+          "toolCall": true,
+          "reasoning": true,
+          "attachment": false,
+          "openWeights": true,
+          "lastUpdated": "2025-04-07",
+          "agents": [
+            "pi"
+          ]
+        },
+        {
+          "id": "nvidia/sparsedrive",
+          "name": "sparsedrive",
+          "context": 128000,
+          "maxOutput": 8192,
+          "toolCall": false,
+          "reasoning": false,
+          "attachment": true,
+          "openWeights": true,
+          "lastUpdated": "2025-07-20",
+          "agents": [
+            "pi"
+          ]
+        },
+        {
+          "id": "nvidia/riva-translate-4b-instruct-v1.1",
+          "name": "riva-translate-4b-instruct-v1_1",
+          "context": 128000,
+          "maxOutput": 4096,
+          "toolCall": false,
+          "reasoning": false,
+          "attachment": false,
+          "openWeights": true,
+          "lastUpdated": "2025-12-12",
+          "agents": [
+            "pi"
+          ]
+        },
+        {
+          "id": "nvidia/nemotron-voicechat",
+          "name": "nemotron-voicechat",
+          "context": 128000,
+          "maxOutput": 8192,
+          "toolCall": true,
+          "reasoning": false,
+          "attachment": true,
+          "openWeights": true,
+          "lastUpdated": "2026-03-16",
+          "agents": [
+            "pi"
+          ]
+        },
+        {
+          "id": "nvidia/llama-3.1-nemotron-70b-instruct",
+          "name": "Llama 3.1 Nemotron 70B Instruct",
+          "context": 128000,
+          "maxOutput": 8192,
+          "toolCall": true,
+          "reasoning": false,
+          "attachment": false,
+          "openWeights": true,
+          "lastUpdated": "2025-04-15",
           "agents": [
             "pi"
           ]
@@ -859,20 +859,6 @@
           ]
         },
         {
-          "id": "qwen/qwen-image",
-          "name": "Qwen Image",
-          "context": 0,
-          "maxOutput": 0,
-          "toolCall": false,
-          "reasoning": false,
-          "attachment": false,
-          "openWeights": false,
-          "lastUpdated": "2025-08-07",
-          "agents": [
-            "pi"
-          ]
-        },
-        {
           "id": "qwen/qwen-image-edit",
           "name": "Qwen Image Edit",
           "context": 0,
@@ -887,6 +873,76 @@
           ]
         },
         {
+          "id": "qwen/qwen-image",
+          "name": "Qwen Image",
+          "context": 0,
+          "maxOutput": 0,
+          "toolCall": false,
+          "reasoning": false,
+          "attachment": false,
+          "openWeights": false,
+          "lastUpdated": "2025-08-07",
+          "agents": [
+            "pi"
+          ]
+        },
+        {
+          "id": "black-forest-labs/flux_1-schnell",
+          "name": "FLUX.1-schnell",
+          "context": 0,
+          "maxOutput": 0,
+          "toolCall": false,
+          "reasoning": false,
+          "attachment": false,
+          "openWeights": true,
+          "lastUpdated": "2024-08-01",
+          "agents": [
+            "pi"
+          ]
+        },
+        {
+          "id": "black-forest-labs/flux.1-dev",
+          "name": "FLUX.1-dev",
+          "context": 0,
+          "maxOutput": 0,
+          "toolCall": false,
+          "reasoning": false,
+          "attachment": false,
+          "openWeights": true,
+          "lastUpdated": "2024-08-01",
+          "agents": [
+            "pi"
+          ]
+        },
+        {
+          "id": "black-forest-labs/flux_1-kontext-dev",
+          "name": "FLUX.1-Kontext-dev",
+          "context": 0,
+          "maxOutput": 0,
+          "toolCall": false,
+          "reasoning": false,
+          "attachment": true,
+          "openWeights": true,
+          "lastUpdated": "2025-05-29",
+          "agents": [
+            "pi"
+          ]
+        },
+        {
+          "id": "black-forest-labs/flux_2-klein-4b",
+          "name": "FLUX.2 Klein 4B",
+          "context": 0,
+          "maxOutput": 0,
+          "toolCall": false,
+          "reasoning": false,
+          "attachment": true,
+          "openWeights": true,
+          "lastUpdated": "2026-01-15",
+          "agents": [
+            "pi"
+          ]
+        },
+        {
           "id": "nvidia/cosmos-transfer2_5-2b",
           "name": "cosmos-transfer2.5-2b",
           "context": 0,
@@ -896,6 +952,20 @@
           "attachment": true,
           "openWeights": true,
           "lastUpdated": "2026-02-26",
+          "agents": [
+            "pi"
+          ]
+        },
+        {
+          "id": "nvidia/magpie-tts-zeroshot",
+          "name": "magpie-tts-zeroshot",
+          "context": 0,
+          "maxOutput": 4096,
+          "toolCall": false,
+          "reasoning": false,
+          "attachment": true,
+          "openWeights": true,
+          "lastUpdated": "2025-06-12",
           "agents": [
             "pi"
           ]
@@ -929,34 +999,6 @@
           ]
         },
         {
-          "id": "nvidia/magpie-tts-zeroshot",
-          "name": "magpie-tts-zeroshot",
-          "context": 0,
-          "maxOutput": 4096,
-          "toolCall": false,
-          "reasoning": false,
-          "attachment": true,
-          "openWeights": true,
-          "lastUpdated": "2025-06-12",
-          "agents": [
-            "pi"
-          ]
-        },
-        {
-          "id": "nvidia/studiovoice",
-          "name": "studiovoice",
-          "context": 0,
-          "maxOutput": 0,
-          "toolCall": false,
-          "reasoning": false,
-          "attachment": true,
-          "openWeights": true,
-          "lastUpdated": "2025-06-13",
-          "agents": [
-            "pi"
-          ]
-        },
-        {
           "id": "nvidia/active-speaker-detection",
           "name": "Active Speaker Detection",
           "context": 0,
@@ -971,57 +1013,15 @@
           ]
         },
         {
-          "id": "black-forest-labs/flux_1-schnell",
-          "name": "FLUX.1-schnell",
-          "context": 0,
-          "maxOutput": 0,
-          "toolCall": false,
-          "reasoning": false,
-          "attachment": false,
-          "openWeights": true,
-          "lastUpdated": "2024-08-01",
-          "agents": [
-            "pi"
-          ]
-        },
-        {
-          "id": "black-forest-labs/flux_2-klein-4b",
-          "name": "FLUX.2 Klein 4B",
+          "id": "nvidia/studiovoice",
+          "name": "studiovoice",
           "context": 0,
           "maxOutput": 0,
           "toolCall": false,
           "reasoning": false,
           "attachment": true,
           "openWeights": true,
-          "lastUpdated": "2026-01-15",
-          "agents": [
-            "pi"
-          ]
-        },
-        {
-          "id": "black-forest-labs/flux_1-kontext-dev",
-          "name": "FLUX.1-Kontext-dev",
-          "context": 0,
-          "maxOutput": 0,
-          "toolCall": false,
-          "reasoning": false,
-          "attachment": true,
-          "openWeights": true,
-          "lastUpdated": "2025-05-29",
-          "agents": [
-            "pi"
-          ]
-        },
-        {
-          "id": "black-forest-labs/flux.1-dev",
-          "name": "FLUX.1-dev",
-          "context": 0,
-          "maxOutput": 0,
-          "toolCall": false,
-          "reasoning": false,
-          "attachment": false,
-          "openWeights": true,
-          "lastUpdated": "2024-08-01",
+          "lastUpdated": "2025-06-13",
           "agents": [
             "pi"
           ]
@@ -1161,20 +1161,6 @@
       "anthropicApi": null,
       "models": [
         {
-          "id": "deepseek-v4-pro",
-          "name": "DeepSeek V4 Pro",
-          "context": 1000000,
-          "maxOutput": 384000,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": false,
-          "openWeights": true,
-          "lastUpdated": "2026-04-24",
-          "agents": [
-            "pi"
-          ]
-        },
-        {
           "id": "glm-5.3",
           "name": "GLM-5.3",
           "context": 1000000,
@@ -1189,6 +1175,90 @@
           ]
         },
         {
+          "id": "qwen3.6-plus",
+          "name": "Qwen3.6 Plus",
+          "context": 1000000,
+          "maxOutput": 65536,
+          "toolCall": true,
+          "reasoning": true,
+          "attachment": true,
+          "openWeights": false,
+          "lastUpdated": "2026-04-02",
+          "agents": [
+            "pi"
+          ]
+        },
+        {
+          "id": "qwen3.8-max-preview",
+          "name": "Qwen3.8 Max Preview",
+          "context": 1000000,
+          "maxOutput": 131072,
+          "toolCall": true,
+          "reasoning": true,
+          "attachment": true,
+          "openWeights": false,
+          "lastUpdated": "2026-07-19",
+          "agents": [
+            "pi"
+          ]
+        },
+        {
+          "id": "deepseek-v4.1-flash",
+          "name": "DeepSeek V4.1 Flash",
+          "context": 1000000,
+          "maxOutput": 384000,
+          "toolCall": true,
+          "reasoning": true,
+          "attachment": true,
+          "openWeights": true,
+          "lastUpdated": "2026-09-10",
+          "agents": [
+            "pi"
+          ]
+        },
+        {
+          "id": "deepseek-v4.1-flash-1017",
+          "name": "DeepSeek V4.1 Flash 1017",
+          "context": 1000000,
+          "maxOutput": 384000,
+          "toolCall": true,
+          "reasoning": true,
+          "attachment": true,
+          "openWeights": true,
+          "lastUpdated": "2026-10-17",
+          "agents": [
+            "pi"
+          ]
+        },
+        {
+          "id": "qwen3.8-flash",
+          "name": "Qwen3.8 Flash",
+          "context": 1000000,
+          "maxOutput": 131072,
+          "toolCall": true,
+          "reasoning": true,
+          "attachment": true,
+          "openWeights": false,
+          "lastUpdated": "2026-08-26",
+          "agents": [
+            "pi"
+          ]
+        },
+        {
+          "id": "deepseek-v4-pro",
+          "name": "DeepSeek V4 Pro",
+          "context": 1000000,
+          "maxOutput": 384000,
+          "toolCall": true,
+          "reasoning": true,
+          "attachment": false,
+          "openWeights": true,
+          "lastUpdated": "2026-04-24",
+          "agents": [
+            "pi"
+          ]
+        },
+        {
           "id": "qwen3.8-max",
           "name": "Qwen3.8 Max",
           "context": 1000000,
@@ -1198,6 +1268,76 @@
           "attachment": true,
           "openWeights": false,
           "lastUpdated": "2026-08-03",
+          "agents": [
+            "pi"
+          ]
+        },
+        {
+          "id": "qwen3.6-flash",
+          "name": "Qwen3.6 Flash",
+          "context": 1000000,
+          "maxOutput": 65536,
+          "toolCall": true,
+          "reasoning": true,
+          "attachment": true,
+          "openWeights": false,
+          "lastUpdated": "2026-04-27",
+          "agents": [
+            "pi"
+          ]
+        },
+        {
+          "id": "qwen3.7-plus",
+          "name": "Qwen3.7 Plus",
+          "context": 1000000,
+          "maxOutput": 65536,
+          "toolCall": true,
+          "reasoning": true,
+          "attachment": true,
+          "openWeights": false,
+          "lastUpdated": "2026-06-02",
+          "agents": [
+            "pi"
+          ]
+        },
+        {
+          "id": "qwen3.7-max",
+          "name": "Qwen3.7 Max",
+          "context": 1000000,
+          "maxOutput": 131072,
+          "toolCall": true,
+          "reasoning": true,
+          "attachment": false,
+          "openWeights": false,
+          "lastUpdated": "2026-05-21",
+          "agents": [
+            "pi"
+          ]
+        },
+        {
+          "id": "deepseek-v4-flash",
+          "name": "DeepSeek V4 Flash",
+          "context": 1000000,
+          "maxOutput": 384000,
+          "toolCall": true,
+          "reasoning": true,
+          "attachment": false,
+          "openWeights": true,
+          "lastUpdated": "2026-04-24",
+          "agents": [
+            "pi"
+          ]
+        },
+        {
+          "id": "deepseek-v4-pro-0813",
+          "name": "DeepSeek V4 Pro 0813",
+          "context": 1000000,
+          "maxOutput": 384000,
+          "toolCall": true,
+          "reasoning": true,
+          "attachment": false,
+          "openWeights": true,
+          "lastUpdated": "2026-08-22",
           "agents": [
             "pi"
           ]
@@ -1231,160 +1371,6 @@
           ]
         },
         {
-          "id": "qwen3.7-plus",
-          "name": "Qwen3.7 Plus",
-          "context": 1000000,
-          "maxOutput": 65536,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": true,
-          "openWeights": false,
-          "lastUpdated": "2026-06-02",
-          "agents": [
-            "pi"
-          ]
-        },
-        {
-          "id": "qwen3.8-flash",
-          "name": "Qwen3.8 Flash",
-          "context": 1000000,
-          "maxOutput": 131072,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": true,
-          "openWeights": false,
-          "lastUpdated": "2026-08-26",
-          "agents": [
-            "pi"
-          ]
-        },
-        {
-          "id": "deepseek-v4-flash",
-          "name": "DeepSeek V4 Flash",
-          "context": 1000000,
-          "maxOutput": 384000,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": false,
-          "openWeights": true,
-          "lastUpdated": "2026-04-24",
-          "agents": [
-            "pi"
-          ]
-        },
-        {
-          "id": "qwen3.6-plus",
-          "name": "Qwen3.6 Plus",
-          "context": 1000000,
-          "maxOutput": 65536,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": true,
-          "openWeights": false,
-          "lastUpdated": "2026-04-02",
-          "agents": [
-            "pi"
-          ]
-        },
-        {
-          "id": "qwen3.6-flash",
-          "name": "Qwen3.6 Flash",
-          "context": 1000000,
-          "maxOutput": 65536,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": true,
-          "openWeights": false,
-          "lastUpdated": "2026-04-27",
-          "agents": [
-            "pi"
-          ]
-        },
-        {
-          "id": "deepseek-v4.1-flash-1017",
-          "name": "DeepSeek V4.1 Flash 1017",
-          "context": 1000000,
-          "maxOutput": 384000,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": true,
-          "openWeights": true,
-          "lastUpdated": "2026-10-17",
-          "agents": [
-            "pi"
-          ]
-        },
-        {
-          "id": "deepseek-v4.1-flash",
-          "name": "DeepSeek V4.1 Flash",
-          "context": 1000000,
-          "maxOutput": 384000,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": true,
-          "openWeights": true,
-          "lastUpdated": "2026-09-10",
-          "agents": [
-            "pi"
-          ]
-        },
-        {
-          "id": "qwen3.8-max-preview",
-          "name": "Qwen3.8 Max Preview",
-          "context": 1000000,
-          "maxOutput": 131072,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": true,
-          "openWeights": false,
-          "lastUpdated": "2026-07-19",
-          "agents": [
-            "pi"
-          ]
-        },
-        {
-          "id": "qwen3.7-max",
-          "name": "Qwen3.7 Max",
-          "context": 1000000,
-          "maxOutput": 131072,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": false,
-          "openWeights": false,
-          "lastUpdated": "2026-05-21",
-          "agents": [
-            "pi"
-          ]
-        },
-        {
-          "id": "deepseek-v4-pro-0813",
-          "name": "DeepSeek V4 Pro 0813",
-          "context": 1000000,
-          "maxOutput": 384000,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": false,
-          "openWeights": true,
-          "lastUpdated": "2026-08-22",
-          "agents": [
-            "pi"
-          ]
-        },
-        {
-          "id": "kimi-k2.6",
-          "name": "Kimi K2.6",
-          "context": 262144,
-          "maxOutput": 262144,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": true,
-          "openWeights": true,
-          "lastUpdated": "2026-04-20",
-          "agents": [
-            "pi"
-          ]
-        },
-        {
           "id": "kimi-k2.7-code",
           "name": "Kimi K2.7 Code",
           "context": 262144,
@@ -1408,6 +1394,20 @@
           "attachment": true,
           "openWeights": true,
           "lastUpdated": "2026-01-27",
+          "agents": [
+            "pi"
+          ]
+        },
+        {
+          "id": "kimi-k2.6",
+          "name": "Kimi K2.6",
+          "context": 262144,
+          "maxOutput": 262144,
+          "toolCall": true,
+          "reasoning": true,
+          "attachment": true,
+          "openWeights": true,
+          "lastUpdated": "2026-04-20",
           "agents": [
             "pi"
           ]
@@ -1469,8 +1469,8 @@
           ]
         },
         {
-          "id": "qwen-image-2.0",
-          "name": "Qwen Image 2.0",
+          "id": "qwen-image-2.0-pro",
+          "name": "Qwen Image 2.0 Pro",
           "context": 8192,
           "maxOutput": 0,
           "toolCall": false,
@@ -1497,8 +1497,22 @@
           ]
         },
         {
-          "id": "qwen-image-2.0-pro",
-          "name": "Qwen Image 2.0 Pro",
+          "id": "wan2.7-image-pro",
+          "name": "Wan2.7 Image Pro",
+          "context": 8192,
+          "maxOutput": 0,
+          "toolCall": false,
+          "reasoning": false,
+          "attachment": false,
+          "openWeights": false,
+          "lastUpdated": "2026-05-29",
+          "agents": [
+            "pi"
+          ]
+        },
+        {
+          "id": "qwen-image-2.0",
+          "name": "Qwen Image 2.0",
           "context": 8192,
           "maxOutput": 0,
           "toolCall": false,
@@ -1511,15 +1525,15 @@
           ]
         },
         {
-          "id": "wan2.7-image-pro",
-          "name": "Wan2.7 Image Pro",
-          "context": 8192,
+          "id": "happyhorse-1.1-i2v",
+          "name": "HappyHorse 1.1 Image-to-Video",
+          "context": 0,
           "maxOutput": 0,
           "toolCall": false,
           "reasoning": false,
-          "attachment": false,
+          "attachment": true,
           "openWeights": false,
-          "lastUpdated": "2026-05-29",
+          "lastUpdated": "2026-07-17",
           "agents": [
             "pi"
           ]
@@ -1551,20 +1565,6 @@
           "agents": [
             "pi"
           ]
-        },
-        {
-          "id": "happyhorse-1.1-i2v",
-          "name": "HappyHorse 1.1 Image-to-Video",
-          "context": 0,
-          "maxOutput": 0,
-          "toolCall": false,
-          "reasoning": false,
-          "attachment": true,
-          "openWeights": false,
-          "lastUpdated": "2026-07-17",
-          "agents": [
-            "pi"
-          ]
         }
       ]
     },
@@ -1579,20 +1579,6 @@
       "anthropicApi": null,
       "models": [
         {
-          "id": "fledge-alpha-free",
-          "name": "Fledge Alpha Free",
-          "context": 1048576,
-          "maxOutput": 131072,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": true,
-          "openWeights": false,
-          "lastUpdated": "2026-10-01",
-          "agents": [
-            "pi"
-          ]
-        },
-        {
           "id": "muse-spark-1.3-contributor-free",
           "name": "Muse Spark 1.3 Free",
           "context": 1048576,
@@ -1602,6 +1588,20 @@
           "attachment": true,
           "openWeights": false,
           "lastUpdated": "2026-09-02",
+          "agents": [
+            "pi"
+          ]
+        },
+        {
+          "id": "fledge-alpha-free",
+          "name": "Fledge Alpha Free",
+          "context": 1048576,
+          "maxOutput": 131072,
+          "toolCall": true,
+          "reasoning": true,
+          "attachment": true,
+          "openWeights": false,
+          "lastUpdated": "2026-10-01",
           "agents": [
             "pi"
           ]
@@ -1621,20 +1621,6 @@
           ]
         },
         {
-          "id": "longcat-2.5-preview-free",
-          "name": "LongCat 2.5 Preview Free",
-          "context": 1000000,
-          "maxOutput": 131072,
-          "toolCall": true,
-          "reasoning": true,
-          "attachment": true,
-          "openWeights": false,
-          "lastUpdated": "2026-09-25",
-          "agents": [
-            "pi"
-          ]
-        },
-        {
           "id": "nemotron-3-ultra-free",
           "name": "Nemotron 3 Ultra Free",
           "context": 1000000,
@@ -1649,15 +1635,29 @@
           ]
         },
         {
-          "id": "ling-3.0-flash-fin-free",
-          "name": "Ling 3.0 Flash Fin Free",
+          "id": "longcat-2.5-preview-free",
+          "name": "LongCat 2.5 Preview Free",
+          "context": 1000000,
+          "maxOutput": 131072,
+          "toolCall": true,
+          "reasoning": true,
+          "attachment": true,
+          "openWeights": false,
+          "lastUpdated": "2026-09-25",
+          "agents": [
+            "pi"
+          ]
+        },
+        {
+          "id": "ling-3.1-flash-free",
+          "name": "Ling 3.1 Flash Free",
           "context": 262144,
           "maxOutput": 32768,
           "toolCall": true,
           "reasoning": true,
           "attachment": false,
           "openWeights": true,
-          "lastUpdated": "2026-09-03",
+          "lastUpdated": "2026-09-29",
           "agents": [
             "pi"
           ]
@@ -1677,15 +1677,15 @@
           ]
         },
         {
-          "id": "ling-3.1-flash-free",
-          "name": "Ling 3.1 Flash Free",
+          "id": "ling-3.0-flash-fin-free",
+          "name": "Ling 3.0 Flash Fin Free",
           "context": 262144,
           "maxOutput": 32768,
           "toolCall": true,
           "reasoning": true,
           "attachment": false,
           "openWeights": true,
-          "lastUpdated": "2026-09-29",
+          "lastUpdated": "2026-09-03",
           "agents": [
             "pi"
           ]
