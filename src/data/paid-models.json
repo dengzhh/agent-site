@@ -1,16 +1,16 @@
 {
-  "syncedAt": "2026-10-30T10:14:37.229Z",
+  "syncedAt": "2026-10-31T09:49:07.467Z",
   "source": "openrouter rankings + models api",
   "windowDays": 6,
-  "totalCandidates": 291,
+  "totalCandidates": 290,
   "models": [
     {
       "id": "deepseek/deepseek-v4.1-flash",
       "name": "DeepSeek: DeepSeek V4.1 Flash",
       "canonicalSlug": "deepseek/deepseek-v4.1-flash-20260910",
       "heat": {
-        "promptTokens": 57292236219958,
-        "completionTokens": 1004689547081
+        "promptTokens": 59737018553379,
+        "completionTokens": 1019327355664
       },
       "price": {
         "input": 0.045,
@@ -28,15 +28,15 @@
       "name": "Z.ai: GLM 5.3 Flash",
       "canonicalSlug": "z-ai/glm-5.3-flash-20260826",
       "heat": {
-        "promptTokens": 14965004555059,
-        "completionTokens": 646736700628
+        "promptTokens": 15472827243038,
+        "completionTokens": 624650293987
       },
       "price": {
-        "input": 0.15,
-        "output": 0.5
+        "input": 0.0163,
+        "output": 0.148
       },
       "context": 1048576,
-      "maxOutput": 943717,
+      "maxOutput": 131072,
       "toolCall": true,
       "reasoning": true,
       "attachment": true,
@@ -47,8 +47,8 @@
       "name": "OpenAI: GPT-6 Luna",
       "canonicalSlug": "openai/gpt-6-luna-20260922",
       "heat": {
-        "promptTokens": 11078640499528,
-        "completionTokens": 282243264503
+        "promptTokens": 10645864893651,
+        "completionTokens": 281275509873
       },
       "price": {
         "input": 0.1,
@@ -66,8 +66,8 @@
       "name": "Tencent: Hy4 preview",
       "canonicalSlug": "tencent/hy4-preview-20260827",
       "heat": {
-        "promptTokens": 9088194332831,
-        "completionTokens": 87945135927
+        "promptTokens": 9238542281223,
+        "completionTokens": 89641836499
       },
       "price": {
         "input": 0.834,
@@ -85,8 +85,8 @@
       "name": "Anthropic: Claude Opus 5.5",
       "canonicalSlug": "anthropic/claude-opus-5.5-20260921",
       "heat": {
-        "promptTokens": 7773064558339,
-        "completionTokens": 67248591873
+        "promptTokens": 7246324902925,
+        "completionTokens": 63855681541
       },
       "price": {
         "input": 4,
@@ -104,8 +104,8 @@
       "name": "DeepSeek: DeepSeek V4 Flash 0423",
       "canonicalSlug": "deepseek/deepseek-v4-flash-20260423",
       "heat": {
-        "promptTokens": 6501094901121,
-        "completionTokens": 330006100611
+        "promptTokens": 6382925344493,
+        "completionTokens": 325380903406
       },
       "price": {
         "input": 0.091,
@@ -123,8 +123,8 @@
       "name": "StepFun: Step 5 Preview",
       "canonicalSlug": "stepfun/step-5-preview-20261008",
       "heat": {
-        "promptTokens": 5897717043556,
-        "completionTokens": 27404562284
+        "promptTokens": 6271332715153,
+        "completionTokens": 29146792554
       },
       "price": {
         "input": 1,
@@ -138,31 +138,12 @@
       "detailUrl": "https://openrouter.ai/stepfun/step-5-preview"
     },
     {
-      "id": "z-ai/glm-5.3",
-      "name": "Z.ai: GLM 5.3",
-      "canonicalSlug": "z-ai/glm-5.3-20260816",
-      "heat": {
-        "promptTokens": 4829512103148,
-        "completionTokens": 69800147363
-      },
-      "price": {
-        "input": 0.08,
-        "output": 3.6
-      },
-      "context": 1048576,
-      "maxOutput": 943718,
-      "toolCall": true,
-      "reasoning": true,
-      "attachment": false,
-      "detailUrl": "https://openrouter.ai/z-ai/glm-5.3"
-    },
-    {
       "id": "minimax/minimax-m3.1-flash",
       "name": "MiniMax: MiniMax M3.1 Flash",
       "canonicalSlug": "minimax/minimax-m3.1-flash-20261019",
       "heat": {
-        "promptTokens": 4070803134253,
-        "completionTokens": 53579040184
+        "promptTokens": 4970985638226,
+        "completionTokens": 72062376714
       },
       "price": {
         "input": 0.15,
@@ -176,12 +157,31 @@
       "detailUrl": "https://openrouter.ai/minimax/minimax-m3.1-flash"
     },
     {
+      "id": "z-ai/glm-5.3",
+      "name": "Z.ai: GLM 5.3",
+      "canonicalSlug": "z-ai/glm-5.3-20260816",
+      "heat": {
+        "promptTokens": 4554847485540,
+        "completionTokens": 69426468440
+      },
+      "price": {
+        "input": 0.0699,
+        "output": 1.4
+      },
+      "context": 1048576,
+      "maxOutput": 943718,
+      "toolCall": true,
+      "reasoning": true,
+      "attachment": false,
+      "detailUrl": "https://openrouter.ai/z-ai/glm-5.3"
+    },
+    {
       "id": "openai/gpt-6.1-sol",
       "name": "OpenAI: GPT-6.1 Sol",
       "canonicalSlug": "openai/gpt-6.1-sol-20260929",
       "heat": {
-        "promptTokens": 3699496135489,
-        "completionTokens": 54955427562
+        "promptTokens": 3671080103641,
+        "completionTokens": 54663597658
       },
       "price": {
         "input": 2,
@@ -199,8 +199,8 @@
       "name": "Xiaomi: MiMo-V2.6-Flash",
       "canonicalSlug": "xiaomi/mimo-v2.6-flash-20260921",
       "heat": {
-        "promptTokens": 3537583680580,
-        "completionTokens": 45045587340
+        "promptTokens": 3071607546303,
+        "completionTokens": 41236902184
       },
       "price": {
         "input": 0.14,
@@ -214,88 +214,12 @@
       "detailUrl": "https://openrouter.ai/xiaomi/mimo-v2.6-flash"
     },
     {
-      "id": "tencent/hy3",
-      "name": "Tencent: Hy3",
-      "canonicalSlug": "tencent/hy3-20260706",
-      "heat": {
-        "promptTokens": 3000551231276,
-        "completionTokens": 48518588537
-      },
-      "price": {
-        "input": 0.132,
-        "output": 0.528
-      },
-      "context": 262144,
-      "maxOutput": 128000,
-      "toolCall": true,
-      "reasoning": true,
-      "attachment": false,
-      "detailUrl": "https://openrouter.ai/tencent/hy3"
-    },
-    {
-      "id": "meta/muse-spark-1.3-contributor",
-      "name": "Meta: Muse Spark 1.3 Contributor",
-      "canonicalSlug": "meta/muse-spark-1.3-contributor-20260902",
-      "heat": {
-        "promptTokens": 2603543616992,
-        "completionTokens": 36414059637
-      },
-      "price": {
-        "input": 0.1,
-        "output": 0.2
-      },
-      "context": 1048576,
-      "maxOutput": 943718,
-      "toolCall": true,
-      "reasoning": true,
-      "attachment": true,
-      "detailUrl": "https://openrouter.ai/meta/muse-spark-1.3-contributor"
-    },
-    {
-      "id": "anthropic/claude-sonnet-5.5",
-      "name": "Anthropic: Claude Sonnet 5.5",
-      "canonicalSlug": "anthropic/claude-sonnet-5.5-20260928",
-      "heat": {
-        "promptTokens": 2574166006254,
-        "completionTokens": 52359300521
-      },
-      "price": {
-        "input": 2,
-        "output": 10
-      },
-      "context": 1000000,
-      "maxOutput": 128000,
-      "toolCall": true,
-      "reasoning": true,
-      "attachment": true,
-      "detailUrl": "https://openrouter.ai/anthropic/claude-sonnet-5.5"
-    },
-    {
-      "id": "anthropic/claude-haiku-5.5",
-      "name": "Anthropic: Claude Haiku 5.5",
-      "canonicalSlug": "anthropic/claude-haiku-5.5-20261007",
-      "heat": {
-        "promptTokens": 2472616169737,
-        "completionTokens": 127169166062
-      },
-      "price": {
-        "input": 0.1,
-        "output": 0.5
-      },
-      "context": 1000000,
-      "maxOutput": 128000,
-      "toolCall": true,
-      "reasoning": true,
-      "attachment": true,
-      "detailUrl": "https://openrouter.ai/anthropic/claude-haiku-5.5"
-    },
-    {
       "id": "openai/gpt-5.6-luna",
       "name": "OpenAI: GPT-5.6 Luna",
       "canonicalSlug": "openai/gpt-5.6-luna-20260709",
       "heat": {
-        "promptTokens": 2189575854161,
-        "completionTokens": 52001776925
+        "promptTokens": 3041104163835,
+        "completionTokens": 71274313403
       },
       "price": {
         "input": 0.2,
@@ -309,31 +233,88 @@
       "detailUrl": "https://openrouter.ai/openai/gpt-5.6-luna"
     },
     {
-      "id": "moonshotai/kimi-k3",
-      "name": "MoonshotAI: Kimi K3",
-      "canonicalSlug": "moonshotai/kimi-k3-20260715",
+      "id": "tencent/hy3",
+      "name": "Tencent: Hy3",
+      "canonicalSlug": "tencent/hy3-20260706",
       "heat": {
-        "promptTokens": 1787699763196,
-        "completionTokens": 27716956893
+        "promptTokens": 2993376152741,
+        "completionTokens": 48749158308
       },
       "price": {
-        "input": 0.192,
-        "output": 15
+        "input": 0.132,
+        "output": 0.528
+      },
+      "context": 262144,
+      "maxOutput": 128000,
+      "toolCall": true,
+      "reasoning": true,
+      "attachment": false,
+      "detailUrl": "https://openrouter.ai/tencent/hy3"
+    },
+    {
+      "id": "anthropic/claude-haiku-5.5",
+      "name": "Anthropic: Claude Haiku 5.5",
+      "canonicalSlug": "anthropic/claude-haiku-5.5-20261007",
+      "heat": {
+        "promptTokens": 2529569439287,
+        "completionTokens": 131482355417
+      },
+      "price": {
+        "input": 0.1,
+        "output": 0.5
+      },
+      "context": 1000000,
+      "maxOutput": 128000,
+      "toolCall": true,
+      "reasoning": true,
+      "attachment": true,
+      "detailUrl": "https://openrouter.ai/anthropic/claude-haiku-5.5"
+    },
+    {
+      "id": "anthropic/claude-sonnet-5.5",
+      "name": "Anthropic: Claude Sonnet 5.5",
+      "canonicalSlug": "anthropic/claude-sonnet-5.5-20260928",
+      "heat": {
+        "promptTokens": 2579660068098,
+        "completionTokens": 54950027394
+      },
+      "price": {
+        "input": 2,
+        "output": 10
+      },
+      "context": 1000000,
+      "maxOutput": 128000,
+      "toolCall": true,
+      "reasoning": true,
+      "attachment": true,
+      "detailUrl": "https://openrouter.ai/anthropic/claude-sonnet-5.5"
+    },
+    {
+      "id": "meta/muse-spark-1.3-contributor",
+      "name": "Meta: Muse Spark 1.3 Contributor",
+      "canonicalSlug": "meta/muse-spark-1.3-contributor-20260902",
+      "heat": {
+        "promptTokens": 2595673575745,
+        "completionTokens": 35968821228
+      },
+      "price": {
+        "input": 0.1,
+        "output": 0.2
       },
       "context": 1048576,
       "maxOutput": 943718,
       "toolCall": true,
       "reasoning": true,
       "attachment": true,
-      "detailUrl": "https://openrouter.ai/moonshotai/kimi-k3"
+      "detailUrl": "https://openrouter.ai/meta/muse-spark-1.3-contributor"
     },
     {
       "id": "moonshotai/kimi-k3.1-pro",
       "name": "MoonshotAI: Kimi K3.1 Pro",
       "canonicalSlug": "moonshotai/kimi-k3.1-pro-20261023",
       "heat": {
-        "promptTokens": 1566300626373,
-        "completionTokens": 17660698234
+        "promptTokens": 2006910956106,
+        "completionTokens": 20634155477
       },
       "price": {
         "input": 2,
@@ -347,12 +328,31 @@
       "detailUrl": "https://openrouter.ai/moonshotai/kimi-k3.1-pro"
     },
     {
+      "id": "moonshotai/kimi-k3",
+      "name": "MoonshotAI: Kimi K3",
+      "canonicalSlug": "moonshotai/kimi-k3-20260715",
+      "heat": {
+        "promptTokens": 1676746001435,
+        "completionTokens": 25435010900
+      },
+      "price": {
+        "input": 0.192,
+        "output": 15
+      },
+      "context": 1048576,
+      "maxOutput": 943718,
+      "toolCall": true,
+      "reasoning": true,
+      "attachment": true,
+      "detailUrl": "https://openrouter.ai/moonshotai/kimi-k3"
+    },
+    {
       "id": "google/gemini-3.8-flash",
       "name": "Google: Gemini 3.8 Flash",
       "canonicalSlug": "google/gemini-3.8-flash-20260902",
       "heat": {
-        "promptTokens": 1466047158219,
-        "completionTokens": 72821843871
+        "promptTokens": 1460633153282,
+        "completionTokens": 71448627559
       },
       "price": {
         "input": 0.825,
@@ -370,15 +370,15 @@
       "name": "DeepSeek: DeepSeek V4 Pro 0423",
       "canonicalSlug": "deepseek/deepseek-v4-pro-20260423",
       "heat": {
-        "promptTokens": 1382628319308,
-        "completionTokens": 46730399392
+        "promptTokens": 1375061296155,
+        "completionTokens": 46719538342
       },
       "price": {
-        "input": 0.816,
-        "output": 1.63
+        "input": 1.6,
+        "output": 3.2
       },
       "context": 1048576,
-      "maxOutput": 384000,
+      "maxOutput": 393216,
       "toolCall": true,
       "reasoning": true,
       "attachment": false,
@@ -389,8 +389,8 @@
       "name": "Xiaomi: MiMo-V2.6-Pro",
       "canonicalSlug": "xiaomi/mimo-v2.6-pro-20260921",
       "heat": {
-        "promptTokens": 1392038033379,
-        "completionTokens": 24500906164
+        "promptTokens": 1343687092518,
+        "completionTokens": 23722728931
       },
       "price": {
         "input": 0.435,
@@ -408,8 +408,8 @@
       "name": "Upstage: Solar Mini 4",
       "canonicalSlug": "upstage/solar-mini4-20260922",
       "heat": {
-        "promptTokens": 1341638705386,
-        "completionTokens": 12763608086
+        "promptTokens": 1342993211952,
+        "completionTokens": 12322107410
       },
       "price": {
         "input": 0.05,
@@ -423,50 +423,12 @@
       "detailUrl": "https://openrouter.ai/upstage/solar-mini4"
     },
     {
-      "id": "minimax/minimax-m3",
-      "name": "MiniMax: MiniMax M3",
-      "canonicalSlug": "minimax/minimax-m3-20260531",
-      "heat": {
-        "promptTokens": 1009049743325,
-        "completionTokens": 24303624653
-      },
-      "price": {
-        "input": 0.3,
-        "output": 1.2
-      },
-      "context": 1048576,
-      "maxOutput": 512000,
-      "toolCall": true,
-      "reasoning": true,
-      "attachment": true,
-      "detailUrl": "https://openrouter.ai/minimax/minimax-m3"
-    },
-    {
-      "id": "z-ai/glm-5.2",
-      "name": "Z.ai: GLM 5.2",
-      "canonicalSlug": "z-ai/glm-5.2-20260616",
-      "heat": {
-        "promptTokens": 935100327817,
-        "completionTokens": 30905325789
-      },
-      "price": {
-        "input": 0.006,
-        "output": 7
-      },
-      "context": 1048576,
-      "maxOutput": 943718,
-      "toolCall": true,
-      "reasoning": true,
-      "attachment": false,
-      "detailUrl": "https://openrouter.ai/z-ai/glm-5.2"
-    },
-    {
       "id": "google/gemini-4-argon",
       "name": "Google: Gemini 4 Argon",
       "canonicalSlug": "google/gemini-4-argon-20261013",
       "heat": {
-        "promptTokens": 942741996579,
-        "completionTokens": 21617894416
+        "promptTokens": 1050025159951,
+        "completionTokens": 23670575903
       },
       "price": {
         "input": 2,
@@ -480,12 +442,50 @@
       "detailUrl": "https://openrouter.ai/google/gemini-4-argon"
     },
     {
+      "id": "z-ai/glm-5.2",
+      "name": "Z.ai: GLM 5.2",
+      "canonicalSlug": "z-ai/glm-5.2-20260616",
+      "heat": {
+        "promptTokens": 930183127668,
+        "completionTokens": 29906451946
+      },
+      "price": {
+        "input": 0.006,
+        "output": 6.8
+      },
+      "context": 1048576,
+      "maxOutput": 943718,
+      "toolCall": true,
+      "reasoning": true,
+      "attachment": false,
+      "detailUrl": "https://openrouter.ai/z-ai/glm-5.2"
+    },
+    {
+      "id": "minimax/minimax-m3",
+      "name": "MiniMax: MiniMax M3",
+      "canonicalSlug": "minimax/minimax-m3-20260531",
+      "heat": {
+        "promptTokens": 851192354871,
+        "completionTokens": 21579415953
+      },
+      "price": {
+        "input": 0.3,
+        "output": 1.2
+      },
+      "context": 1048576,
+      "maxOutput": 512000,
+      "toolCall": true,
+      "reasoning": true,
+      "attachment": true,
+      "detailUrl": "https://openrouter.ai/minimax/minimax-m3"
+    },
+    {
       "id": "qwen/qwen3.8-flash",
       "name": "Qwen: Qwen3.8 Flash",
       "canonicalSlug": "qwen/qwen3.8-flash-20260826",
       "heat": {
-        "promptTokens": 710329559732,
-        "completionTokens": 28112931311
+        "promptTokens": 677600294372,
+        "completionTokens": 30630180142
       },
       "price": {
         "input": 0.15,
@@ -503,8 +503,8 @@
       "name": "Google: Gemini 3 Flash Preview",
       "canonicalSlug": "google/gemini-3-flash-preview-20251217",
       "heat": {
-        "promptTokens": 622292984513,
-        "completionTokens": 31191519130
+        "promptTokens": 609033399619,
+        "completionTokens": 30048464669
       },
       "price": {
         "input": 0.5,
@@ -522,8 +522,8 @@
       "name": "Google: Gemini 3.1 Flash Lite",
       "canonicalSlug": "google/gemini-3.1-flash-lite-20260507",
       "heat": {
-        "promptTokens": 583383794910,
-        "completionTokens": 34783482304
+        "promptTokens": 590554746880,
+        "completionTokens": 35696293017
       },
       "price": {
         "input": 0.25,
@@ -537,16 +537,35 @@
       "detailUrl": "https://openrouter.ai/google/gemini-3.1-flash-lite"
     },
     {
+      "id": "openai/gpt-6-luna-pro",
+      "name": "OpenAI: GPT-6 Luna Pro",
+      "canonicalSlug": "openai/gpt-6-luna-pro-20260922",
+      "heat": {
+        "promptTokens": 541048228492,
+        "completionTokens": 19259088688
+      },
+      "price": {
+        "input": 0.1,
+        "output": 0.5
+      },
+      "context": 1050000,
+      "maxOutput": 128000,
+      "toolCall": true,
+      "reasoning": true,
+      "attachment": true,
+      "detailUrl": "https://openrouter.ai/openai/gpt-6-luna-pro"
+    },
+    {
       "id": "qwen/qwen3.8-27b",
       "name": "Qwen: Qwen3.8 27B",
       "canonicalSlug": "qwen/qwen3.8-27b-20260814",
       "heat": {
-        "promptTokens": 527322091365,
-        "completionTokens": 24802580579
+        "promptTokens": 511627824751,
+        "completionTokens": 25241926162
       },
       "price": {
-        "input": 0.15,
-        "output": 1.88
+        "input": 0.04,
+        "output": 2.3
       },
       "context": 1000000,
       "maxOutput": 235929,
@@ -554,25 +573,6 @@
       "reasoning": true,
       "attachment": true,
       "detailUrl": "https://openrouter.ai/qwen/qwen3.8-27b"
-    },
-    {
-      "id": "anthropic/claude-sonnet-5",
-      "name": "Anthropic: Claude Sonnet 5",
-      "canonicalSlug": "anthropic/claude-sonnet-5-20260630",
-      "heat": {
-        "promptTokens": 529943657561,
-        "completionTokens": 9440010506
-      },
-      "price": {
-        "input": 2,
-        "output": 10
-      },
-      "context": 1000000,
-      "maxOutput": 128000,
-      "toolCall": true,
-      "reasoning": true,
-      "attachment": true,
-      "detailUrl": "https://openrouter.ai/anthropic/claude-sonnet-5"
     }
   ]
 }
