@@ -1,5 +1,5 @@
 {
-  "syncedAt": "2026-11-10T11:25:36.162Z",
+  "syncedAt": "2026-11-11T11:13:55.955Z",
   "source": "models.dev",
   "providers": [
     {
@@ -574,6 +574,15 @@
           "input": 0.75,
           "output": 3.75,
           "cacheRead": 0.075,
+          "cacheWrite": null
+        },
+        {
+          "id": "gemini-4-carbon",
+          "label": "Gemini 4 Carbon",
+          "context": 1048576,
+          "input": 2,
+          "output": 10,
+          "cacheRead": 0.1,
           "cacheWrite": null
         },
         {
