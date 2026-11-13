@@ -1,5 +1,5 @@
 {
-  "syncedAt": "2026-11-11T11:13:55.955Z",
+  "syncedAt": "2026-11-13T11:16:19.478Z",
   "source": "models.dev",
   "providers": [
     {
@@ -577,6 +577,15 @@
           "cacheWrite": null
         },
         {
+          "id": "gemini-4-hydrogen",
+          "label": "Gemini 4 Hydrogen",
+          "context": 1048576,
+          "input": 1.5,
+          "output": 7.5,
+          "cacheRead": 0.075,
+          "cacheWrite": null
+        },
+        {
           "id": "gemini-4-carbon",
           "label": "Gemini 4 Carbon",
           "context": 1048576,
@@ -709,6 +718,24 @@
           "input": 0.3,
           "output": 2.5,
           "cacheRead": 0.03,
+          "cacheWrite": null
+        },
+        {
+          "id": "gemma-4-31b-it",
+          "label": "Gemma 4 31B IT",
+          "context": 262144,
+          "input": 0,
+          "output": 0,
+          "cacheRead": null,
+          "cacheWrite": null
+        },
+        {
+          "id": "gemma-4-26b-a4b-it",
+          "label": "Gemma 4 26B A4B IT",
+          "context": 262144,
+          "input": 0,
+          "output": 0,
+          "cacheRead": null,
           "cacheWrite": null
         },
         {
