@@ -1,5 +1,5 @@
 {
-  "syncedAt": "2026-11-13T11:16:19.478Z",
+  "syncedAt": "2026-11-18T11:57:10.156Z",
   "source": "models.dev",
   "providers": [
     {
@@ -182,6 +182,24 @@
           "output": 20,
           "cacheRead": 0.4,
           "cacheWrite": 5
+        },
+        {
+          "id": "gpt-6.2-sol",
+          "label": "GPT-6.2 Sol",
+          "context": 1050000,
+          "input": 2,
+          "output": 10,
+          "cacheRead": 0.1,
+          "cacheWrite": 2.5
+        },
+        {
+          "id": "gpt-6.2-astra",
+          "label": "GPT-6.2 Astra",
+          "context": 1050000,
+          "input": 8,
+          "output": 40,
+          "cacheRead": 0.4,
+          "cacheWrite": 10
         },
         {
           "id": "gpt-6.1-terra",
