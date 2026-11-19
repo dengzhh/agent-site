@@ -1,5 +1,5 @@
 {
-  "syncedAt": "2026-11-18T11:57:10.156Z",
+  "syncedAt": "2026-11-19T11:54:30.133Z",
   "source": "models.dev",
   "providers": [
     {
@@ -592,6 +592,15 @@
           "input": 0.75,
           "output": 3.75,
           "cacheRead": 0.075,
+          "cacheWrite": null
+        },
+        {
+          "id": "gemini-4-neon",
+          "label": "Gemini 4 Neon",
+          "context": 1048576,
+          "input": 3,
+          "output": 15,
+          "cacheRead": 0.15,
           "cacheWrite": null
         },
         {
