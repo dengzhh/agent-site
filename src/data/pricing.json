@@ -1,5 +1,5 @@
 {
-  "syncedAt": "2026-11-19T11:54:30.133Z",
+  "syncedAt": "2026-11-24T13:58:36.273Z",
   "source": "models.dev",
   "providers": [
     {
@@ -319,15 +319,6 @@
           "cacheWrite": null
         },
         {
-          "id": "gpt-4.1-nano",
-          "label": "GPT-4.1 nano",
-          "context": 1047576,
-          "input": 0.1,
-          "output": 0.4,
-          "cacheRead": 0.025,
-          "cacheWrite": null
-        },
-        {
           "id": "gpt-4.1-mini",
           "label": "GPT-4.1 mini",
           "context": 1047576,
@@ -445,15 +436,6 @@
           "cacheWrite": null
         },
         {
-          "id": "o4-mini",
-          "label": "o4-mini",
-          "context": 200000,
-          "input": 1.1,
-          "output": 4.4,
-          "cacheRead": 0.275,
-          "cacheWrite": null
-        },
-        {
           "id": "o3-pro",
           "label": "o3-pro",
           "context": 200000,
@@ -463,48 +445,12 @@
           "cacheWrite": null
         },
         {
-          "id": "o3-mini",
-          "label": "o3-mini",
-          "context": 200000,
-          "input": 1.1,
-          "output": 4.4,
-          "cacheRead": 0.55,
-          "cacheWrite": null
-        },
-        {
           "id": "o3",
           "label": "o3",
           "context": 200000,
           "input": 2,
           "output": 8,
           "cacheRead": 0.5,
-          "cacheWrite": null
-        },
-        {
-          "id": "o1-pro",
-          "label": "o1-pro",
-          "context": 200000,
-          "input": 150,
-          "output": 600,
-          "cacheRead": null,
-          "cacheWrite": null
-        },
-        {
-          "id": "o1",
-          "label": "o1",
-          "context": 200000,
-          "input": 15,
-          "output": 60,
-          "cacheRead": 7.5,
-          "cacheWrite": null
-        },
-        {
-          "id": "gpt-5.3-codex-spark",
-          "label": "GPT-5.3 Codex Spark",
-          "context": 128000,
-          "input": 1.75,
-          "output": 14,
-          "cacheRead": 0.175,
           "cacheWrite": null
         },
         {
@@ -535,30 +481,12 @@
           "cacheWrite": null
         },
         {
-          "id": "gpt-4o-2024-05-13",
-          "label": "GPT-4o (2024-05-13)",
-          "context": 128000,
-          "input": 5,
-          "output": 15,
-          "cacheRead": null,
-          "cacheWrite": null
-        },
-        {
           "id": "gpt-4o",
           "label": "GPT-4o",
           "context": 128000,
           "input": 2.5,
           "output": 10,
           "cacheRead": 1.25,
-          "cacheWrite": null
-        },
-        {
-          "id": "gpt-4-turbo",
-          "label": "GPT-4 Turbo",
-          "context": 128000,
-          "input": 10,
-          "output": 30,
-          "cacheRead": null,
           "cacheWrite": null
         }
       ]
@@ -691,15 +619,6 @@
           "input": 2,
           "output": 12,
           "cacheRead": 0.2,
-          "cacheWrite": null
-        },
-        {
-          "id": "gemini-3.1-flash-lite-preview",
-          "label": "Gemini 3.1 Flash Lite Preview",
-          "context": 1048576,
-          "input": 0.25,
-          "output": 1.5,
-          "cacheRead": 0.025,
           "cacheWrite": null
         },
         {
